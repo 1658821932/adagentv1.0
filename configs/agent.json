@@ -2,6 +2,12 @@
   "agent": {
     "max_steps": 20
   },
+  "llm": {
+    "base_url": "https://apicz.boyuerichdata.com/v1",
+    "model": "qwen3.5-plus",
+    "timeout": 600,
+    "max_tokens": 1024
+  },
   "orchestrator": {
     "decision_correction_attempts": 1
   },

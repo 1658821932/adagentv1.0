@@ -18,6 +18,8 @@ import requests
 from .vendor.sentrysearch.chunker import preprocess_chunk
 from .vendor.sentrysearch.trimmer import trim_clip
 
+from .config import SearchConfig
+
 
 RERANK_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 MAX_VIDEO_CANDIDATES = 4
@@ -25,25 +27,27 @@ MAX_RERANK_VIDEO_BYTES = 50_000 * 1024
 
 
 def _settings() -> tuple[str, str, str, str, str, str]:
+    config = SearchConfig()
     values = {
         key: os.environ.get(key, "").strip()
         for key in (
             "OSS_ACCESS_KEY_ID",
             "OSS_ACCESS_KEY_SECRET",
-            "OSS_BUCKET",
-            "OSS_ENDPOINT",
         )
     }
     missing = [key for key, value in values.items() if not value]
     if missing:
         raise RuntimeError("OSS rerank requires: " + ", ".join(missing))
-    endpoint = values["OSS_ENDPOINT"].replace("https://", "").replace("http://", "").rstrip("/")
+    bucket = os.environ.get("OSS_BUCKET", "").strip() or config.oss_bucket
+    endpoint = (
+        os.environ.get("OSS_ENDPOINT", "").strip() or config.oss_endpoint
+    ).replace("https://", "").replace("http://", "").rstrip("/")
     return (
         values["OSS_ACCESS_KEY_ID"],
         values["OSS_ACCESS_KEY_SECRET"],
-        values["OSS_BUCKET"],
+        bucket,
         endpoint,
-        os.environ.get("OSS_PREFIX", "adagent-rerank/").strip().strip("/") or "adagent-rerank",
+        (os.environ.get("OSS_PREFIX", "").strip() or config.oss_prefix).strip("/") or "adagent-rerank",
         os.environ.get("OSS_SECURITY_TOKEN", "").strip(),
     )
 

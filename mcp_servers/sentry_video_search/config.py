@@ -36,6 +36,11 @@ class SearchConfig:
     preprocess_index_chunks: bool = False
     import_source_videos: bool = True
 
+    # OSS rerank staging settings (non-sensitive; credentials stay in .env).
+    oss_bucket: str = "ghc-spjs"
+    oss_endpoint: str = "https://oss-cn-shanghai.aliyuncs.com"
+    oss_prefix: str = "adagent-rerank/"
+
     @classmethod
     def for_library(cls, library: str) -> SearchConfig:
         if library == "default":
