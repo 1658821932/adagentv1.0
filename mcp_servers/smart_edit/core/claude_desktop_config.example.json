@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "smart-edit": {
+      "command": "smart-edit-mcp",
+      "env": {
+        "ASSETS_DIR": "/Users/xy/Projects/smart-edit/assets",
+        "OUTPUT_DIR": "/Users/xy/Projects/smart-edit/outputs"
+      }
+    }
+  }
+}

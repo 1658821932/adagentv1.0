@@ -1,0 +1,91 @@
+# Environment variables
+.env
+.env.local
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+.conda/
+venv/
+env/
+environments/
+
+# Build artifacts (incl. compiled CUDA extensions)
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Model weights: download or symlink separately (see README Weights section)
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# Runtime outputs / logs / uploaded inputs
+outputs/
+output/
+logs/
+input/
+*.log
+
+# dggt core runtime dirs
+mcp_servers/dggt/core/outputs/
+mcp_servers/dggt/core/logs/
+
+# Large binary data
+*.ply
+# ...but ship the smart_edit 3DGS asset library (required by list_assets/editing)
+!mcp_servers/smart_edit/core/assets/**/*.ply
+*.mmdb
+
+# Codex / local
+.codex/
+
+# WorldEngine / env symlinks (point to external checkouts, not vendored)
+mcp_servers/worldengine/root
+
+# One-off dev scripts archived out of open-source scope
+_dev_scripts_archive/
+
+# Sentry video search runtime index cache (rebuild or symlink separately)
+mcp_servers/sentry_video_search/runtime/
+
+# VLM / API secrets (never commit)
+.secrets/
+**/secrets/
+*.pem
+*.key
+
+# wfa runtime artifacts
+mcp_servers/worldengine_failure_analysis/runs/
+# WorldEngine vendored data (external, symlinked)
+mcp_servers/worldengine/core/data
+# WorldEngine vendored runtime experiment outputs (keep *.py configs tracked)
+# WorldEngine closed-loop sim outputs
+mcp_servers/worldengine/core/experiments/closed_loop_exps/
+mcp_servers/worldengine/core/experiments/posttrain/adagent_policy_trainer_*/
+mcp_servers/worldengine/core/experiments/**/*.pth
+mcp_servers/worldengine/core/experiments/**/*.log
+mcp_servers/worldengine/core/experiments/**/*.log.json
+mcp_servers/worldengine/core/experiments/**/tf_logs/
+mcp_servers/worldengine/core/logs/
+
+# local IDE/runtime
+.sii/

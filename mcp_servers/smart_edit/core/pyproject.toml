@@ -1,0 +1,23 @@
+[project]
+name = "smart-edit"
+version = "0.1.0"
+description = "MCP server for 3DGS scene edit config generation"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0,<2",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+smart-edit-mcp = "smart_edit.server:main_sync"
+smart-edit-chat = "clients.terminal_chat:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["smart_edit*", "clients*"]

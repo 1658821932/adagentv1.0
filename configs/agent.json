@@ -1,0 +1,29 @@
+{
+  "agent": {
+    "max_steps": 20
+  },
+  "orchestrator": {
+    "decision_correction_attempts": 1
+  },
+  "tools": {
+    "modes": {
+      "failure_analyzer": "real",
+      "scene_requirement_generator": "real",
+      "scene_conceiver": "real",
+      "video_retriever": "real",
+      "instance_discovery": "real",
+      "reconstruction": "real",
+      "edit_plan_builder": "real",
+      "edit_config_generator": "real",
+      "scene_editor": "real",
+      "scene_validator": "real",
+      "recovery_decider": "real",
+      "policy_runner": "real",
+      "failure_case_filter": "real",
+      "policy_trainer": "real"
+    }
+  },
+  "logging": {
+    "root_dir": "logs"
+  }
+}

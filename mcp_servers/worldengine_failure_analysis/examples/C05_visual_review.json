@@ -1,0 +1,10 @@
+{
+  "token": "2021.09.29.18.19.40_veh-28_00438_00833-a7f5d22750b75466",
+  "observed_evidence": "控制开始后前方银色车辆在连续前视帧中逐渐放大；step7已很近，step8及后续出现明显渲染穿入。左右视角未见更明确的侧向切入。修正版BEV中自车沿所在道路靠近前方车辆，整体图比例不足以单凭图像量化车距。",
+  "cause_hypothesis": "纵向跟车间距不断缩小；候选机制为持续前进时未及时减速。具体模型为何选择对应轨迹仍待进一步验证。",
+  "confidence": "多帧观察支持纵向逼近现象；碰撞对象与距离以数值证据核实，图像不判断责任。",
+  "next_verification": "对照同一track_token的距离序列、自车速度、每次执行的规划近端位移；不能将连续加速误写为已确认的前车突然制动。",
+  "llm_review_source": "current conversation image review of newly generated 12-frame camera/front/corrected-BEV sheets",
+  "visual_review_reused": false,
+  "review_input_scope": "images plus NC/DAC/TTC and timing; numeric actor measurements assessed separately"
+}

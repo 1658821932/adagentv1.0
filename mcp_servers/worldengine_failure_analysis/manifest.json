@@ -1,0 +1,16 @@
+{
+  ".gitignore": "1de839b46ac83fa804f58f1a198d86c8cc16da20471819dd6d634981e0e75588",
+  "README.md": "99d1a69dfd731385f1f3cd26882fa8057a828440a86e5fb00408d59f0055b629",
+  "configs/complete.json": "47029a4fad5f304040d445b3c33d1d3224421f07ec94b767a9b3e87a0d598d62",
+  "docs/SOP.md": "f728e47a6632fdebeb0d01f655930aa5541d74ab22595956932ed4c3604d5d8d",
+  "requirements.txt": "72371cf05c8d81f31bff4567ef80d9f272c12d88f6be860342a36c6f5aa646eb",
+  "run.py": "4a19f68a83d17e7e7f7be899fd5d53cb36aae8527b871edcf66fcf9e8797e8fb",
+  "scripts/evidence.py": "e72363c91166fa84c11bf21c9e99cb2efa19faa4a8c4b1d9bd49574410dc551a",
+  "scripts/numeric.py": "9d4cd0aa8c26a74dad0b582a0e9370a8c2f572e5b47485d530f7891f0c97e405",
+  "scripts/official_results.py": "0b3cb9ff929d2bda9ea57ed9e33b68dae7b8407f1d3310712b048e0431bd04ba",
+  "scripts/summarize_edit_scenarios.py": "d54dadd30bc0d9612cce6226d724373dd28b08d1f2fb78b34e302ca1a625a452",
+  "scripts/vlm_review.py": "7e488af5b6f95e12a75ff1cf6dab2c3cbf0d880ed52b90677b86c9114ef24c8f",
+  "scripts/watch_batch.py": "a0f607a436f8b26932d15d801fc07bcc7120bb81b31b27cc16f7e009a88d0df0",
+  "tests/test_resume.py": "a8ec32ec18df512f324cda6801e51d52a8d829f89ca28be54fed0fb9b54d37ac",
+  "tests/test_workflow.py": "701a6e3f060f5bee6915a7ff3700a9e7c7edd14efab76529b933e370139450a8"
+}

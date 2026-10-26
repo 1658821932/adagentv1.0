@@ -1,0 +1,10 @@
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+runtime/*
+!runtime/.gitkeep
