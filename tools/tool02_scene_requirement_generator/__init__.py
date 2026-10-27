@@ -1,1 +1,1 @@
-"""Mock scene requirement generator tool package."""
+"""Typed LLM scene requirement generator with real and mock implementations."""

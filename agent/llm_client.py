@@ -34,11 +34,16 @@ class LLMClient:
         llm = data.get("llm", {})
         return llm if isinstance(llm, dict) else {}
 
-    def __init__(self):
+    def __init__(self, *, overrides: Dict[str, object] = None):
         # Non-sensitive connection settings come from configs/agent.json;
         # environment variables still take precedence when set. Only the API
         # key is expected in .env.
         file_config = self._load_llm_config()
+        overrides = dict(overrides or {})
+        unsupported = set(overrides) - {"model", "timeout", "max_tokens"}
+        if unsupported:
+            raise ValueError("LLM overrides allow only model, timeout and max_tokens")
+        self.last_usage = None
 
         self.api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
         self.base_url = (
@@ -47,17 +52,19 @@ class LLMClient:
             or file_config.get("base_url")
         )
         self.model = (
-            os.getenv("OPENAI_MODEL")
+            overrides.get("model")
+            or os.getenv("OPENAI_MODEL")
             or os.getenv("LLM_MODEL")
             or file_config.get("model")
         )
         self.timeout = int(
-            os.getenv("LLM_TIMEOUT")
+            overrides.get("timeout")
+            or os.getenv("LLM_TIMEOUT")
             or os.getenv("OPENAI_TIMEOUT")
             or file_config.get("timeout", 600)
         )
         self.max_tokens = int(
-            os.getenv("OPENAI_MAX_TOKENS") or file_config.get("max_tokens", 1024)
+            overrides.get("max_tokens") or os.getenv("OPENAI_MAX_TOKENS") or file_config.get("max_tokens", 1024)
         )
 
         missing = []
@@ -95,6 +102,8 @@ class LLMClient:
                 max_tokens=self.max_tokens,
             )
 
+            usage = getattr(response, "usage", None)
+            self.last_usage = usage.model_dump() if hasattr(usage, "model_dump") else None
             content = response.choices[0].message.content
             if not content:
                 raise RuntimeError("LLM returned empty response")

@@ -18,7 +18,6 @@ DEFAULT_MODES = {
     "edit_config_generator": "real",
     "scene_editor": "real",
     "scene_validator": "real",
-    "recovery_decider": "real",
     "policy_runner": "real",
     "failure_case_filter": "real",
     "policy_trainer": "real",

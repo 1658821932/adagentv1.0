@@ -26,7 +26,7 @@
 
 ### 场景验证与任务恢复
 
-检查输出文件、编辑配置及渲染画面，判断结果是否符合需求，并将问题交给恢复决策工具，为后续重试或调整提供依据。视觉检查用于发现场景问题，不能代替官方碰撞责任和道路合规评分。
+tool10 检查输出文件、编辑配置及渲染画面，返回验证报告。主 Agent 根据报告或执行错误直接决定重试、修改计划或结束；不再调用独立的恢复决策工具。视觉检查用于发现场景问题，不能代替官方碰撞责任和道路合规评分。
 
 ### 策略仿真与监督微调
 
@@ -46,7 +46,7 @@ adagent 将以下能力统一接入工具调用流程。其中 SmartEdit 通过 
 | [SmartEdit](mcp_servers/SMART_EDIT_README.md) | 将自然语言编辑要求转换为服务工具调用并保存配置 | 编辑计划、实例信息或指定资产 | 编辑 JSON 或相机轨迹偏移配置 |
 | [WorldEngine / AlgEngine](https://github.com/OpenDriveLab/WorldEngine) | 闭环策略仿真、评测及监督微调 | 场景、模型配置与权重、训练标注 | 仿真结果、配置启用的指标、训练日志与 checkpoint |
 
-需求生成、场景构思、编辑计划、视觉验证和恢复决策由 Agent 工具层衔接。各阶段按任务需要调用，不要求每次完整运行全部流程。
+需求生成、场景构思、编辑计划和视觉验证由工具层提供，下一步选择及失败恢复由主 Agent 决策。当前共 13 个工具。各阶段按任务需要调用，不要求每次完整运行全部流程。
 
 ## 典型工作流
 
@@ -63,15 +63,15 @@ adagent 将以下能力统一接入工具调用流程。其中 SmartEdit 通过 
 
 ## 快速开始
 
-从项目根目录创建 Agent 主环境：
+使用 Python 3.10 或以上版本，从项目根目录创建 Agent 主环境：
 
 ```bash
 python3 -m venv environments/agent/.venv
-environments/agent/.venv/bin/python -m pip install python-dotenv openai
+environments/agent/.venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-在 `.env` 配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`。兼容旧的 `LLM_*` 配置。然后按需准备各组件的运行环境、权重、数据及服务密钥，设置 `SMART_EDIT_ROOT`、`WORLDENGINE_ROOT` 等路径；主环境的安装不包含全部 real 工具依赖。
+在 .env 只填写 OPENAI_API_KEY（兼容 LLM_API_KEY）；模型、端点等非敏感配置填写 configs/agent.json 的 llm 块，兼容已有环境变量覆盖。然后按需准备各组件的运行环境、权重、数据及服务密钥，设置 `SMART_EDIT_ROOT`、`WORLDENGINE_ROOT` 等路径；主环境的安装不包含全部 real 工具依赖。
 
 ```bash
 environments/agent/.venv/bin/python -m agent.main \
@@ -79,6 +79,11 @@ environments/agent/.venv/bin/python -m agent.main \
 ```
 
 `configs/agent.json` 控制每个工具的 `mock` / `real` 模式和 Agent 最大执行步数。mock 返回接口兼容的占位结果，不生成真实视频或点云；Agent 编排仍需要模型接口。real 模式需要相应组件的依赖与输入数据就绪。
+
+## 纯文本 LLM 工具
+
+需求生成、场景构思、编辑计划这 3 个工具采用统一的 Schema、独立提示词、非敏感配置和执行器；
+mock/real 共用输入输出校验。目录规范、模型角色和逐工具测试命令见 [LLM 工具开发规范](docs/LLM_TOOLS.md)。
 
 ## 密钥与模型分工
 

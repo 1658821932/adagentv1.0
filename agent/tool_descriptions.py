@@ -16,7 +16,6 @@ from tools.tool07_edit_plan_builder.description import DESCRIPTION as TOOL07
 from tools.tool08_edit_config_generator.description import DESCRIPTION as TOOL08
 from tools.tool09_scene_editor.description import DESCRIPTION as TOOL09
 from tools.tool10_scene_validator.description import DESCRIPTION as TOOL10
-from tools.tool11_recovery_decider.description import DESCRIPTION as TOOL11
 from tools.tool13_policy_runner.description import DESCRIPTION as TOOL13
 from tools.tool14_failure_case_filter.description import DESCRIPTION as TOOL14
 from tools.tool15_policy_trainer.description import DESCRIPTION as TOOL15
@@ -32,7 +31,6 @@ TOOLS = [
     TOOL08,
     TOOL09,
     TOOL10,
-    TOOL11,
     TOOL13,
     TOOL14,
     TOOL15,

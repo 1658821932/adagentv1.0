@@ -2,7 +2,7 @@
 Project runtime configuration.
 
 Non-sensitive Agent runtime settings live in configs/agent.json.
-Secrets and LLM connection settings remain in the local .env file.
+Secrets remain in the local .env file; non-sensitive LLM settings use JSON.
 """
 
 import json

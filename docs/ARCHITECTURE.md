@@ -18,7 +18,7 @@ adagent 是一个**面向自动驾驶数据生成与评测的 Agent 系统**。�
     ┌─────────────────────────────────────────────┐
     │  agent/        编排层   LLM 决定下一步调哪个工具    │
     ├─────────────────────────────────────────────┤
-    │  tools/        工具层   14 个标准 Tool，各有        │
+    │  tools/        工具层   13 个标准 Tool，各有        │
     │                         mock / real 两种实现      │
     ├─────────────────────────────────────────────┤
     │  mcp_servers/  能力层   视频检索/三维重建/编辑/      │
@@ -36,7 +36,7 @@ LLM 只做"选哪个工具、传什么参数"，不直接操作文件或模型�
 | 目录 / 文件 | 职责 | 你需要改它吗 |
 |---|---|---|
 | agent/ | Agent 编排核心（LLM 决策、工具执行、状态、日志） | 改编排逻辑时 |
-| tools/ | 14 个标准工具，每个有 mock/real 两实现 | 新增/修改工具时 |
+| tools/ | 13 个标准工具，每个有 mock/real 两实现 | 新增/修改工具时 |
 | mcp_servers/ | 外部能力组件（检索、重建、编辑、仿真、训练） | 接入新组件时 |
 | configs/agent.json | 运行配置：工具 mock/real 模式、LLM、步数上限 | 改运行行为时 |
 | environments/ | 各组件独立的 Python 环境（不随源码分发） | 仅本地配置 |
@@ -52,40 +52,71 @@ LLM 只做"选哪个工具、传什么参数"，不直接操作文件或模型�
 | 文件 | 职责 | 关键点 |
 |---|---|---|
 | main.py | 执行入口和主循环 | Agent.run(task)：循环 {LLM 决策→执行工具→更新状态}，直到 finish 或达到 max_steps |
-| orchestrator.py | LLM 决策器 | 构造 system prompt（含所有工具描述和使用约束），让 LLM 输出 JSON 决策（call_tool/finish），带纠错重试 |
+| orchestrator.py | LLM 决策器 | 全局 system prompt 加 available_tools 与 current_state，让 LLM 输出 JSON 决策（call_tool/finish/stop），带纠错重试 |
 | executor.py | 工具执行器 | 按 configs/agent.json 里该工具的 mock/real 模式调用对应实现，并校验结果信封 |
 | state.py | 运行时状态 | AgentState 记录任务、历史（决策+工具结果）、当前阶段、生命周期；to_orchestrator_dict() 会压缩逐帧检测结果以免撑爆 prompt |
 | schemas.py | 数据校验 | 校验 LLM 决策格式和工具结果信封是否合法 |
 | llm_client.py | LLM 客户端 | 封装 OpenAI 兼容 API；密钥从 .env 读，base_url/model 从 configs/agent.json 的 llm 块读（环境变量优先） |
 | config.py | 配置加载 | 加载并强校验 configs/agent.json（缺字段/未知工具/非法模式都会报错） |
-| tool_descriptions.py | 工具清单 | 定义每个工具的 name/description/when_to_use/inputs/outputs，供 LLM 决策时参考 |
+| tool_descriptions.py | 工具清单 | 只汇总各工具目录的 description.py；三个纯文本 LLM 工具的参数说明由各自 schemas.py 自动生成 |
 | logger.py | 结构化日志 | 每次 run 建一个目录，记录决策、工具调用、错误、最终状态 |
 
 ### 编排层的关键设计
 
-**1. LLM 只决策，不执行。** orchestrator.py 的 system prompt 里写死了大量领域约束（比如"instance_discovery 的输入要用重建的 input_dir""轨迹偏移是相对原始逐帧位置的，不是绝对位置""前 40 帧"等）。这些规则保证 LLM 不会乱传参数。**如果你改工具行为，很可能要同步改这里的 prompt。**
+**1. 编排器选择工具，执行器负责调用。** 全局 system prompt 只保留身份、JSON 决策格式和证据等全局规则。工具用途与领域约束位于各工具目录的 description.py，通过 available_tools 提供给编排器。tool02/03/07 的内部提示词独立放在 prompt.md，输入输出由 schemas.py 和公共运行器校验；主 Agent 不需要读取其完整内部提示词。修改参数时应改 Schema，修改内部推理规则时应改该工具 prompt.md。
 
 **2. 状态是 LLM 的唯一信息来源。** LLM 每步看到的 current_state 来自 state.to_orchestrator_dict()。大体积数据（如逐帧检测框）会被压缩成采样帧，完整数据写进日志文件，prompt 里只放路径。这是控制 context 长度的关键手段。
 
 **3. 决策有校验和纠错。** LLM 输出先过 schemas.validate_decision，非法则按 decision_correction_attempts 次数把错误信息反馈给 LLM 让它重试。
 
-## tools/ — 工具层（14 个 Tool）
+### 主 Agent 直接负责恢复
 
-每个 tool 是一个独立目录，标准结构是：
+恢复规则写在 agent/orchestrator.py 的 system prompt 内，不再请求独立恢复模型。
+主 Agent 读取工具状态、原始需求、issues/evidence 和成功产物，直接输出下一次 call_tool：
+瞬时错误最多原参数重试一次；参数错误先修正参数；场景错误修改受影响的计划或配置，
+执行后续渲染并重新验证，复用未受影响的产物。
+
+status=success 只说明工具执行完成；生成场景必须取得当前渲染对应的显式 passed=true。
+只完成场景生成的任务，在验证通过后 finish，不擅自运行仿真或训练。
+缺凭据、环境或权重且没有已知补救手段，或恢复选项耗尽时，输出 stop 并说明未完成目标。
+stop 由主循环记录为 error，而非成功完成；全局最大步数仍限制整个执行过程。
+这些重试与修复选择由提示词指导，当前没有新增独立恢复策略引擎。
+
+验证命令（从项目根目录执行）：
+
+    environments/agent/.venv/bin/python -m tools.scripts.smoke_agent_recovery --mode mock
+    environments/agent/.venv/bin/python -m tools.scripts.smoke_agent_recovery --mode real
+    environments/agent/.venv/bin/python -m tools.scripts.smoke_agent_recovery --mode real --suite integration
+
+第一条使用脚本化模型，后两条调用配置的真实主模型。decisions 测试五种合成状态：
+视觉失败、验证通过、首次超时、重复超时和缺权重。integration 使用真实编排模型与 mock 工具，
+首次视觉验证被注入失败，要求修正并重渲染、重验后才能通过测试。
+这些测试验证控制流，不证明真实 DGGT 编辑质量或模仿学习收益。
+
+## tools/ — 工具层（13 个 Tool）
+
+每个 tool 是一个独立目录。所有工具的编排说明位于 description.py。
+三个纯文本 LLM 工具（tool02/03/07）统一采用：
 
     toolNN_xxx/
-      tool.py      # mock 实现（占位，返回接口兼容的假结果）
-      mock.py      # 部分工具的 mock 在这里（历史原因，两种命名都有）
-      real.py      # real 实现（真正调用 mcp_servers 里的能力）
+      description.py  # 主 Agent 看到的用途；参数说明从 Schema 生成
+      schemas.py      # 输入、模型回复、最终输出与业务约束
+      prompt.md       # 工具内部 LLM 的任务指令
+      config.json     # 模型角色、提示词版本、超时、输出长度、校验重试
+      real.py         # 绑定契约，调用公共 LLM 运行器
+      mock.py         # 通过相同契约的确定性模拟实现
       __init__.py
+
+这三个工具不再提供 tool.py 旧入口，调用统一使用注册表或明确的 real/mock 模块。公共实现是 tools/llm_runtime.py。完整约定与验证命令见 [LLM 工具开发规范](LLM_TOOLS.md)。
+其他服务适配工具保留现有 real.py 和 tool.py/mock.py 结构，各自负责外部服务调用。
 
 tools/registry.py 是总调度：维护 MOCK_TOOL_REGISTRY 和 REAL_TOOL_REGISTRY 两张表，call_tool(name, args, mode) 按模式分发。**新增工具要在这里登记。**
 
-### 14 个工具按链路顺序
+### 13 个工具按链路顺序
 
 | # | 名称 | 干什么 | 属于阶段 |
 |---|---|---|---|
-| 01 | failure_analyzer | 分析失败案例，归纳跨案例的失败类型、原因、关键因素和风险 | 失败分析 |
+| 01 | failure_analyzer | 以 WorldEngine 场景 token 调用 WFA，保留指标、图像证据、归因和不确定性 | 失败分析 |
 | 02 | scene_requirement_generator | 由失败分析生成"要造什么场景"的需求 | 需求生成 |
 | 03 | scene_conceiver | 设计高层场景方案：需要什么样的基础视频、怎么编辑 | 场景构思 |
 | 04 | video_retriever | 按自然语言需求检索本地视频库，重排并导出片段 | 数据检索 |
@@ -95,19 +126,18 @@ tools/registry.py 是总调度：维护 MOCK_TOOL_REGISTRY 和 REAL_TOOL_REGISTR
 | 08 | edit_config_generator | 由编辑计划生成具体编辑配置（轨迹偏移、资产等） | 编辑配置 |
 | 09 | scene_editor | 执行编辑，调 DGGT 渲染编辑后的场景 | 场景编辑 |
 | 10 | scene_validator | 检查输出文件和渲染画面是否符合需求（VLM 视觉验证） | 结果验证 |
-| 11 | recovery_decider | 验证不通过时决定怎么重试/调整 | 失败恢复 |
 | 13 | policy_runner | 用 WorldEngine 跑闭环策略仿真 | 闭环仿真 |
 | 14 | failure_case_filter | 从仿真结果里筛出失败案例 | 失败筛选 |
 | 15 | policy_trainer | 用 AlgEngine 对筛选数据做监督微调（ILFT，**不含 RL**） | 策略训练 |
 
-> 注意：**没有 tool12**（编号跳过）。tool11_recovery_decider/ 里有个 tool12_simulation_loader 子目录，是历史遗留的内部辅助，不是独立工具。
+> 编号保留现有目录命名，当前为 tool01–tool10、tool13–tool15。独立 tool11 已移除，其恢复决策规则位于 agent/orchestrator.py 的主提示词中；tool12 不作为独立工具提供。
 
 ### mock / real 双模式
 
 每个工具都有两种实现，由 configs/agent.json 的 tools.modes 控制：
 
 - **mock**：返回接口兼容的占位结果，不真正跑模型/渲染/仿真。用于快速验证 Agent 编排逻辑、调 prompt、跑测试。
-- **real**：真正调用 mcp_servers 里的组件。需要对应环境、权重、数据就绪。
+- **real**：纯文本 LLM 工具调用配置的模型端点；服务适配工具调用对应组件，需要相应环境、权重、数据就绪。
 
 **给协作者的建议：改编排逻辑时先把相关工具设成 mock，跑通了再切 real。**
 
@@ -193,7 +223,7 @@ pytest，47 项。覆盖配置加载、决策校验、工具结果信封、坐�
       └─tool09→ 编辑后的场景+渲染视频
       └─tool10→ 验证结论 (通过/不通过)
            ├─通过→ 可选 tool13 仿真 → tool14 筛失败 → tool15 微调
-           └─不通过→ tool11 决定怎么重试
+           └─不通过→ 主 Agent 直接修改计划/配置，重渲染后重验
 
 工具之间不直接通信，全部通过 **AgentState 的历史记录**传递：每个工具的结果写进 state，下一个工具的参数由 LLM 根据 state 里的路径和结果来构造。
 

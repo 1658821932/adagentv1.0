@@ -1,1 +1,1 @@
-"""Mock edit plan builder tool package."""
+"""Typed LLM editing planner with real and mock implementations."""

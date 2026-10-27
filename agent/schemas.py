@@ -8,7 +8,7 @@ validate tool-specific argument fields or business result fields.
 from typing import Any, Iterable, List, Tuple
 
 
-VALID_ACTIONS = {"call_tool", "finish"}
+VALID_ACTIONS = {"call_tool", "finish", "stop"}
 VALID_TOOL_STATUSES = {"success", "error"}
 
 
@@ -25,7 +25,7 @@ def validate_decision(
 
     action = decision.get("action")
     if action not in VALID_ACTIONS:
-        errors.append("action must be one of: call_tool, finish")
+        errors.append("action must be one of: call_tool, finish, stop")
 
     reason = decision.get("reason")
     if not isinstance(reason, str) or not reason.strip():

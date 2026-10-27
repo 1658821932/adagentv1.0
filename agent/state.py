@@ -20,7 +20,6 @@ TOOL_STAGE_MAP = {
     "edit_config_generator": "editing",
     "scene_editor": "editing",
     "scene_validator": "validation",
-    "recovery_decider": "recovery",
     "policy_runner": "simulation",
     "failure_case_filter": "failure_filtering",
     "policy_trainer": "training",

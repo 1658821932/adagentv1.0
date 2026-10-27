@@ -6,7 +6,11 @@
     "base_url": "https://apicz.boyuerichdata.com/v1",
     "model": "qwen3.5-plus",
     "timeout": 600,
-    "max_tokens": 1024
+    "max_tokens": 1024,
+    "roles": {
+      "planner": {},
+      "editor": {}
+    }
   },
   "orchestrator": {
     "decision_correction_attempts": 1
@@ -23,7 +27,6 @@
       "edit_config_generator": "real",
       "scene_editor": "real",
       "scene_validator": "real",
-      "recovery_decider": "real",
       "policy_runner": "real",
       "failure_case_filter": "real",
       "policy_trainer": "real"

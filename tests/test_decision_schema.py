@@ -83,7 +83,7 @@ class DecisionSchemaTests(unittest.TestCase):
         valid, errors = validate_decision(decision, AVAILABLE_TOOLS)
 
         self.assertFalse(valid)
-        self.assertIn("action must be one of: call_tool, finish", errors)
+        self.assertIn("action must be one of: call_tool, finish, stop", errors)
 
     def test_reason_must_be_non_empty(self):
         decision = {

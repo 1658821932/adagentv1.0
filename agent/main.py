@@ -39,7 +39,7 @@ class Agent:
         task: str,
         max_steps: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Execute an agent task until completion or step limit."""
+        """Execute until completion, explicit stop, or the global step limit."""
 
         run_max_steps = (
             self.config.max_steps
@@ -99,6 +99,13 @@ class Agent:
                     final_state = self.state.to_dict()
                     self.logger.finalize(final_state)
                     print("Agent finished.")
+                    return final_state
+
+                if decision.get("action") == "stop":
+                    self.state.mark_error(decision["reason"])
+                    final_state = self.state.to_dict()
+                    self.logger.finalize(final_state)
+                    print("Agent stopped without completing the task.")
                     return final_state
 
                 if decision.get("action") != "call_tool":
