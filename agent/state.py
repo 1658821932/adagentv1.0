@@ -15,6 +15,7 @@ TOOL_STAGE_MAP = {
     "scene_conceiver": "scenario_conception",
     "video_retriever": "retrieval",
     "instance_discovery": "instance_discovery",
+    "target_selector": "target_selection",
     "reconstruction": "reconstruction",
     "edit_plan_builder": "editing",
     "edit_config_generator": "editing",

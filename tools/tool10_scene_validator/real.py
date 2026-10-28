@@ -36,8 +36,21 @@ def _extract_json(text: str) -> dict[str, Any]:
     return value
 
 
-def _sample_frames(video: Path, count: int) -> list[Path]:
+def _sample_frames(video: Path, count: int, backend: str = "dggt") -> list[Path]:
     directory = Path(tempfile.mkdtemp(prefix="scene_validator_frames_"))
+    if backend == 'ufo':
+        from mcp_servers.ufo.runtime import python_path, offline_env
+        script = (
+            "import av,sys\nfrom pathlib import Path\n"
+            "with av.open(sys.argv[1]) as video:\n frames=list(video.decode(video=0))\n"
+            "if not frames: raise ValueError('video has no frames')\n"
+            "count=max(1,int(sys.argv[3]))\n"
+            "for i in range(count):\n"
+            " frames[round((len(frames)-1)*i/max(1,count-1))].to_image().save(str(Path(sys.argv[2])/f'frame_{i:03d}.jpg'))\n"
+        )
+        subprocess.run([str(python_path()), '-c', script, str(video), str(directory), str(count)],
+                       env=offline_env(), check=True)
+        return [directory / f'frame_{i:03d}.jpg' for i in range(max(1, count))]
     ffprobe = "ffprobe"
     ffmpeg = "ffmpeg"
     if not (subprocess.run(["which", ffprobe], capture_output=True).returncode == 0 and subprocess.run(["which", ffmpeg], capture_output=True).returncode == 0):
@@ -123,7 +136,7 @@ def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) ->
     else:
         # Eight uniformly spaced frames give the visual evaluator coverage of
         # the full edit while keeping the multimodal request manageable.
-        frames = _sample_frames(video, int(input_data.get("frame_count", 8)))
+        frames = _sample_frames(video, int(input_data.get("frame_count", 8)), input_data.get("backend", "dggt"))
         cleanup = True
     try:
         prompt = (
@@ -143,6 +156,10 @@ def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) ->
             '"evidence":[],"issues":[],"ignored_reconstruction_artifacts":[]}。\n'
             "最初场景需求：" + json.dumps(requirement, ensure_ascii=False)
         )
+        if input_data.get('backend') == 'ufo':
+            begin = prompt.index('以下是已知的 DGGT')
+            end = prompt.index('逐张检查', begin)
+            prompt = prompt[:begin] + 'UFO 不应用 DGGT 缺陷豁免。重影、车身透明、破碎、悬空或消失均应记录并影响通过判断。' + prompt[end:]
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         content.extend({"type": "image_url", "image_url": {"url": _image_data_url(frame)}} for frame in frames)
         body = _dashscope_chat(os.environ.get("DASHSCOPE_BASE_URL") or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL, api_key, {"model": os.environ.get("SCENE_VALIDATOR_MODEL", DEFAULT_MODEL), "messages": [{"role": "user", "content": content}], "max_tokens": 8192}, int(os.environ.get("SCENE_VALIDATOR_TIMEOUT", "180")))

@@ -1,0 +1,11 @@
+{
+  "asset_path": "/absolute/path/to/your_car.ply",
+  "format": "3dgs_ply",
+  "appearance": "dc_only",
+  "quaternion_order": "wxyz",
+  "color_space": "linear_rgb",
+  "meters_per_unit": null,
+  "dimensions_m": null,
+  "asset_to_flu": null,
+  "ground_contact_point": null
+}

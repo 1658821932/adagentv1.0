@@ -1,0 +1,34 @@
+{
+  "backend": "ufo",
+  "operation": "metric_edit",
+  "units": "meters",
+  "reference_frame": "road_at_edit_start",
+  "calibration_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagentv1.0/outputs/ufo_tool_tests/highway_lane_001/metric_scene_frontend_motion_v1.json",
+  "operations": [
+    {
+      "operation": "insert",
+      "object_id": "inserted_car",
+      "asset_manifest_path": "/absolute/path/to/your_car.asset.json",
+      "position_m": [
+        20,
+        3,
+        0
+      ],
+      "yaw_degrees": 0,
+      "motion_reference": "ego_translation"
+    },
+    {
+      "operation": "translate",
+      "target_id": "inserted_car",
+      "offset_m": [
+        0,
+        -3,
+        0
+      ],
+      "start_seconds": 0,
+      "end_seconds": 1.8,
+      "trajectory_mode": "offset_from_original"
+    }
+  ],
+  "road_geometry": "planar_proxy"
+}

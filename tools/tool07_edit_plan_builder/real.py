@@ -11,4 +11,11 @@ TOOL = LLMTool(
 
 
 def run(input_data: dict) -> dict:
-    return TOOL.execute(input_data)
+    if input_data.get('backend') == 'ufo':
+        from mcp_servers.ufo.planning.service import run as plan_ufo
+        return plan_ufo(input_data)
+    arguments = dict(input_data)
+    backend = arguments.pop('backend', 'dggt')
+    if backend != 'dggt':
+        raise ValueError('backend must be ufo or dggt')
+    return TOOL.execute(arguments)

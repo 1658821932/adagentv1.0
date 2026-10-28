@@ -1,6 +1,7 @@
 {
   "agent": {
-    "max_steps": 20
+    "max_steps": 20,
+    "reconstruction_backend": "ufo"
   },
   "llm": {
     "base_url": "https://apicz.boyuerichdata.com/v1",
@@ -29,7 +30,8 @@
       "scene_validator": "real",
       "policy_runner": "real",
       "failure_case_filter": "real",
-      "policy_trainer": "real"
+      "policy_trainer": "real",
+      "target_selector": "real"
     }
   },
   "logging": {

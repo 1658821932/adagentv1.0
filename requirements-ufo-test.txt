@@ -1,0 +1,10 @@
+# CPU test dependencies; UFO inference uses the separately prepared ufoex runtime.
+-r requirements-test.txt
+numpy>=1.26
+Pillow>=10
+av>=12
+plyfile>=1
+torch>=2.2
+# Existing main-branch Sentry imports used by the Agent registry tests.
+requests>=2.31
+chromadb>=0.5

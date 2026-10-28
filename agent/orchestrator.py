@@ -80,6 +80,7 @@ Important:
   failure-reason summary alone. Leave unsupported evidence fields empty.
 - Pass file paths and IDs between tools via the execution state exactly as
   returned by earlier tools; do not retype or guess them.
+- This task fixes reconstruction_backend (ufo or dggt); keep it unchanged during recovery. UFO tools use backend=ufo; follow their backend-specific contracts in available_tools.
 - Avoid redundant calls. A failed validation can invalidate upstream edit
   steps and justify revised calls; explain the evidence and modification.
 - If the original task goal has been completed and the required outputs have

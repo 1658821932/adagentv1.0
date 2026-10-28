@@ -42,9 +42,10 @@ def make_agent(tmp_path,decisions):
     return agent,client
 
 
-def test_registry_descriptions_and_configuration_expose_only_13_tools():
+def test_registry_descriptions_and_configuration_expose_14_tools_without_recovery_decider():
     names={item["name"] for item in get_tool_descriptions()}
-    assert len(names)==13
+    assert len(names)==14
+    assert "target_selector" in names
     assert names==set(MOCK_TOOL_REGISTRY)==set(REAL_TOOL_REGISTRY)==set(AgentConfig.load().tool_modes)
     assert "recovery_decider" not in names
     assert not Path("tools/tool11_recovery_decider").exists()
@@ -81,6 +82,7 @@ def test_main_agent_receives_failed_validation_and_runs_repair_then_revalidation
     assert repair_context["current_state"]["history"][-1]["result"]["result"]["passed"] is False
     assert "recovery_decider" not in {tool["name"] for tool in repair_context["available_tools"]}
     assert len(client.messages)==5
+    assert repair_context["current_state"]["reconstruction_backend"] == "ufo"
 
 
 def test_repeated_transient_failure_stops_as_error_instead_of_success(tmp_path):

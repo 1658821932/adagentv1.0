@@ -29,7 +29,8 @@ class Agent:
             )
         )
         self.executor = ToolExecutor(
-            tool_modes=self.config.tool_modes
+            tool_modes=self.config.tool_modes,
+            reconstruction_backend=self.config.reconstruction_backend,
         )
         self.state = None
         self.logger = None
@@ -53,6 +54,7 @@ class Agent:
         ):
             raise ValueError("max_steps must be a positive integer")
 
+        self.executor.reset()
         self.state = AgentState(task)
         self.logger = RunLogger(
             task=task,
@@ -79,7 +81,8 @@ class Agent:
 
                 decision = self.orchestrator.decide(
                     task,
-                    self.state.to_orchestrator_dict(),
+                    {**self.state.to_orchestrator_dict(),
+                     "reconstruction_backend": self.config.reconstruction_backend},
                 )
 
                 print("LLM Decision:")
