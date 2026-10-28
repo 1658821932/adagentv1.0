@@ -106,4 +106,4 @@ Agent 日志保存在 `logs/`，组件产物写入各自的 output、outputs 或
 
 ## 许可
 
-DGGT、WorldEngine 及其他第三方依赖遵循各自的原始许可与声明。Agent 所需的 DGGT 编辑扩展不属于官方原版能力，官方 README 用于说明上游项目。
+DGGT、WorldEngine 及其他第三方依赖遵循各自的原始许可与声明。Agent 所需的 DGGT 编辑扩展不属于官方原版能力，官方 README 用于说明上游项目
