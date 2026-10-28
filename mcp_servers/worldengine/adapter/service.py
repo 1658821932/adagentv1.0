@@ -18,9 +18,9 @@ def _prepare_dggt_scene(
     instance_id: int, translation_scale: float,
 ) -> tuple[str, str, dict[str, Any]]:
     """Convert one edited DGGT instance into the WorldEngine custom-data layout."""
-    from tools.prepare_dggt_instance_for_worldengine import prepare
+    from mcp_servers.worldengine.adapter.scene_conversion import prepare
 
-    agent_root = Path(__file__).resolve().parents[2]
+    agent_root = Path(__file__).resolve().parents[3]
     source = Path(dggt_output_dir).expanduser().resolve()
     if not source.is_dir():
         raise FileNotFoundError(f"DGGT output directory not found: {source}")

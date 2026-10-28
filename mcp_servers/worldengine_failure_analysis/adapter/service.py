@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-WFA_ROOT = Path(__file__).resolve().parent
+WFA_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = WFA_ROOT / "configs" / "complete.json"
 DEFAULT_CONFIG_EXAMPLE = WFA_ROOT / "configs" / "complete.json.example"
 DEFAULT_RUN_NAME = "adagent_failure_analysis"

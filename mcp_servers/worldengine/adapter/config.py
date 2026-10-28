@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass
 class WorldEngineConfig:
-    project_root: Path = Path(os.environ.get("WORLDENGINE_ROOT", str(Path(__file__).resolve().parent / "core"))).expanduser().resolve()
+    project_root: Path = Path(os.environ.get("WORLDENGINE_ROOT", str(Path(__file__).resolve().parents[1] / "core"))).expanduser().resolve()
     script: Path | None = None
     timeout: int = int(os.environ.get("WORLDENGINE_TIMEOUT", "86400"))
     output_dir: Path = PROJECT_ROOT / "mcp_servers" / "worldengine" / "outputs"

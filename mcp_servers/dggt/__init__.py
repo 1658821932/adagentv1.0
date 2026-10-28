@@ -1,5 +1,5 @@
 """DGGT reconstruction adapter package."""
 
-from .service import reconstruct
+from .adapter.service import reconstruct
 
 __all__ = ["reconstruct"]

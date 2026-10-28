@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.tool09_scene_editor.coordinates import convert_edit_config
+from mcp_servers.dggt.adapter.coordinates import convert_edit_config
 
 
 class EditCoefficientTests(unittest.TestCase):

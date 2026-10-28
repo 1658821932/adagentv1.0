@@ -48,6 +48,8 @@ adagent 将以下能力统一接入工具调用流程。其中 SmartEdit 通过 
 
 需求生成、场景构思、编辑计划和视觉验证由工具层提供，下一步选择及失败恢复由主 Agent 决策。当前共 13 个工具。各阶段按任务需要调用，不要求每次完整运行全部流程。
 
+后端衔接代码集中在各组件的 adapter/，Agent 工具保留统一调用入口。组件与工具的对应关系、适配文件职责见 [MCP 组件说明](docs/MCP_SERVERS.md)。
+
 ## 典型工作流
 
 ```text
@@ -93,6 +95,14 @@ mock/real 共用输入输出校验。目录规范、模型角色和逐工具测�
 - OSS（可选）：`OSS_*` 供重排产物上传；不入库。
 
 Agent 日志保存在 `logs/`，组件产物写入各自的 output、outputs 或 runs 目录。模型接口可能接收场景文本、图片或视频，具体范围见组件说明。密钥、模型权重、运行环境、检索索引和大体积数据不随源码分发。
+
+## 开发文档
+
+- [项目架构与目录分工](docs/ARCHITECTURE.md)
+- [Agent 文件、configs 和 logs 说明](docs/AGENT_FILES.md)
+- [tools 目录与 13 个工具说明](docs/TOOLS.md)
+- [后端组件、工具映射与适配层说明](docs/MCP_SERVERS.md)
+- [纯文本 LLM 工具规范](docs/LLM_TOOLS.md)
 
 ## 许可
 

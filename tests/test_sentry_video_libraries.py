@@ -98,7 +98,7 @@ class VideoLibraryTests(unittest.TestCase):
             "stdout": json.dumps(response),
             "stderr": "",
         })()
-        with patch("tools.tool04_video_retriever.real.subprocess.run", return_value=completed) as subprocess_run:
+        with patch("mcp_servers.sentry_video_search.adapter.client.subprocess.run", return_value=completed) as subprocess_run:
             result = retrieve_video({"requirement": "highway", "library": "waymo"})
 
         self.assertEqual(result["result"], response["result"])

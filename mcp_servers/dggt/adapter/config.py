@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-COMPONENT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+COMPONENT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _path_from_env(name: str, default: Path) -> Path:

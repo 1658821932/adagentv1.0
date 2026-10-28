@@ -3,6 +3,8 @@
 > 面向协作者的项目导览。逐目录说明每个模块的职责、关键文件和相互关系。
 > 阅读顺序建议：先读本文档建立整体认识，再按需深入对应目录的 README。
 
+服务提供的工具、Agent 衔接文件及适配层整理建议见 [MCP 组件与工具接入说明](MCP_SERVERS.md)。
+
 ## 项目做什么
 
 adagent 是一个**面向自动驾驶数据生成与评测的 Agent 系统**。给定一个失败模式（例如"直行时接近同车道低速前车未及时减速"），它能自动完成一整条链路：
@@ -46,6 +48,8 @@ LLM 只做"选哪个工具、传什么参数"，不直接操作文件或模型�
 | logs/ | 运行日志（每次 run 一个目录） | 不随源码分发 |
 
 ## agent/ — Agent 编排核心
+
+agent 逐文件的职责与调用关系，以及 configs、logs 的用途，见 [Agent 核心与运行目录说明](AGENT_FILES.md)。
 
 这是系统的大脑。每个文件职责单一：
 
@@ -95,6 +99,8 @@ stop 由主循环记录为 error，而非成功完成；全局最大步数仍限
 
 ## tools/ — 工具层（13 个 Tool）
 
+每个 Tool 的用途、输入输出和调用功能见 [tools 目录与工具说明](TOOLS.md)。
+
 每个 tool 是一个独立目录。所有工具的编排说明位于 description.py。
 三个纯文本 LLM 工具（tool02/03/07）统一采用：
 
@@ -108,7 +114,7 @@ stop 由主循环记录为 error，而非成功完成；全局最大步数仍限
       __init__.py
 
 这三个工具不再提供 tool.py 旧入口，调用统一使用注册表或明确的 real/mock 模块。公共实现是 tools/llm_runtime.py。完整约定与验证命令见 [LLM 工具开发规范](LLM_TOOLS.md)。
-其他服务适配工具保留现有 real.py 和 tool.py/mock.py 结构，各自负责外部服务调用。
+其他后端工具的 real.py 负责调用对应组件 adapter 并包装标准返回格式；环境选择、进程启动和后端格式转换集中在 mcp_servers/<组件>/adapter/。mock 仍由各工具自己的 tool.py/mock.py 提供。
 
 tools/registry.py 是总调度：维护 MOCK_TOOL_REGISTRY 和 REAL_TOOL_REGISTRY 两张表，call_tool(name, args, mode) 按模式分发。**新增工具要在这里登记。**
 
@@ -141,33 +147,29 @@ tools/registry.py 是总调度：维护 MOCK_TOOL_REGISTRY 和 REAL_TOOL_REGISTR
 
 **给协作者的建议：改编排逻辑时先把相关工具设成 mock，跑通了再切 real。**
 
-## mcp_servers/ — 外部能力服务
+## mcp_servers/ — 后端组件与适配层
 
-这里是被工具层调用的"重资产"组件。命名带 "mcp_servers"，但**只有 SmartEdit 真正走 MCP 协议**，其余主要通过 JSON 子进程或项目脚本适配。
+Agent 工具通过各组件的 adapter/ 调用后端。SmartEdit 使用 MCP stdio，其余主要通过 Python 接口或 JSON 子进程交互。
 
-| 目录 | 对应工具 | 职责 | 来源 |
+| 组件 | Agent 工具 | adapter 中的主要文件 | 核心能力 |
 |---|---|---|---|
-| worldengine_failure_analysis/ | tool01 | 基于 WorldEngine 官方评测结果，用 VLM 看图查数做失败归因 | 自研（wfa） |
-| sentry_video_search/ | tool04 | 视频建库、语义召回、重排、片段导出 | 自研（含 vendor） |
-| dggt/ | tool06/09 | 动态高斯重建 + 实例编辑渲染 | fork 自 xiaomi-research/dggt，含定制 |
-| smart_edit/ | tool07/08 | 自然语言编辑要求 → 编辑配置（MCP 服务） | 自研 |
-| worldengine/ | tool13 | 闭环策略仿真、评测 | OpenDriveLab/WorldEngine |
+| worldengine_failure_analysis/ | tool01 | service.py | 按场景 token 调用 WFA 失败取证。 |
+| sentry_video_search/ | tool04 | client.py、runner.py | 调用本地检索；config.py、service.py、pipeline/ 等仍为组件自身实现。 |
+| dggt/ | tool05/06/09 | instances.py、client.py、editing.py、coordinates.py、runner.py、service.py、config.py | 实例发现、mode 2 重建和编辑渲染。 |
+| smart_edit/ | tool08 | service.py、client.py、config.py、prompts/ | 驱动内部 15 个 MCP 子工具生成配置；tool07 只生成编辑计划，不直接调用此服务。 |
+| worldengine/ | tool13/14/15 | client.py、runner.py、service.py、scene_conversion.py、evaluation.py、training.py、config.py | 仿真、动态对象碰撞筛选及 ILFT 监督微调。 |
 
-### 各组件要点
+典型调用链：tools/toolXX/real.py → mcp_servers/组件/adapter/ → 核心实现。
 
-**worldengine_failure_analysis（wfa）**：输入场景 token + 评测配置，VLM 看多相机图、查自车/周车数值，输出失败现象、候选原因、证据和不确定性。配置用 configs/complete.json（参考 .example），VLM 密钥放 .secrets/vlm.json（权限 0600，不入库）。
+DGGT、SmartEdit、WorldEngine 的核心仍在各自 core/；Sentry、WFA 保留原有核心布局。输入输出、权重和环境路径不会因为增加 adapter 目录而改到其内部。
 
-**sentry_video_search**：召回/重排用 DashScope qwen3-vl-embedding，需要真实 DASHSCOPE_API_KEY（中转站不支持该端点）。视频索引库体积大，不随源码分发。
+SmartEdit 内部配置生成指令已独立放在 smart_edit/adapter/prompts/。WFA 运行配置仍在组件 configs/，本地凭据仍在 .secrets/。视频检索索引不随源码分发。
 
-**dggt**：core/ 里是 fork 的上游代码（含 inference.py、dggt/ 包、pretrained/），外层 runner.py/service.py/config.py 是适配 Agent 的封装。Agent 用 mode 2 处理前 40 帧。
-
-**smart_edit**：core/ 是完整子项目（有自己的 pyproject.toml、clients/、tools/、tests/）。通过 MCP 协议交互。
-
-**worldengine**：core/ 是上游 WorldEngine（含 projects/、experiments/、data/）。外层 runner.py 等是适配层。
+每个文件的职责、服务子工具清单与当前验证进度见 [MCP 组件与工具接入说明](MCP_SERVERS.md)。
 
 ## configs/ — 运行配置
 
-只有一个文件 configs/agent.json，控制所有**非密钥**运行配置：
+目前只有 configs/agent.json，控制 **Agent 层的非敏感运行配置**；各后端自己的配置仍放在对应组件中：
 
     {
       "agent": { "max_steps": 20 },

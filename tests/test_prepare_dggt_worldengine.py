@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.prepare_dggt_instance_for_worldengine import _camera_for_worldengine
+from mcp_servers.worldengine.adapter.scene_conversion import _camera_for_worldengine
 
 
 class PrepareDggtWorldEngineTests(unittest.TestCase):

@@ -5,18 +5,23 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
+from .config import llm_settings
+
+def _load_prompt(name: str) -> str:
+    return (Path(__file__).resolve().parent / "prompts" / (name + ".md")).read_text(encoding="utf-8").strip()
 
 def text_result(result: Any) -> str:
     return "\n".join(item.text for item in result.content if getattr(item, "text", None) is not None)
 
 def _chat_kwargs(messages, openai_tools):
     """Build chat completion kwargs, omitting temperature when unset or unsupported."""
+    settings = llm_settings()
     kwargs = {
-        "model": os.environ.get("OPENAI_MODEL", "qwen3.5-plus"),
+        "model": settings["model"],
         "messages": messages,
         "tools": openai_tools,
         "tool_choice": "auto",
-        "max_tokens": int(os.environ.get("OPENAI_MAX_TOKENS", "2048")),
+        "max_tokens": settings["max_tokens"],
     }
     temp = os.environ.get("OPENAI_TEMPERATURE")
     if temp:
@@ -28,14 +33,18 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
     from mcp.client.stdio import StdioServerParameters, stdio_client
     from openai import AsyncOpenAI
     # Default to the vendored smart_edit core; SMART_EDIT_ROOT overrides.
-    _default = Path(__file__).resolve().parent / "smart_edit" / "core"
+    _default = Path(__file__).resolve().parents[1] / "core"
     root = Path(os.environ.get("SMART_EDIT_ROOT", str(_default))).resolve()
     load_dotenv(root / ".env.local", override=False)
     output_path = str(Path(payload["output_path"]).resolve())
     env = os.environ.copy()
     env.update({"ASSETS_DIR": str(root / "assets"), "SMPL_ASSETS_DIR": str(root / "assets" / "pedestrian"), "OUTPUT_DIR": str(Path(output_path).parent)})
     server = StdioServerParameters(command=sys.executable, args=["-m", "smart_edit"], cwd=str(root), env=env)
-    client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"), base_url=os.environ.get("OPENAI_BASE_URL"))
+    settings = llm_settings()
+    missing = [key for key in ("api_key", "base_url", "model") if not settings[key]]
+    if missing:
+        raise ValueError("Missing SmartEdit LLM settings: " + ", ".join(missing))
+    client = AsyncOpenAI(api_key=settings["api_key"], base_url=settings["base_url"], timeout=settings["timeout"])
     async with AsyncExitStack() as stack:
         read_stream, write_stream = await stack.enter_async_context(stdio_client(server))
         session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
@@ -46,10 +55,10 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
         asset_instruction = f" The user-selected asset is exactly {required_asset}; use this path for the replacement and do not substitute another asset." if required_asset else ""
         output_kind = payload.get("output_kind", "rigid_config")
         if output_kind == "ego_trajectory_offsets":
-            task_instruction = "Convert the natural-language request into camera-local ego render-trajectory offsets. Use set_ego_trajectory_offsets with [forward, left, up] values in DGGT native units; do not invent meters conversion. Supply either one constant vector or exactly frame_count vectors when frame_count is provided. This changes rendered camera poses, not the closed-loop policy's braking decision. Then call save_ego_trajectory_offsets with the exact output_path. Do not call RigidNodes tools."
+            task_instruction = _load_prompt("ego_trajectory_offsets")
             save_tool = "save_ego_trajectory_offsets"
         else:
-            task_instruction = "Convert the user's natural-language edit request into DGGT RigidNodes tool calls. If instance_info_path is provided, pass it to start_config. For an existing instance, trajectory waypoints are offsets from that instance's original position on each frame, not absolute scene positions. For a 40-frame front-car cut-in, aim to enter the ego lane around frame 12 and compensate the original vehicle motion through frame 39; a constant offset after frame 12 does not hold lane position. The instance_info contains 2D boxes, not metric 3D positions: never turn a requested final gap into a forward offset or claim lane membership is measured from boxes alone. Keep the vertical offset at zero unless the request explicitly requires height change; do not claim road contact is verified. Use list_assets before choosing an asset. For add or replace, use exactly the supplied asset_path and asset_scale; if either is absent, report the missing value and do not invent one. Preview the draft, then call save_config with the exact supplied output_path."
+            task_instruction = _load_prompt("rigid_config")
             save_tool = "save_config"
         messages = [{"role": "system", "content": "You operate the DGGT Smart Edit MCP server. " + task_instruction + " Do not claim success without the required save tool." + asset_instruction}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
         calls_seen = []

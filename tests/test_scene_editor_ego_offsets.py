@@ -20,7 +20,7 @@ class SceneEditorEgoOffsetsTest(unittest.TestCase):
                 stdout=json.dumps({"status": "success", "result": {"rendered_video": "rendered.mp4"}}),
                 stderr="",
             )
-            with patch("tools.tool09_scene_editor.real.subprocess.run", return_value=response) as command:
+            with patch("mcp_servers.dggt.adapter.editing.subprocess.run", return_value=response) as command:
                 result = run({"video_path": str(video), "ego_trajectory_offsets_path": str(offsets)})
             payload = json.loads(command.call_args.kwargs["input"])
             self.assertIsNone(payload["edit_config_path"])

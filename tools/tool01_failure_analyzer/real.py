@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp_servers.worldengine_failure_analysis.service import analyze_scene
+from mcp_servers.worldengine_failure_analysis.adapter.service import analyze_scene
 
 
 def _map_to_failure_analysis(result) -> dict[str, Any]:
