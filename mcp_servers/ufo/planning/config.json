@@ -1,0 +1,7 @@
+{
+  "model_role": "editor",
+  "prompt_version": "v1",
+  "timeout": 600,
+  "max_tokens": 4096,
+  "validation_retries": 1
+}

@@ -32,6 +32,8 @@ from tools.tool15_policy_trainer.tool import run as mock_policy_trainer
 from tools.tool15_policy_trainer.real import run as real_policy_trainer
 
 
+from tools.tool05_instance_discovery.selection import run as real_target_selector, mock_run as mock_target_selector
+
 ToolCallable = Callable[[dict], dict]
 
 MOCK_TOOL_REGISTRY: dict[str, ToolCallable] = {
@@ -40,6 +42,7 @@ MOCK_TOOL_REGISTRY: dict[str, ToolCallable] = {
     "scene_conceiver": mock_scene_conceiver,
     "video_retriever": mock_video_retriever,
     "instance_discovery": mock_instance_discovery,
+    "target_selector": mock_target_selector,
     "reconstruction": mock_reconstruction,
     "edit_plan_builder": mock_edit_plan_builder,
     "edit_config_generator": mock_edit_config_generator,
@@ -57,6 +60,7 @@ REAL_TOOL_REGISTRY: dict[str, ToolCallable] = {
     "video_retriever": real_video_retriever,
     "reconstruction": real_reconstruction,
     "instance_discovery": real_instance_discovery,
+    "target_selector": real_target_selector,
     "edit_plan_builder": real_edit_plan_builder,
     "edit_config_generator": real_edit_config_generator,
     "scene_editor": real_scene_editor,

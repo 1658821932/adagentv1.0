@@ -1,0 +1,22 @@
+{
+  "backend": "ufo",
+  "operation": "metric_edit",
+  "units": "meters",
+  "reference_frame": "road_at_edit_start",
+  "calibration_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagentv1.0/outputs/ufo_tool_tests/highway_lane_001/metric_scene_frontend_motion_v1.json",
+  "track_id": 10001,
+  "operations": [
+    {
+      "operation": "translate",
+      "target_id": "selected",
+      "offset_m": [
+        0,
+        -3,
+        0
+      ],
+      "start_seconds": 0.2,
+      "end_seconds": 1.8,
+      "trajectory_mode": "offset_from_original"
+    }
+  ]
+}

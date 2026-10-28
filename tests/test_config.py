@@ -13,6 +13,7 @@ DEFAULT_MODES = {
     "scene_conceiver": "real",
     "video_retriever": "real",
     "instance_discovery": "real",
+    "target_selector": "real",
     "reconstruction": "real",
     "edit_plan_builder": "real",
     "edit_config_generator": "real",

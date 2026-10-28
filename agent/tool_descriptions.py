@@ -20,7 +20,10 @@ from tools.tool13_policy_runner.description import DESCRIPTION as TOOL13
 from tools.tool14_failure_case_filter.description import DESCRIPTION as TOOL14
 from tools.tool15_policy_trainer.description import DESCRIPTION as TOOL15
 
+from tools.tool05_instance_discovery.selector_description import DESCRIPTION as TARGET_SELECTOR
+
 TOOLS = [
+    TARGET_SELECTOR,
     TOOL01,
     TOOL02,
     TOOL03,

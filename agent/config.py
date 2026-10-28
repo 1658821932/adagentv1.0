@@ -6,6 +6,7 @@ Secrets remain in the local .env file; non-sensitive LLM settings use JSON.
 """
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
@@ -26,6 +27,7 @@ class AgentConfig:
     decision_correction_attempts: int
     tool_modes: Dict[str, str]
     logs_root: Path
+    reconstruction_backend: str = "ufo"
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "AgentConfig":
@@ -100,9 +102,13 @@ class AgentConfig:
         if not logs_root.is_absolute():
             logs_root = PROJECT_ROOT / logs_root
 
+        backend = os.environ.get('RECONSTRUCTION_BACKEND') or data['agent'].get('reconstruction_backend', 'ufo')
+        if backend not in {'ufo', 'dggt'}:
+            raise ValueError('reconstruction_backend must be ufo or dggt')
         return cls(
             max_steps=max_steps,
             decision_correction_attempts=correction_attempts,
             tool_modes=dict(tool_modes),
             logs_root=logs_root,
+            reconstruction_backend=backend,
         )

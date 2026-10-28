@@ -89,3 +89,6 @@ mcp_servers/worldengine/core/logs/
 
 # local IDE/runtime
 .sii/
+
+# UFO machine-specific resource configuration
+/configs/system.local.json
