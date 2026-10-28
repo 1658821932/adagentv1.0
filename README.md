@@ -107,3 +107,7 @@ Agent 日志保存在 `logs/`，组件产物写入各自的 output、outputs 或
 ## 许可
 
 DGGT、WorldEngine 及其他第三方依赖遵循各自的原始许可与声明。Agent 所需的 DGGT 编辑扩展不属于官方原版能力，官方 README 用于说明上游项目
+
+## nuPlan 检索与 ADSceneGraph 接入
+
+新增有标注nuPlan库与工具6原生重建入口；原DGGT调用结构保留。配置、数据准备和使用命令见 [接入说明](docs/NUPLAN_INTEGRATION.md)，分支/密钥/产物管理见 [协作规范](docs/GITHUB_COLLABORATION.md)。数据和密钥仅存本地。

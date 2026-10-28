@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +21,7 @@ class SceneEditorEgoOffsetsTest(unittest.TestCase):
                 stdout=json.dumps({"status": "success", "result": {"rendered_video": "rendered.mp4"}}),
                 stderr="",
             )
-            with patch("mcp_servers.dggt.adapter.editing.subprocess.run", return_value=response) as command:
+            with patch("mcp_servers.dggt.adapter.editing.AGENT_PYTHON", Path(sys.executable)), patch("mcp_servers.dggt.adapter.editing.subprocess.run", return_value=response) as command:
                 result = run({"video_path": str(video), "ego_trajectory_offsets_path": str(offsets)})
             payload = json.loads(command.call_args.kwargs["input"])
             self.assertIsNone(payload["edit_config_path"])
@@ -32,5 +33,5 @@ class SceneEditorEgoOffsetsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             video = Path(directory) / "input.mp4"
             video.touch()
-            with self.assertRaisesRegex(ValueError, "edit_config_path or ego_trajectory_offsets_path"):
+            with patch("mcp_servers.dggt.adapter.editing.AGENT_PYTHON", Path(sys.executable)), self.assertRaisesRegex(ValueError, "edit_config_path or ego_trajectory_offsets_path"):
                 run({"video_path": str(video)})

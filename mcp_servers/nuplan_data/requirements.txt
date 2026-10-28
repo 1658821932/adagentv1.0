@@ -1,0 +1,4 @@
+numpy
+PyYAML
+opencv-python-headless
+imageio-ffmpeg

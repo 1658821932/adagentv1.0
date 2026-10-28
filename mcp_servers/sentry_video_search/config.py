@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 
 
 COMPONENT_ROOT = Path(__file__).resolve().parent
-LIBRARIES = ("default", "waymo")
+LIBRARIES = ("default", "waymo", "nuplan")
+
+
+def default_library() -> str:
+    config = COMPONENT_ROOT.parents[1] / "configs" / "video_retriever.json"
+    value = json.loads(config.read_text()).get("default_library", "default")
+    if value not in LIBRARIES:
+        raise ValueError(f"Unsupported default video library: {value}")
+    return value
 
 
 @dataclass
@@ -15,6 +24,8 @@ class SearchConfig:
     platform: str = "bilibili"
     local_first: bool = True
     match_threshold: float = 0.41
+    search_backend: str = "qwen_api"
+    requires_scene_manifest: bool = False
 
     per_query: int = 3
     max_results: int = 3
@@ -53,9 +64,23 @@ class SearchConfig:
                 preprocess_index_chunks=True,
                 import_source_videos=False,
             )
+        if library == "nuplan":
+            root = COMPONENT_ROOT / "data_nuplan"
+            return cls(
+                search_backend="kimi_caption",
+                requires_scene_manifest=True,
+                match_threshold=json.loads((COMPONENT_ROOT.parents[1] / "configs/video_retriever.json").read_text()).get("kimi", {}).get("minimum_relevance_score", 0.4),
+                chunk_duration=10,
+                library_dir=(root / "scenes").resolve(),
+                runtime_home=(root / "runtime").resolve(),
+                preprocess_index_chunks=True,
+                import_source_videos=False,
+            )
         raise ValueError(f"Unknown video library: {library}")
 
     def validate(self) -> None:
+        if self.search_backend not in {"qwen_api", "kimi_caption"}:
+            raise ValueError(f"Unsupported search backend: {self.search_backend}")
         if self.platform not in {"bilibili", "youtube", "both"}:
             raise ValueError(f"Unsupported platform: {self.platform}")
         if not 0 <= self.match_threshold <= 1:

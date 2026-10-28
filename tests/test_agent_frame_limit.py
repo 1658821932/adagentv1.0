@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,13 +40,13 @@ class AgentFrameLimitTests(unittest.TestCase):
             video = Path(directory) / "input.mp4"
             video.touch()
             completed = subprocess.CompletedProcess([], 0, json.dumps({"status": "success", "result": {}}), "")
-            with patch("mcp_servers.dggt.adapter.client.subprocess.run", return_value=completed) as process:
+            with patch("mcp_servers.dggt.adapter.client.AGENT_PYTHON", Path(sys.executable)), patch("mcp_servers.dggt.adapter.client.subprocess.run", return_value=completed) as process:
                 reconstruct({"video_path": str(video)})
             self.assertEqual(json.loads(process.call_args.kwargs["input"])["num_frames"], 40)
 
     def test_reconstruction_forwards_native_render_export(self):
         completed = subprocess.CompletedProcess([], 0, json.dumps({"status": "success", "result": {"render_state": "/real/state.pt"}}), "")
-        with patch("mcp_servers.dggt.adapter.client.subprocess.run", return_value=completed) as process:
+        with patch("mcp_servers.dggt.adapter.client.AGENT_PYTHON", Path(sys.executable)), patch("mcp_servers.dggt.adapter.client.subprocess.run", return_value=completed) as process:
             result = reconstruct({"video_path": __file__, "export_render_state": True})
         self.assertTrue(json.loads(process.call_args.kwargs["input"])["export_render_state"])
         self.assertEqual(result["result"]["render_state"], "/real/state.pt")
@@ -68,7 +69,7 @@ class AgentFrameLimitTests(unittest.TestCase):
         completed = subprocess.CompletedProcess([], 0, json.dumps({
             "status": "success", "result": {"reports": [[{"succeeded": True}]], "result_dir": "test"},
         }), "")
-        with patch("mcp_servers.worldengine.adapter.client.subprocess.run", return_value=completed) as process:
+        with patch("mcp_servers.worldengine.adapter.client.AGENT_PYTHON", Path(sys.executable)), patch("mcp_servers.worldengine.adapter.client.subprocess.run", return_value=completed) as process:
             run_policy({"config_path": "config", "checkpoint_path": "checkpoint",
                         "model_name": "test", "data_type": "worldengine",
                         "max_frame_per_scene": 60})
@@ -78,7 +79,7 @@ class AgentFrameLimitTests(unittest.TestCase):
         completed = subprocess.CompletedProcess([], 0, json.dumps({
             "status": "success", "result": {"reports": [[{"succeeded": True}]], "result_dir": "test"},
         }), "")
-        with patch("mcp_servers.worldengine.adapter.client.subprocess.run", return_value=completed) as process:
+        with patch("mcp_servers.worldengine.adapter.client.AGENT_PYTHON", Path(sys.executable)), patch("mcp_servers.worldengine.adapter.client.subprocess.run", return_value=completed) as process:
             run_policy({"config_path": "config", "checkpoint_path": "checkpoint", "model_name": "test", "data_type": "worldengine"})
         self.assertEqual(json.loads(process.call_args.kwargs["input"])["max_frame_per_scene"], 40)
 

@@ -1,0 +1,21 @@
+{
+  "default_library": "nuplan",
+  "kimi": {
+    "base_url": "https://apicz.boyuerichdata.com/v1",
+    "model": "kimi-k3",
+    "thinking_mode": "disabled",
+    "api_key_env": "KIMI_API_KEY",
+    "fallback_api_key_env": "LLM_API_KEY",
+    "timeout_seconds": 90,
+    "max_tokens": 2048,
+    "caption_frames": 4,
+    "rerank_frames": 4,
+    "frame_width": 512,
+    "candidate_count": 4,
+    "index_workers": 4,
+    "rerank_batch_size": 1,
+    "query_expansion": true,
+    "minimum_relevance_score": 0.4,
+    "use_environment_proxy": false
+  }
+}

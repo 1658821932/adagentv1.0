@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from ..config import SearchConfig
+from ..config import SearchConfig, default_library
 from ..service import search_local
 
 
@@ -23,7 +23,7 @@ def main() -> None:
         requirement = payload.get("requirement")
         if not isinstance(requirement, str) or not requirement.strip():
             raise ValueError("requirement must be a non-empty string")
-        library = payload.get("library", "default")
+        library = payload.get("library", default_library())
         if not isinstance(library, str):
             raise ValueError("library must be a string")
 

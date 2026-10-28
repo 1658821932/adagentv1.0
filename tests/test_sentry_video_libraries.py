@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -98,7 +99,7 @@ class VideoLibraryTests(unittest.TestCase):
             "stdout": json.dumps(response),
             "stderr": "",
         })()
-        with patch("mcp_servers.sentry_video_search.adapter.client.subprocess.run", return_value=completed) as subprocess_run:
+        with patch("mcp_servers.sentry_video_search.adapter.client.VIDEO_RETRIEVER_PYTHON", Path(sys.executable)), patch("mcp_servers.sentry_video_search.adapter.client.subprocess.run", return_value=completed) as subprocess_run:
             result = retrieve_video({"requirement": "highway", "library": "waymo"})
 
         self.assertEqual(result["result"], response["result"])

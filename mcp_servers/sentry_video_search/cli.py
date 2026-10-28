@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .config import LIBRARIES, SearchConfig
+from .config import LIBRARIES, SearchConfig, default_library
 from .service import index_local, search_internet, search_local
 
 
@@ -23,12 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
     index_parser = subparsers.add_parser("index", help="Add local video files to the local index.")
     index_parser.add_argument("path", help="Local video file or directory.")
     index_parser.add_argument("--chunk-duration", type=int, default=None)
-    index_parser.add_argument("--library", choices=LIBRARIES, default="default")
+    index_parser.add_argument("--library", choices=LIBRARIES, default=default_library())
 
     local_parser = subparsers.add_parser("search-local", help="Search only the local video index.")
     local_parser.add_argument("requirement", help="Natural-language video requirement.")
-    local_parser.add_argument("--match-threshold", type=float, default=0.41)
-    local_parser.add_argument("--library", choices=LIBRARIES, default="default")
+    local_parser.add_argument("--match-threshold", type=float, default=None)
+    local_parser.add_argument("--library", choices=LIBRARIES, default=default_library())
 
     internet_parser = subparsers.add_parser("search-internet", help="Search the internet explicitly.")
     internet_parser.add_argument("requirement", help="Natural-language video requirement.")
@@ -63,7 +63,8 @@ def main() -> None:
         elif args.command == "search-local":
             result = search_local(
                 args.requirement,
-                replace(SearchConfig.for_library(args.library), match_threshold=args.match_threshold),
+                (replace(SearchConfig.for_library(args.library), match_threshold=args.match_threshold)
+                 if args.match_threshold is not None else SearchConfig.for_library(args.library)),
             ).to_dict()
         else:
             result = search_internet(

@@ -9,20 +9,23 @@ about DGGT reconstruction here, not in the global system prompt.
 DESCRIPTION = {
     "name": "reconstruction",
     "description": (
-        "Reconstruct a single-view driving video into a DGGT Mode 2 Gaussian "
-        "scene. This is a deterministic 3D-reconstruction backend: it uses no "
-        "LLM internally, so every constraint must be passed as an argument."
+        "Reconstruct a driving scene with ADSceneGraph when nuPlan annotations "
+        "are available, or DGGT Mode 2 for video-only input. These backends "
+        "perform reconstruction without an internal LLM; pass constraints as arguments."
     ),
     "when_to_use": (
-        "Use after video_retriever when the task requires 3D scene "
-        "reconstruction. Agent DGGT reconstruction processes only the first "
-        "40 frames of the source video."
+        "Use after video_retriever for scene reconstruction. For library=nuplan, "
+        "pass its exact video_path and scene_manifest_path with backend=adscenegraph; "
+        "all annotated frames are used. DGGT video-only reconstruction uses the first 40 frames."
     ),
     "inputs": {
+        "backend": "Optional dggt or adscenegraph. For nuplan retrieval use adscenegraph and pass the matching scene_manifest_path.",
+        "scene_manifest_path": "For ADSceneGraph: frame-aligned manifest returned by video_retriever library=nuplan, including original images, camera calibration, poses, tracks and LiDAR.",
+        "iterations": "For ADSceneGraph: optional positive reconstruction optimization steps, default 3000. No Nexus inference is required.",
+        "cameras": "For ADSceneGraph: optional camera ID list, default [0]; manifest may supply all 8 cameras.",
         "video_path": "Absolute local path of the single-view driving video.",
         "num_frames": (
-            "Exactly 40; Agent reconstructs only the first 40 frames. Never "
-            "request 64 frames."
+            "DGGT only: exactly 40. ADSceneGraph uses all annotated clip frames; omit this parameter or match the manifest's frame_count."
         ),
         "export_render_state": (
             "Optional boolean, default false: export full native DGGT temporal "
@@ -31,6 +34,7 @@ DESCRIPTION = {
         ),
     },
     "outputs": {
+        "checkpoint_path": "For ADSceneGraph: native reconstructed scene checkpoint; this is not a DGGT PLY and cannot be passed to DGGT-specific editing tools.",
         "input_dir": (
             "Parent directory of preprocessed input frames. Pass this "
             "verbatim to instance_discovery.image_dir."
