@@ -89,3 +89,18 @@ mcp_servers/worldengine/core/logs/
 
 # local IDE/runtime
 .sii/
+
+# Local credentials and nuPlan runtime data
+.env.*
+!.env.example
+!.env.*.example
+/artifacts/
+/runtime_libs/
+/WORKSPACE_COPY_MANIFEST.json
+/mcp_servers/sentry_video_search/data_nuplan/
+*.sqlite
+*.sqlite3
+
+# Machine-specific paths
+/configs/nuplan_paths.local.json
+*.db

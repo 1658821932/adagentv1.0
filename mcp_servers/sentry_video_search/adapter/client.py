@@ -15,15 +15,17 @@ def retrieve_video(input_data: dict) -> dict:
     requirement = input_data.get("requirement")
     if not isinstance(requirement, str) or not requirement.strip():
         raise ValueError("video_retriever requires a non-empty 'requirement' string")
-    library = input_data.get("library", "default")
-    if library not in {"default", "waymo"}:
-        raise ValueError("video_retriever library must be 'default' or 'waymo'")
+    config_path = PROJECT_ROOT / "configs" / "video_retriever.json"
+    default_library = json.loads(config_path.read_text()).get("default_library", "default")
+    library = input_data.get("library", default_library)
+    if library not in {"default", "waymo", "nuplan"}:
+        raise ValueError("video_retriever library must be 'default', 'waymo', or 'nuplan'")
     if not VIDEO_RETRIEVER_PYTHON.is_file():
         raise RuntimeError(
             "video_retriever environment is missing. Create it with: "
             "python3 -m venv environments/video_retriever/.venv && "
             "environments/video_retriever/.venv/bin/pip install -r "
-            "environments/video_retriever/requirements.txt"
+            "mcp_servers/sentry_video_search/requirements.txt"
         )
 
     proc = subprocess.run(

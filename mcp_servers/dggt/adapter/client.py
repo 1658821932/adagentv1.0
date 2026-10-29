@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -13,6 +14,28 @@ AGENT_FRAME_COUNT = 40
 
 
 def reconstruct_video(input_data: dict) -> dict:
+    backend = input_data.get("backend", "adscenegraph" if input_data.get("scene_manifest_path") else "dggt")
+    if backend == "adscenegraph":
+        if not input_data.get("scene_manifest_path"):
+            raise ValueError("ADSceneGraph reconstruction requires scene_manifest_path from nuplan retrieval")
+        from ...nuplan_data.common import RECONSTRUCTION_PYTHON
+        python = RECONSTRUCTION_PYTHON
+        if not python.is_file():
+            raise RuntimeError(f"Existing ADSceneGraph environment not found: {python}")
+        proc = subprocess.run(
+            [str(python), "-m", "mcp_servers.nuplan_data.reconstruct"],
+            input=json.dumps(input_data, ensure_ascii=False), capture_output=True, text=True, cwd=PROJECT_ROOT,
+            env=os.environ | {"PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        try:
+            payload = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(proc.stderr[-3000:] or "ADSceneGraph returned invalid JSON") from exc
+        if proc.returncode or payload.get("status") != "success":
+            raise RuntimeError((payload.get("error") or {}).get("message") or proc.stderr[-3000:])
+        return payload["result"]
+    if backend != "dggt":
+        raise ValueError("reconstruction backend must be dggt or adscenegraph")
     if input_data.get("num_frames", AGENT_FRAME_COUNT) != AGENT_FRAME_COUNT:
         raise ValueError("Agent reconstruction requires num_frames=40")
     video_path = input_data.get("video_path")

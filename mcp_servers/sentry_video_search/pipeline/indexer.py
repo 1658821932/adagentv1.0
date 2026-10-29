@@ -10,6 +10,7 @@ from pathlib import Path
 from ..vendor.sentrysearch.chunker import _get_video_duration, chunk_video, expected_chunk_spans, preprocess_chunk
 from ..vendor.sentrysearch.embedder import get_embedder, reset_embedder
 from ..vendor.sentrysearch.store import SentryStore
+from ...nuplan_data.manifest import index_metadata
 
 
 @dataclass
@@ -44,6 +45,7 @@ def is_fully_indexed(video: Path, config: IndexConfig) -> bool:
 
 def index_video(video: Path, config: IndexConfig) -> tuple[bool, float]:
     start = time.perf_counter()
+    scene_metadata = index_metadata(video)
     config.runtime_home.mkdir(parents=True, exist_ok=True)
     if is_fully_indexed(video, config):
         return False, elapsed(start)
@@ -77,6 +79,7 @@ def index_video(video: Path, config: IndexConfig) -> tuple[bool, float]:
                     "source_file": abs_path,
                     "start_time": float(chunk["start_time"]),
                     "end_time": float(chunk["end_time"]),
+                    **scene_metadata,
                 },
             )
             did_index = True

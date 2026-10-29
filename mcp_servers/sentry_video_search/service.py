@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .config import SearchConfig
+from .config import SearchConfig, default_library
 from .pipeline.common import safe_name
 from .pipeline.downloader import DownloadConfig, download_candidates
 from .pipeline.indexer import IndexConfig, index_segments
@@ -47,9 +47,11 @@ class VideoSearchResult:
     mode: str
     match_score: float
     timings: dict[str, float]
+    scene_manifest_path: str | None = None
+    scene_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {key: value for key, value in asdict(self).items() if value is not None}
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -128,6 +130,7 @@ def _search_index(
         for metadata, distance in zip(metadatas, distances):
             hits.append(
                 {
+                    **metadata,
                     "source_file": str(metadata["source_file"]),
                     "start_time": float(metadata["start_time"]),
                     "end_time": float(metadata["end_time"]),
@@ -176,7 +179,12 @@ def _export_reranked_hits(
     output_config = replace(config, output_dir=config.output_dir / run_dir.name)
     candidates = {item["candidate_index"]: item for item in details["candidates"]}
     ranked = sorted(details["ranked_results"], key=lambda item: item["relevance_score"], reverse=True)
-    for rank, result in enumerate(ranked, start=1):
+    eligible = ranked
+    if config.search_backend == 'kimi_caption':
+        eligible = [row for row in ranked if row.get('matched') is True and float(row['relevance_score']) >= config.match_threshold]
+        if not eligible:
+            raise RuntimeError('No visually verified candidate satisfies the configured threshold')
+    for rank, result in enumerate(eligible, start=1):
         score = float(result["relevance_score"])
         label = f"rank{rank:02d}_score{score:.6f}"
         result["video_path"] = str(_trim_hit(
@@ -189,7 +197,7 @@ def _export_reranked_hits(
                 label=f"{label}_lossless",
             ))
     details["ranked_results"] = ranked
-    return Path(ranked[0]["lossless_video_path"])
+    return Path(eligible[0]["lossless_video_path"])
 
 
 def _finish(
@@ -211,6 +219,23 @@ def _finish(
         match_score=round(float(hit["similarity_score"]), 6),
         timings=timings,
     )
+    if hit.get("scene_manifest_path"):
+        import hashlib
+        from ..nuplan_data.manifest import export_clip_manifest
+        from .vendor.sentrysearch.chunker import _get_video_duration
+        if hit.get("scene_manifest_sha256") and hashlib.sha256(Path(hit["scene_manifest_path"]).read_bytes()).hexdigest() != hit["scene_manifest_sha256"]:
+            raise RuntimeError("nuPlan scene annotations changed since indexing; rebuild the scene index before retrieval")
+        if hit.get("source_video_sha256") and hashlib.sha256(Path(hit["source_file"]).read_bytes()).hexdigest() != hit["source_video_sha256"]:
+            raise RuntimeError("nuPlan source video changed since indexing; rebuild the scene index before retrieval")
+        duration = _get_video_duration(str(hit["source_file"]))
+        clip_length = min(10.0, duration)
+        start = min(max(0.0, float(hit["start_time"])), duration - clip_length)
+        manifest_path = run_dir / "scene_manifest.json"
+        scene = export_clip_manifest(
+            hit["scene_manifest_path"], video_path, start, start + clip_length, manifest_path,
+        )
+        result.scene_manifest_path = str(manifest_path.resolve())
+        result.scene_id = scene["scene_id"]
     _write_json(run_dir / RESULT_LOG, {"status": "success", **result.to_dict()})
     return result
 
@@ -232,9 +257,42 @@ def index_local(
     config: SearchConfig | None = None,
 ) -> dict[str, Any]:
     """Import local videos into this component and add them to the local index."""
-    _ensure_dashscope_key()
-    config = config or SearchConfig()
+    config = config or SearchConfig.for_library(default_library())
     config.validate()
+    if config.search_backend == "kimi_caption":
+        from .kimi_backend import index_videos
+        source = Path(path).expanduser().resolve()
+        if not source.exists():
+            raise FileNotFoundError(f"Path not found: {source}")
+        videos = iter_videos(source)
+        if not videos:
+            raise RuntimeError(f"No videos found: {source}")
+        ignored = []
+        if config.requires_scene_manifest:
+            from ..nuplan_data.manifest import index_metadata
+            usable = []
+            for video in videos:
+                manifest = video.parent / "scene_manifest.json"
+                if not manifest.is_file():
+                    ignored.append({"video": str(video), "reason": "prepared scene manifest missing"})
+                    continue
+                declared = json.loads(manifest.read_text()).get("video_path")
+                if not declared or Path(declared).resolve() != video.resolve():
+                    if source.is_file():
+                        raise ValueError("Requested video does not match the prepared scene manifest")
+                    ignored.append({"video": str(video), "reason": "not the declared prepared video"})
+                    continue
+                metadata = index_metadata(video)
+                if metadata.get("dataset") == "nuplan":
+                    usable.append(video)
+            videos = usable
+            if not videos:
+                raise ValueError("No complete annotated nuPlan videos are available for indexing")
+        result = index_videos(videos, config)
+        result["source"] = str(source)
+        result["ignored_incomplete_videos"] = ignored
+        return result
+    _ensure_dashscope_key()
 
     source = Path(path).expanduser().resolve()
     if not source.exists():
@@ -282,10 +340,11 @@ def search_local(
     requirement = requirement.strip()
     if not requirement:
         raise ValueError("requirement must not be empty")
-    _ensure_dashscope_key()
-
-    config = config or SearchConfig()
+    config = config or SearchConfig.for_library(default_library())
     config.validate()
+    if config.search_backend == "kimi_caption":
+        return _search_kimi(requirement, config)
+    _ensure_dashscope_key()
     run_dir = _new_run_dir(config)
     total_start = time.perf_counter()
     timings: dict[str, float] = {}
@@ -344,6 +403,37 @@ def search_local(
         raise
 
 
+def _search_kimi(requirement: str, config: SearchConfig) -> VideoSearchResult:
+    from .kimi_backend import recall, rerank
+    run_dir = _new_run_dir(config)
+    total_start = time.perf_counter()
+    timings = {}
+    try:
+        start = time.perf_counter()
+        hits, recall_details = recall(requirement, config)
+        timings["local_search_seconds"] = round(time.perf_counter() - start, 3)
+        _write_json(run_dir / "local_search.json", recall_details)
+        if not hits:
+            raise RuntimeError("Kimi scene-description index is empty or contains no recalled scene")
+        start = time.perf_counter()
+        best, details = rerank(requirement, hits, config)
+        timings["rerank_seconds"] = round(time.perf_counter() - start, 3)
+        _write_json(run_dir / RERANK_LOG, details)
+        if best["similarity_score"] < config.match_threshold:
+            raise RuntimeError("Best Kimi candidate is below the configured relevance threshold")
+        video_path = _export_reranked_hits(details, requirement, config, run_dir)
+        _write_json(run_dir / RERANK_LOG, details)
+        return _finish(requirement=requirement, run_dir=run_dir,
+            mode="local_hit_kimi_reranked", hit=best, video_path=video_path,
+            timings=timings, total_start=total_start)
+    except Exception as exc:
+        if getattr(exc, "details", None):
+            _write_json(run_dir / RERANK_LOG, exc.details)
+        _write_json(run_dir / RESULT_LOG, {"status": "error", "requirement": requirement,
+            "backend": "kimi_caption", "error": {"type": type(exc).__name__, "message": str(exc)}})
+        raise
+
+
 def search_internet(
     requirement: str,
     config: SearchConfig | None = None,
@@ -366,6 +456,11 @@ def retrieve_video(
     requirement = requirement.strip()
     if not requirement:
         raise ValueError("requirement must not be empty")
+    config = config or SearchConfig.for_library(default_library())
+    if config.search_backend == "kimi_caption":
+        if not config.local_first:
+            raise ValueError("The Kimi nuPlan library supports local scene retrieval only")
+        return search_local(requirement, config)
     _ensure_dashscope_key()
 
     config = config or SearchConfig()

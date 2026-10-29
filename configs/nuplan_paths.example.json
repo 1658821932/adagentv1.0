@@ -1,0 +1,5 @@
+{
+  "raw_root": "/path/to/nuPlan",
+  "adscenegraph_parent": "/path/to/Nexus",
+  "reconstruction_python": "/path/to/adscenegraph/venv/bin/python"
+}
