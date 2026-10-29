@@ -30,3 +30,5 @@
 运行方式见 [NUPLAN_INTEGRATION.md](NUPLAN_INTEGRATION.md)，协作与凭据规则见 [GITHUB_COLLABORATION.md](GITHUB_COLLABORATION.md)。完整机器可读报告、视频、对照图和运行日志保存在本地 `artifacts/nuplan_retrieval/`，不随源码提交。
 
 本次验收到前视ADSceneGraph重建。纯视觉输入额外标注工具、原生checkpoint到DGGT专用编辑/仿真接口的转换仍属后续工作。数据、SQLite、密钥、虚拟环境、动态库、权重和运行产物均排除在提交范围外；本地扫描只覆盖当前已配置凭据及常见格式，不能代替未知秘密和完整历史的额外审查。
+
+2026-10-29检索升级验收另见 [NUPLAN_RETRIEVAL_UPGRADE.md](NUPLAN_RETRIEVAL_UPGRADE.md)：161项测试、真实查询/无匹配/零API缓存及人工抽帧复核。上文129项为迁移当时的历史结果。

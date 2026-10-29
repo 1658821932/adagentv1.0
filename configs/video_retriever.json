@@ -16,6 +16,12 @@
     "rerank_batch_size": 1,
     "query_expansion": true,
     "minimum_relevance_score": 0.4,
-    "use_environment_proxy": false
+    "use_environment_proxy": false,
+    "recall_pool_size": 24,
+    "recall_diversity": 0.12,
+    "rerank_workers": 3,
+    "query_cache_ttl_seconds": 86400,
+    "rerank_cache_ttl_seconds": 604800,
+    "require_condition_checks": true
   }
 }

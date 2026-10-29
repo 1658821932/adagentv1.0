@@ -179,7 +179,12 @@ def _export_reranked_hits(
     output_config = replace(config, output_dir=config.output_dir / run_dir.name)
     candidates = {item["candidate_index"]: item for item in details["candidates"]}
     ranked = sorted(details["ranked_results"], key=lambda item: item["relevance_score"], reverse=True)
-    for rank, result in enumerate(ranked, start=1):
+    eligible = ranked
+    if config.search_backend == 'kimi_caption':
+        eligible = [row for row in ranked if row.get('matched') is True and float(row['relevance_score']) >= config.match_threshold]
+        if not eligible:
+            raise RuntimeError('No visually verified candidate satisfies the configured threshold')
+    for rank, result in enumerate(eligible, start=1):
         score = float(result["relevance_score"])
         label = f"rank{rank:02d}_score{score:.6f}"
         result["video_path"] = str(_trim_hit(
@@ -192,7 +197,7 @@ def _export_reranked_hits(
                 label=f"{label}_lossless",
             ))
     details["ranked_results"] = ranked
-    return Path(ranked[0]["lossless_video_path"])
+    return Path(eligible[0]["lossless_video_path"])
 
 
 def _finish(

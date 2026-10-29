@@ -9,7 +9,7 @@ flowchart LR
   A[官方 navtrain 配置白名单] --> B[本地 nuPlan DB / RGB / LiDAR]
   B --> C[前视视频 + 场景标注清单]
   C --> D[Kimi 场景描述索引]
-  E[自然语言需求] --> F[双语 BM25 召回 / Kimi 看图重排]
+  E[自然语言需求] --> F[分字段双语召回 / 逐条件视觉核验]
   D --> F
   F --> G[工具4：视频 + 同片段标注]
   G --> H[工具6：ADSceneGraph 转换 / 训练 / 渲染]
@@ -32,7 +32,7 @@ flowchart LR
 KIMI_API_KEY="填写自己的密钥"
 ```
 
-网关、模型、默认库及抽帧设置位于 `configs/video_retriever.json`。当前使用指定网关 `https://apicz.boyuerichdata.com/v1` 和 `kimi-k3`，描述抽4帧、宽512，重排最多4候选且每候选单独请求4帧。`thinking`关闭，索引4并发，连接超时15秒、响应超时90秒。
+网关、模型、默认库及抽帧设置位于 `configs/video_retriever.json`。当前使用指定网关 `https://apicz.boyuerichdata.com/v1` 和 `kimi-k3`，描述抽4帧、宽512，重排最多4候选且每候选单独请求4帧，同时最多3个视觉请求。`thinking`关闭，索引4并发，连接超时15秒、响应超时90秒。
 
 当前Kimi客户端配置为直连指定网关，按线程复用连接；如果部署环境必须走环境代理，可将 `use_environment_proxy` 改为 `true`。该设置仅用于Kimi调用。只使用chat/completions，不要求embedding接口，也不上传OSS。发往网关的抽样帧和请求会产生API费用；本次公开nuPlan数据处理已获用户授权。
 
@@ -65,7 +65,7 @@ PYTHONDONTWRITEBYTECODE=1 environments/video_retriever/.venv/bin/python -m mcp_s
 PYTHONDONTWRITEBYTECODE=1 environments/video_retriever/.venv/bin/python -m mcp_servers.sentry_video_search.cli search-local "宽阔的城市路口，有交通信号灯和车辆通行" --library nuplan
 ```
 
-每段先生成中英描述并存入本地SQLite，本地BM25召回后由Kimi视觉重排。视频、标注、模型和采样身份一致时复用缓存；网络失败最多自动重试一次，成功项逐条保存，重跑补缺失。认证/权限失败不轮换密钥或模型。没有匹配场景时明确失败，不强行返回无关视频。
+每段先生成中英描述并存入本地SQLite，本地分字段BM25、双语概念与原始查询融合召回后，由Kimi逐条核验原始条件。关键词缓存1天、视觉判断缓存7天；缓存仍受视频/标注/模型/采样身份约束，未知条件不会按满足处理。视频、标注、模型和采样身份一致时复用缓存；网络失败最多自动重试一次，成功项逐条保存，重跑补缺失。认证/权限失败不轮换密钥或模型。没有匹配场景时明确失败，不强行返回无关视频。
 
 默认库是nuplan，工具4可只接收自然语言：
 
@@ -110,3 +110,5 @@ PYTHONDONTWRITEBYTECODE=1 "$SCENE_PY" scripts/nuplan_retrieval/audit_database.py
 数据、索引、密钥、环境和训练产物不提交。协作规则见 [GITHUB_COLLABORATION.md](GITHUB_COLLABORATION.md)。
 
 首次启动时，torchmetrics可能下载AlexNet评估权重。已有缓存时可在本机复制至 `artifacts/nuplan_retrieval/cache/torch/hub/checkpoints/alexnet-owt-7be5be79.pth`；本次复用文件的SHA256为 `7be5be791159472b1fbf3c69796f7cb30dca7ad8466c2df70058c37116cdee02`。它用于图像评估，不是场景高斯模型；权重与编译缓存都不提交。
+
+检索机制升级、复现实验和指标边界见 [NUPLAN_RETRIEVAL_UPGRADE.md](NUPLAN_RETRIEVAL_UPGRADE.md)。
