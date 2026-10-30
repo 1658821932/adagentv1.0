@@ -1,6 +1,6 @@
 """Agent tool contract for policy_runner; backend execution lives in its adapter."""
 
-from mcp_servers.worldengine.adapter.client import run_policy
+from mcp_servers.worldengine.adapter.service import run_policy
 
 
 def run(input_data: dict) -> dict:

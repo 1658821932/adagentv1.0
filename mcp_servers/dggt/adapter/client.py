@@ -7,9 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-AGENT_PYTHON = PROJECT_ROOT / "environments" / "agent" / ".venv" / "bin" / "python"
-AGENT_FRAME_COUNT = 40
+from .config import PROJECT_ROOT, AGENT_PYTHON, AGENT_FRAME_COUNT
 
 
 def reconstruct_video(input_data: dict) -> dict:

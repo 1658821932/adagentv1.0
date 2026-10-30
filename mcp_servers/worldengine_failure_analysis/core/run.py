@@ -58,6 +58,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['scene','batch','report']);p.add_argument('--config',type=Path,default=PROJECT/'configs/complete.json')
     p.add_argument('--token');p.add_argument('--tokens',nargs='+');p.add_argument('--run-name',default='vlm_behavior_v3')
+    p.add_argument('--run-dir',type=Path,help='Explicit existing task output for report/resume; default: a fresh runtime task')
     p.add_argument('--resume',action='store_true');p.add_argument('--attempts',type=int,default=1)
     args=p.parse_args();cfg=json.loads(args.config.read_text());root=Path(cfg['result_root'])
     if not 1<=args.attempts<=3:p.error('--attempts must be 1..3')
@@ -67,7 +68,7 @@ def main():
         official_rows={r['token']:r for r in csv.DictReader(stream) if r['token']!='overall_average'}
     if len({r['token'] for r in rows})!=len(rows) or set(official_rows)!={r['token'] for r in rows}:raise ValueError('Invalid official scene inventory')
     rows=[{**r,**official_rows[r['token']]} for r in rows]
-    directory=PROJECT/'runs'/args.run_name;directory.mkdir(parents=True,exist_ok=True)
+    directory=args.run_dir.resolve() if args.run_dir else PROJECT.parent/'runtime'/('run_'+time.strftime('%Y%m%d_%H%M%S',time.gmtime())+'_'+__import__('uuid').uuid4().hex[:12])/'output';directory.mkdir(parents=True,exist_ok=True)
     if args.command=='report':print(json.dumps(summarize(directory,rows),ensure_ascii=False,indent=2));return
     requested=[args.token] if args.command=='scene' else args.tokens
     if args.command=='scene' and not args.token:p.error('--token required')
@@ -78,7 +79,7 @@ def main():
         if matches[0] not in selected:selected.append(matches[0])
     if not requested:selected=[r for r in rows if float(r['no_at_fault_collisions'])<1 or float(r['drivable_area_compliance'])<1]
     if any(r['token'] not in cfg['vlm_allowed_tokens'] for r in selected):p.error('Selected token is outside configured external-image authorization')
-    secret_file=PROJECT/'.secrets/vlm.json'
+    secret_file=Path(os.environ.get('WFA_SECRET_FILE',str(PROJECT.parent/'.secrets/vlm.json')))
     if secret_file.stat().st_mode & 0o077:raise ValueError('Secret file must have mode 0600')
     secret=json.loads(secret_file.read_text())
     for row in selected:

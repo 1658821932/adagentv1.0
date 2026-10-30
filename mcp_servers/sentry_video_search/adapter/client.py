@@ -7,9 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-VIDEO_RETRIEVER_PYTHON = PROJECT_ROOT / "environments" / "video_retriever" / ".venv" / "bin" / "python"
-
+from .config import PROJECT_ROOT, VIDEO_RETRIEVER_PYTHON
 
 def retrieve_video(input_data: dict) -> dict:
     requirement = input_data.get("requirement")

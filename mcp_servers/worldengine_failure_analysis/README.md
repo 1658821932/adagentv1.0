@@ -1,36 +1,28 @@
-# 失败分析
+# 失败分析 WFA
 
-基于 WorldEngine 官方闭环评测数据，通过外部 VLM 输出现象、候选行为原因、数值核验及最终原因。不推断模型内部根因，也不重新计算或改写官方评分。
+统一分层：`core/` 保存项目本身，`adapter/` 保存 AdAgent 封装，`runtime/` 保存单次运行文件。
 
-## 流程与结果
+| 目录 | 内容 |
+|---|---|
+| core/ | 独立算法、原生入口和说明；不依赖 AdAgent |
+| adapter/ | service.py 对外入口、config.py 接入配置、schemas.py 返回约定 |
+| adapter/tests/ | 服务接口、路径隔离和导出兼容性测试 |
+| runtime/<run_id>/ | manifest.json、input/、logs/、output/，不进入 Git |
 
-官方指标确定失败 → VLM查看12张多相机总览并按需补看相机/BEV → 提出现象和候选 → 查询自车、周车、边界及规划数值 → 比较候选并输出原因和不确定性。
+## Agent 接口
 
-图像和数值由程序提供，原因由 VLM 判断。官方首次违规时间不能代替每类事件的独立时间；EP=0不能证明静止；周车速度由同一对象的世界坐标历史计算；几何接触候选不能冒充官方责任判定。缺失证据保留不确定，不填0或强行定因。
+从 `mcp_servers.worldengine_failure_analysis.adapter.service` 导入：analyze_scene(token, config_path=...)。
 
-## 配置与运行
+环境：`WFA_PYTHON 或已配置的仿真环境`。WFA_ROOT 默认 core/；配置模板在 core/configs/；WFA_SECRET_FILE 可指定凭证文件。
 
-独立分析环境需要 `requirements.txt` 中的依赖；通过 Agent 调用时可用 `WFA_PYTHON` 指定解释器，否则依次查找项目的 simengine、dggt、agent 环境。
+输入输出沿用原工具格式；结果中的 run_dir 指向任务根目录，具体产物通过原有路径字段返回。显式导出路径继续支持，旧运行目录已清理。
 
-复制 `configs/complete.json` 为自己的配置，设置 `worldengine_root`、`result_root`、可选数值缓存和 `vlm_allowed_tokens`。示例中的本地数据路径须改为本机路径。配置 `.secrets/vlm.json`：
+## 独立使用与验证
 
-```json
-{"endpoint":"https://your-provider/v1/chat/completions","model":"your-vlm-model","api_key":"your-key"}
-```
-
-密钥文件权限设为0600，不入库。分析会向该端点发送场景图片和相关证据。以下命令在本组件目录执行，使用已装依赖的 Python：
+项目自身的安装和使用说明见 [core/README.md](core/README.md)。在 AdAgent 根目录，使用已安装测试依赖的 Python 执行：
 
 ```bash
-python run.py scene --token <scene-token> --config /path/to/config.json --run-name trial
-python run.py report --run-name trial
+python -m pytest mcp_servers/worldengine_failure_analysis/adapter/tests -q
 ```
 
-续跑加 `--resume`；新实验使用新 run-name。Agent 工具 `failure_analyzer` 接受 `token`（也兼容 `scene_token`）、可选 `config_path`、`run_name` 和 `resume`，返回供需求生成使用的 `failure_analysis` 以及完整取证结果路径。
-
-## 产物与汇总
-
-`runs/<run-name>/scenes/<token>/` 保存 `result.json`、`report.md`、候选、图片、数值证据及模型调用记录；运行根目录保存汇总。失败或未结束的调用不计为完整分析。
-
-`scripts/summarize_edit_scenarios.py` 对已完成案例分组，输出“自车动作→环境及他车→错误行为→应有响应”，保留成员及依据。应有响应是后续场景测试目标，不能据此直接修改自车轨迹。已有分组仅改描述时使用 `--groups-from` 保持成员不变。
-
-原始指标、视频、密钥及运行结果不随源码分发。历史分析报告留在原研究项目，不作为当前使用说明。
+权重、环境、密钥、长期数据与运行文件不随源码提交。服务目录之外的依赖通过配置或软链接接入。

@@ -1,6 +1,6 @@
 """Agent tool contract for video_retriever; backend execution lives in its adapter."""
 
-from mcp_servers.sentry_video_search.adapter.client import retrieve_video
+from mcp_servers.sentry_video_search.adapter.service import retrieve_video
 
 
 def run(input_data: dict) -> dict:

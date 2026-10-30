@@ -7,13 +7,19 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import sys
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "core"
+
 from dotenv import load_dotenv
 
 from .config import LIBRARIES, SearchConfig
 from .service import index_local, search_internet, search_local
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def build_parser() -> argparse.ArgumentParser:

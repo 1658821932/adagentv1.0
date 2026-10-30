@@ -24,10 +24,10 @@ def counts(directory,tokens):
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--run-name',required=True)
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--run-name',required=True);parser.add_argument('--run-dir',type=Path,required=True);parser.add_argument('--config',type=Path,default=PROJECT/'configs/complete.json')
     args=parser.parse_args()
     if not args.run_name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in args.run_name):parser.error('Invalid run-name')
-    directory=PROJECT/'runs'/args.run_name;directory.mkdir(parents=True,exist_ok=True)
+    directory=args.run_dir.resolve();directory.mkdir(parents=True,exist_ok=True)
     lock=(directory/'supervisor.lock').open('w');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     tokens=json.loads((directory/'selected_tokens.json').read_text())
     started=time.time();last_exit=None
@@ -35,7 +35,7 @@ def main():
         if counts(directory,tokens)['completed']==len(tokens):break
         with (directory/'batch.log').open('a') as log:
             process=subprocess.Popen([sys.executable,'-u',str(PROJECT/'run.py'),'batch','--tokens',*tokens,
-                '--run-name',args.run_name,'--resume','--attempts','3'],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+                '--run-name',args.run_name,'--run-dir',str(directory),'--config',str(args.config),'--resume','--attempts','3'],stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
             launched=time.time()
             while process.poll() is None:
                 save(directory/'watchdog.json',{'state':'running','pid':os.getpid(),'runner_pid':process.pid,

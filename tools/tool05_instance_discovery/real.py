@@ -1,6 +1,6 @@
 """Agent tool contract for instance_discovery; backend execution lives in its adapter."""
 
-from mcp_servers.dggt.adapter.instances import discover_instances
+from mcp_servers.dggt.adapter.service import discover_instances
 
 
 def run(input_data: dict) -> dict:

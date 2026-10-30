@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any
 
 
-from .config import WorldEngineConfig
+from .config import WorldEngineConfig, ALGENGINE_PYTHON
+from .schemas import TrainingResult
+from mcp_servers.runtime import runtime_task, current_run
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 DEFAULT_WORLDENGINE_ROOT = WorldEngineConfig().project_root
-DEFAULT_PYTHON = PROJECT_ROOT / "environments" / "algengine" / ".conda" / "bin" / "python"
+DEFAULT_PYTHON = ALGENGINE_PYTHON
 LOSS_RE = re.compile(r"loss\.imi:\s*([0-9]+(?:\.[0-9]+)?)")
 
 
@@ -30,7 +32,8 @@ def _path(value: Any, name: str, *, required: bool = True) -> Path | None:
     return result
 
 
-def train_policy(input_data: dict[str, Any]) -> dict[str, Any]:
+@runtime_task("worldengine", "training")
+def train_policy(input_data: dict[str, Any]) -> TrainingResult:
     mode = input_data.get("training_mode", "ilft")
     if mode != "ilft":
         raise ValueError("policy_trainer currently supports training_mode='ilft' only")
@@ -68,12 +71,11 @@ def train_policy(input_data: dict[str, Any]) -> dict[str, Any]:
     epochs = int(input_data.get("epochs", input_data.get("total_epochs", 1)))
     if epochs < 1:
         raise ValueError("policy_trainer epochs must be positive")
-    work_dir = Path(
-        input_data.get("work_dir")
-        or worldengine_root / "experiments/posttrain/adagent_policy_trainer"
-    ).expanduser().resolve()
-    work_dir.mkdir(parents=True, exist_ok=True)
-    log_path = work_dir / "policy_trainer.log"
+    task = current_run("worldengine")
+    work_dir = task.output / "training"
+    work_dir.mkdir(parents=True, exist_ok=False)
+    log_path = task.logs / "training.log"
+    export_parent = input_data.get("work_dir")
 
     command = [
         str(python),
@@ -128,6 +130,7 @@ def train_policy(input_data: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"training finished without a checkpoint: {work_dir}")
     losses = [float(value) for value in LOSS_RE.findall(completed.stdout + "\n" + completed.stderr)]
     result = {
+        "run_dir": str(task.root),
         "training_mode": mode,
         "checkpoint": str(checkpoints[-1]),
         "work_dir": str(work_dir),
@@ -136,4 +139,9 @@ def train_policy(input_data: dict[str, Any]) -> dict[str, Any]:
     }
     if losses:
         result["final_loss"] = losses[-1]
+    if export_parent:
+        import shutil
+        export_dir = Path(export_parent).expanduser().resolve() / task.root.name
+        shutil.copytree(work_dir, export_dir)
+        result["export_dir"] = str(export_dir)
     return result

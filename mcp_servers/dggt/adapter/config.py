@@ -9,6 +9,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 COMPONENT_ROOT = Path(__file__).resolve().parents[1]
+AGENT_PYTHON = PROJECT_ROOT / "environments" / "agent" / ".venv" / "bin" / "python"
+AGENT_FRAME_COUNT = 40
 
 
 def _path_from_env(name: str, default: Path) -> Path:
@@ -42,6 +44,7 @@ class ReconstructionConfig:
         )
     )
 
+    # Legacy fields retained for API compatibility; adapters use runtime task paths.
     input_dir: Path = field(default_factory=lambda: (COMPONENT_ROOT / "input").resolve())
     output_dir: Path = field(default_factory=lambda: (COMPONENT_ROOT / "output").resolve())
     logs_dir: Path = field(default_factory=lambda: (COMPONENT_ROOT / "logs").resolve())

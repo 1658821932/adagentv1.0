@@ -43,7 +43,7 @@ adagent 将以下能力统一接入工具调用流程。其中 SmartEdit 通过 
 | [失败分析 WFA](mcp_servers/worldengine_failure_analysis/README.md) | 复用官方结果，驱动 VLM 查看图像、查询数值并归因 | 场景 token、评测数据配置 | 现象、候选原因、证据、最终原因与不确定性 |
 | [Sentry 视频检索](mcp_servers/sentry_video_search/README.md) | 视频建库、语义召回、候选重排与片段导出 | 场景描述、视频库 | 选中视频、候选分数与检索记录 |
 | [DGGT](mcp_servers/dggt/core/README.md) | 动态高斯重建及实例编辑渲染 | 视频、可选编辑配置 | 高斯点云、相机参数、渲染与对比视频 |
-| [SmartEdit](mcp_servers/SMART_EDIT_README.md) | 将自然语言编辑要求转换为服务工具调用并保存配置 | 编辑计划、实例信息或指定资产 | 编辑 JSON 或相机轨迹偏移配置 |
+| [SmartEdit](mcp_servers/smart_edit/README.md) | 将自然语言编辑要求转换为服务工具调用并保存配置 | 编辑计划、实例信息或指定资产 | 编辑 JSON 或相机轨迹偏移配置 |
 | [WorldEngine / AlgEngine](https://github.com/OpenDriveLab/WorldEngine) | 闭环策略仿真、评测及监督微调 | 场景、模型配置与权重、训练标注 | 仿真结果、配置启用的指标、训练日志与 checkpoint |
 
 需求生成、场景构思、编辑计划和视觉验证由工具层提供，下一步选择及失败恢复由主 Agent 决策。当前共 13 个工具。各阶段按任务需要调用，不要求每次完整运行全部流程。
@@ -107,3 +107,13 @@ Agent 日志保存在 `logs/`，组件产物写入各自的 output、outputs 或
 ## 许可
 
 DGGT、WorldEngine 及其他第三方依赖遵循各自的原始许可与声明。Agent 所需的 DGGT 编辑扩展不属于官方原版能力，官方 README 用于说明上游项目
+
+运行文件统一存放在各服务的 `runtime/<run_id>/`，详见 [服务运行目录](mcp_servers/README.md)。旧运行目录已清理，运行数据不进入 Git。
+
+
+五个服务均采用 `core/`（项目自身）、`adapter/`（AdAgent 封装）和 `runtime/`（运行文件）分层。
+Agent 工具统一调用 `adapter/service.py`。执行 `python -m pytest` 会按 pytest.ini 收集主框架、各适配层与 WFA 自身测试，不扫描上游大型算法测试集。
+SmartEdit 的原生 MCP 测试在其自身环境中单独运行：
+```bash
+PYTHONPATH=mcp_servers/smart_edit/core environments/smart-edit/.venv/bin/python -m unittest discover -s mcp_servers/smart_edit/core/tests -v
+```

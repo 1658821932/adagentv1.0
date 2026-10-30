@@ -1,2 +1,6 @@
 -r requirements.txt
 pytest>=8,<10
+requests>=2.31
+numpy>=1.24,<3
+Pillow>=9
+imageio-ffmpeg>=0.4

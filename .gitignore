@@ -89,3 +89,12 @@ mcp_servers/worldengine/core/logs/
 
 # local IDE/runtime
 .sii/
+
+# Local Waymo video library and index (may be a symlink)
+/mcp_servers/sentry_video_search/data_waymo_front
+
+# Per-service task workspaces
+/mcp_servers/*/runtime/
+
+# Local scene datasets (never publish)
+/data/

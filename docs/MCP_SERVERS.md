@@ -7,8 +7,9 @@
 ```text
 agent/                         根据任务和历史结果选择工具
   → tools/toolXX_*/real.py      接收 Agent 参数，调用适配接口，返回工具标准格式
-  → mcp_servers/组件/adapter/   选择环境、调用后端、转换数据、整理结果
-  → 组件核心实现               实际完成检索、重建、编辑、取证、仿真或训练
+  → mcp_servers/组件/adapter/service.py  统一接入入口
+  → adapter 内部模块           选择环境、调用后端、转换数据、整理结果
+  → 组件/core/                 实际完成检索、重建、编辑、取证、仿真或训练
 ```
 
 Agent 工具的说明仍位于各工具的 `description.py`；适配层不负责替主 Agent 选择任务步骤。核心算法与模型实现也没有因为这次归拢而搬入 adapter。
@@ -43,7 +44,7 @@ Agent 工具的说明仍位于各工具的 `description.py`；适配层不负责
 ```text
 tools/tool01_failure_analyzer/real.py
   → worldengine_failure_analysis/adapter/service.py：analyze_scene()
-  → worldengine_failure_analysis/run.py
+  → worldengine_failure_analysis/core/run.py
   → scripts/ 中的官方结果读取、证据整理、VLM 和数值查询
 ```
 
@@ -51,18 +52,20 @@ tools/tool01_failure_analyzer/real.py
 |---|---|
 | [tool01/real.py](../tools/tool01_failure_analyzer/real.py) | 接收场景 token，将 WFA 结果映射成 Agent 下游使用的 failure_analysis，并保留取证详情。 |
 | [adapter/service.py](../mcp_servers/worldengine_failure_analysis/adapter/service.py) | 选择解释器，检查配置和凭据，启动取证，读取结果及报告。 |
-| [run.py](../mcp_servers/worldengine_failure_analysis/run.py) | WFA 自身的命令行工作流入口。 |
+| [run.py](../mcp_servers/worldengine_failure_analysis/core/run.py) | WFA 自身的命令行工作流入口。 |
 | `scripts/` | WFA 本身的证据分析实现。 |
 
-输入需要 WorldEngine 场景 token 和对应评测数据。运行配置仍放在组件的 `configs/`，凭据仍由组件的本地秘密文件提供；移动 service 不改变这些位置。
+输入需要 WorldEngine 场景 token 和对应评测数据。原生配置模板在 `core/configs/`，接入配置在 `adapter/config.py`；凭据通过 WFA_SECRET_FILE 或组件根目录的本地 .secrets/vlm.json 提供。
 
 ## Sentry：视频检索
 
 ```text
 tools/tool04_video_retriever/real.py
-  → sentry_video_search/adapter/client.py：retrieve_video()
+  → sentry_video_search/adapter/service.py：retrieve_video()
+  → adapter/client.py：启动检索环境
   → adapter/runner.py
-  → service.py：search_local()
+  → adapter/service.py：search_local()
+  → core/service.py：search_local()
   → 视频召回、重排和片段导出
 ```
 
@@ -71,21 +74,21 @@ tools/tool04_video_retriever/real.py
 | [tool04/real.py](../tools/tool04_video_retriever/real.py) | 调用检索适配接口，包装 Agent 工具结果。 |
 | [adapter/client.py](../mcp_servers/sentry_video_search/adapter/client.py) | 检查需求与视频库选择，启动检索环境并处理 JSON 返回。 |
 | [adapter/runner.py](../mcp_servers/sentry_video_search/adapter/runner.py) | 接收进程请求，将需求交给本地检索接口。 |
-| [config.py](../mcp_servers/sentry_video_search/config.py) | 定义索引、视频库、输出位置等组件配置。 |
-| [service.py](../mcp_servers/sentry_video_search/service.py) | 检索组件的业务入口，组织建库、检索和导出。 |
+| [config.py](../mcp_servers/sentry_video_search/core/config.py) | 定义索引、视频库、输出位置等组件配置。 |
+| [service.py](../mcp_servers/sentry_video_search/core/service.py) | 检索组件的业务入口，组织建库、检索和导出。 |
 
-`config.py`、`service.py`、`pipeline/`、`vendor/` 和 `reranker.py` 仍属于检索组件的实现。它们也可以服务独立 CLI，不需要全部搬入 adapter。
+检索自身的 config.py、service.py、pipeline/、vendor/ 和 reranker.py 全部位于 core/，独立 CLI 不依赖 AdAgent。
 
 service 还提供 `index_local()`、`search_internet()`、`retrieve_video()` 等接口；当前 tool04 只使用 `search_local()`，不会自动转为互联网检索。adapter 中同名的 `retrieve_video()` 是 Agent 本地检索调用包装，应按模块路径区分。
 
 ## DGGT：实例发现、重建和编辑
 
 ```text
-tool05/real.py → adapter/instances.py → core/tools/generate_yolo_instance_info.py
+tool05/real.py → adapter/service.py → adapter/instances.py → core/tools/generate_yolo_instance_info.py
 
-tool06/real.py → adapter/client.py
+tool06/real.py → adapter/service.py → adapter/client.py
                                       → adapter/runner.py
-tool09/real.py → adapter/editing.py     → adapter/service.py
+tool09/real.py → adapter/service.py → adapter/editing.py     → adapter/service.py
                                         → core 的抽帧、预处理、mode 2 推理与渲染
 ```
 
@@ -102,7 +105,7 @@ tool09/real.py → adapter/editing.py     → adapter/service.py
 
 当前 Agent 使用 mode 2、40 帧。SmartEdit 负责生成编辑配置，DGGT 负责执行配置并渲染。
 
-核心源码仍在 `dggt/core/`，包含项目需要的编辑定制；不能将其描述为完全未经修改的官方原版。输入、输出和日志仍在组件原来的 `input/`、`output/`、`logs/`，不会因为多了一层 adapter 而改到 adapter 内。
+核心源码仍在 `dggt/core/`，包含项目需要的编辑定制；不能将其描述为完全未经修改的官方原版。新任务的输入、输出和日志统一位于组件 runtime/<run_id>/ 的 input/、output/、logs/。旧运行目录已清理。
 
 ## SmartEdit：编辑配置生成
 
@@ -151,12 +154,12 @@ tools/tool08_edit_config_generator/real.py
 ## WorldEngine：仿真、筛选和模仿学习
 
 ```text
-tool13/real.py → adapter/client.py → adapter/runner.py
+tool13/real.py → adapter/service.py → adapter/client.py → adapter/runner.py
                                     → adapter/service.py → 仿真脚本
 
-tool14/real.py → adapter/evaluation.py → 动态对象碰撞筛选
+tool14/real.py → adapter/service.py → adapter/evaluation.py → 动态对象碰撞筛选
 
-tool15/real.py → adapter/training.py → AlgEngine 监督微调脚本
+tool15/real.py → adapter/service.py → adapter/training.py → AlgEngine 监督微调脚本
 ```
 
 | 文件 | 主要做什么 |
@@ -180,7 +183,7 @@ tool15/real.py → adapter/training.py → AlgEngine 监督微调脚本
 - 视频检索、实例发现、重建、配置生成、编辑、仿真、失败筛选和训练的后端调用集中到对应 adapter。
 - tool01 的 WFA 结果映射保留在工具层，因为它定义了 Agent 下游使用的失败分析契约。
 - SmartEdit 内部的两类模型指令独立保存在 adapter/prompts；主 Agent 的全局提示词仍在 `agent/orchestrator.py`。
-- Sentry、WFA 保留原有核心布局；没有为了目录整齐而重新移动它们的业务实现。
+- Sentry 和 WFA 的业务实现已整体迁入 core/；原生项目不反向导入 AdAgent，独立入口已验证。
 - 旧的外层 runner/service 模块、根目录 SmartEdit 客户端，以及 tools 根目录的场景准备入口已迁移，不保留旧路径兼容文件。直接导入这些模块的外部脚本需要改用新路径。
 - 本次没有移动或复制环境、权重和数据，也没有修改第三方核心算法。
 
@@ -188,15 +191,20 @@ tool15/real.py → adapter/training.py → AlgEngine 监督微调脚本
 
 ## 当前验证进度
 
-目录迁移完成后，已运行一次原有的 `tests/` 回归测试，84 项通过。随后又调整了 SmartEdit 的包启动入口与模型配置读取，这部分最后调整尚待最终回归；本轮真实组件测试也尚未重跑完成。因此目前不能据此宣称所有 real 工具均已重新验证。
+本轮结构迁移验证：主框架、五个适配层、WFA 原生测试及结构边界测试共 120 项通过；SmartEdit 原生环境另有 17 项通过，包含实际 MCP stdio 交互。
+视频检索通过 Agent 入口完成一次真实召回、重排序和片段导出，匹配分数 0.854686。WFA 和检索均通过“提取 core 到临时目录后运行独立 CLI”的测试。
+DGGT 检查了环境、权重路径和调用接口；WorldEngine 检查了启动脚本和接口。本轮未重新执行 GPU 重建、仿真或训练。
 
-后续回归可在项目根目录安装测试依赖后运行：
+在已安装 requirements-test.txt 依赖的环境中运行：
 
 ```bash
-environments/agent/.venv/bin/python -m pip install -r requirements-test.txt
-environments/agent/.venv/bin/python -m pytest tests/ -q
+python -m pytest -q
 ```
 
-真实组件测试还需要已有环境、权重、输入数据和相应密钥；测试结果应区分接口测试、模拟后端测试与实际后端运行。
+pytest.ini 限定主框架和服务集成测试范围，避免误收集上游算法工程的大型测试集。SmartEdit 原生测试使用其自身环境：
+
+```bash
+PYTHONPATH=mcp_servers/smart_edit/core environments/smart-edit/.venv/bin/python -m unittest discover -s mcp_servers/smart_edit/core/tests -v
+```
 
 相关文档：[Agent 核心与运行目录说明](AGENT_FILES.md)、[项目架构](ARCHITECTURE.md)、[纯文本 LLM 工具规范](LLM_TOOLS.md)。

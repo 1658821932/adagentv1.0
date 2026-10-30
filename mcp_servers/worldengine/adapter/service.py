@@ -10,7 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .schemas import SimulationResult
 from .config import WorldEngineConfig
+from mcp_servers.runtime import runtime_task, current_run
 
 
 def _prepare_dggt_scene(
@@ -24,15 +26,13 @@ def _prepare_dggt_scene(
     source = Path(dggt_output_dir).expanduser().resolve()
     if not source.is_dir():
         raise FileNotFoundError(f"DGGT output directory not found: {source}")
-    staged = agent_root / "mcp_servers" / "worldengine" / "input" / data_type
-    if staged.exists():
-        shutil.rmtree(staged)
+    staged = current_run("worldengine").input / "dggt_staging"
     staging_result = prepare(source, staged, instance_id)
 
     builder = runtime.project_root / "scripts" / "build_highway_new_dynamic_input.py"
     if not builder.is_file():
         raise FileNotFoundError(f"WorldEngine scene builder not found: {builder}")
-    output_root = runtime.project_root / "data" / "sim_engine" / "custom" / data_type
+    output_root = current_run("worldengine").input / "converted_scene"
     python_candidates = (
         agent_root / "environments" / "algengine" / ".conda" / "bin" / "python",
         agent_root / "environments" / "dggt" / ".conda" / "bin" / "python",
@@ -57,6 +57,7 @@ def _prepare_dggt_scene(
     )
 
 
+@runtime_task("worldengine", "simulation")
 def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data_type: str,
                    react_type: str = "NR", asset_name: str | None = None,
                    added_name: str = "mcp", num_scenarios: int | None = None,
@@ -64,7 +65,7 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
                    asset_folder_path: str | None = None,
                    scenario_pkl_file_name: str | None = None,
                    options: dict[str, Any] | None = None,
-                   config: WorldEngineConfig | None = None) -> dict[str, Any]:
+                   config: WorldEngineConfig | None = None) -> SimulationResult:
     options = options or {}
     runtime = config or WorldEngineConfig()
     script = runtime.testing_script()
@@ -115,8 +116,6 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         scenario_folder = scenario_folder.resolve()
         if not scenario_folder.is_dir():
             raise FileNotFoundError(f"WorldEngine scenario folder not found: {scenario_folder}")
-        if not scenario_folder.is_relative_to(runtime.project_root):
-            raise ValueError("WorldEngine scenario folder must be below WORLDENGINE_ROOT")
         env["SCENARIO_DATA_FOLDER_PATH"] = str(scenario_folder)
     if asset_folder_path:
         env["SCENARIO_ASSET_FOLDER_PATH"] = str(Path(asset_folder_path).expanduser().resolve())
@@ -147,13 +146,11 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
     timeout = int(options.get("timeout", runtime.timeout))
     if timeout <= 0:
         raise ValueError("timeout must be positive")
-    external_result_dir = runtime.project_root / "experiments" / "closed_loop_exps" / model_name / f"{data_type}_{react_type}"
-    run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S_%f")
-    local_run_dir = runtime.output_dir / run_id / str(model_name)
-    local_result_dir = local_run_dir / f"{data_type}_{react_type}"
-    log_path = runtime.logs_dir / f"{run_id}.log"
-    runtime.output_dir.mkdir(parents=True, exist_ok=True)
-    runtime.logs_dir.mkdir(parents=True, exist_ok=True)
+    task = current_run("worldengine")
+    result_dir = task.output / "simulation"
+    env["WORLDENGINE_TEST_PATH"] = str(result_dir)
+    external_result_dir = result_dir
+    log_path = task.logs / "simulation.log"
     try:
         completed = subprocess.run(command, cwd=runtime.project_root, env=env, capture_output=True, text=True, timeout=timeout)
     except Exception as exc:
@@ -163,11 +160,8 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         f"$ {' '.join(command)}\n\n[stdout]\n{completed.stdout}\n\n[stderr]\n{completed.stderr}\n",
         encoding="utf-8",
     )
-    if external_result_dir.is_dir():
-        shutil.copytree(external_result_dir, local_result_dir, dirs_exist_ok=True)
     if completed.returncode:
         raise RuntimeError((completed.stderr or completed.stdout).strip() or "WorldEngine simulation failed")
-    result_dir = local_result_dir if local_result_dir.is_dir() else external_result_dir
     report_files = sorted(result_dir.rglob("runner_report_*.json"))
     reports = []
     for report in report_files:
@@ -180,6 +174,7 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
             f"WorldEngine produced no runner report; inspect {log_path}"
         )
     return {
+        "run_dir": str(task.root),
         "command": command,
         "result_dir": str(result_dir),
         "external_result_dir": str(external_result_dir),
@@ -188,3 +183,9 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         "stdout_tail": completed.stdout[-4000:],
         "scene_conversion": conversion,
     }
+
+
+# Canonical entry points consumed by AdAgent tools.
+from .client import run_policy
+from .evaluation import filter_failure_cases
+from .training import train_policy

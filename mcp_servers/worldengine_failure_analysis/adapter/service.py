@@ -15,60 +15,16 @@ from pathlib import Path
 from typing import Any
 
 
-WFA_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = WFA_ROOT / "configs" / "complete.json"
-DEFAULT_CONFIG_EXAMPLE = WFA_ROOT / "configs" / "complete.json.example"
-DEFAULT_RUN_NAME = "adagent_failure_analysis"
+from mcp_servers.runtime import runtime_task, current_run
 
-
-@dataclass
-class WfaSceneResult:
-    token: str
-    status: str
-    failure_reason: str
-    reason_category: str
-    observations: list
-    candidate_assessment: list
-    uncertainty: str
-    official_metrics: dict
-    report_path: str
-    result_path: str
-    raw: dict
-
+from .config import WFA_ROOT, DEFAULT_CONFIG, DEFAULT_CONFIG_EXAMPLE, DEFAULT_RUN_NAME, _resolve_python, _check_secret
+from .schemas import WfaSceneResult
 
 class WfaError(RuntimeError):
-    """Raised when the wfa scene analysis fails."""
+    """The native failure-analysis workflow failed."""
 
 
-def _resolve_python() -> str:
-    """Pick a Python that can run wfa (needs numpy/opencv/Pillow)."""
-    env = os.environ.get("WFA_PYTHON")
-    if env:
-        return env
-    project = WFA_ROOT.parents[1]  # adagent/
-    candidates = [
-        project / "environments" / "simengine" / ".conda" / "bin" / "python",
-        project / "environments" / "dggt" / ".conda" / "bin" / "python",
-        project / "environments" / "agent" / ".venv" / "bin" / "python",
-    ]
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    return "python3"
-
-
-def _check_secret() -> Path:
-    secret = WFA_ROOT / ".secrets" / "vlm.json"
-    if not secret.is_file():
-        raise WfaError(
-            f"VLM secret not found: {secret}. "
-            "Create it with keys endpoint/model/api_key and chmod 0600. See README."
-        )
-    if secret.stat().st_mode & 0o077:
-        raise WfaError(f"VLM secret must have mode 0600: {secret}")
-    return secret
-
-
+@runtime_task("worldengine_failure_analysis", "analyze_scene")
 def analyze_scene(
     token: str,
     *,
@@ -80,7 +36,7 @@ def analyze_scene(
     """Run wfa forensic analysis for one scene token and return the parsed result."""
     if not token or not token.strip():
         raise ValueError("failure_analyzer (wfa) requires a non-empty scene 'token'")
-    _check_secret()
+    secret_file = _check_secret()
 
     config = Path(config_path).expanduser().resolve() if config_path else DEFAULT_CONFIG
     if not config.is_file():
@@ -91,29 +47,35 @@ def analyze_scene(
             )
         raise WfaError(f"wfa config not found: {config}")
 
+    task = current_run("worldengine_failure_analysis")
     run_py = WFA_ROOT / "run.py"
     cmd = [
         _resolve_python(), str(run_py), "scene",
         "--token", token.strip(),
         "--config", str(config),
         "--run-name", run_name,
+        "--run-dir", str(task.output),
     ]
     if resume:
         cmd.append("--resume")
 
     proc = subprocess.run(
-        cmd, cwd=str(WFA_ROOT), capture_output=True, text=True, timeout=timeout,
+        cmd, cwd=str(WFA_ROOT), capture_output=True, text=True, timeout=timeout, env={**task.child_env(), "WFA_SECRET_FILE": str(secret_file)},
     )
 
-    # wfa writes per-scene outputs under runs/<run_name>/scenes/<token>/
-    scene_dir = WFA_ROOT / "runs" / run_name / "scenes" / token.strip()
+    (task.logs / "analysis.log").write_text(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode:
+        raise WfaError(f"wfa exited with code {proc.returncode}; see {task.logs}")
+
+    # Per-scene attempts live in this task output.
+    scene_dir = task.output / "scenes" / token.strip()
     result_path = scene_dir / "result.json"
     status_path = scene_dir / "status.json"
     report_path = scene_dir / "report.md"
 
     # Resolve the real token dir (wfa may suffix-match the token)
     if not result_path.is_file():
-        scenes_root = WFA_ROOT / "runs" / run_name / "scenes"
+        scenes_root = task.output / "scenes"
         if scenes_root.is_dir():
             matches = [d for d in scenes_root.iterdir()
                        if d.is_dir() and (d.name == token.strip() or d.name.endswith("-" + token.strip()))]
@@ -145,6 +107,7 @@ def analyze_scene(
 
     return WfaSceneResult(
         token=result.get("token", token.strip()),
+        run_dir=str(task.root),
         status=result.get("status", status.get("state", "unknown")),
         failure_reason=result.get("failure_reason", ""),
         reason_category=result.get("reason_category", ""),

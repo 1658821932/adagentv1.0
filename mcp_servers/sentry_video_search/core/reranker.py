@@ -118,7 +118,9 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
     uploaded: list[str] = []
     details: dict[str, Any] = {"model": "qwen3-vl-rerank", "candidate_count": len(candidates), "candidates": []}
     try:
-        with tempfile.TemporaryDirectory(prefix="sentry-rerank-") as temp_dir:
+        scratch = run_dir.parent / "input" if run_dir.name == "logs" else run_dir / "input"
+        scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="rerank-", dir=scratch) as temp_dir:
             documents = []
             for index, hit in enumerate(candidates):
                 clip = Path(temp_dir) / f"candidate_{index:02d}.mp4"
@@ -126,7 +128,8 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                 upload_clip = Path(preprocess_chunk(str(clip), target_resolution=None, target_fps=10))
                 if not 24 * 1024 <= upload_clip.stat().st_size <= MAX_RERANK_VIDEO_BYTES:
                     raise RuntimeError(f"Rerank video exceeds API size limits: {upload_clip}")
-                key = f"{settings[4]}/run-{run_dir.name}-{index:02d}-{int(time.time())}.mp4"
+                run_label = run_dir.parent.name if run_dir.name == "logs" else run_dir.name
+                key = f"{settings[4]}/run-{run_label}-{index:02d}-{int(time.time())}.mp4"
                 signed_url = _upload(upload_clip, key, settings)
                 uploaded.append(signed_url)
                 documents.append({"video": signed_url})

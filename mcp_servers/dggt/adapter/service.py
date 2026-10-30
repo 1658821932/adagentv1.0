@@ -5,34 +5,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import asdict, dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .config import ReconstructionConfig
+from mcp_servers.runtime import runtime_task, current_run
 
 
-@dataclass
-class ReconstructionResult:
-    video_path: str
-    run_dir: str
-    input_dir: str
-    input_scene_name: str
-    output_dir: str
-    scene_ply: str
-    static_ply: str
-    dynamic_ply: str | None
-    sky_ply: str
-    camera_params: str
-    render_camera_params: str
-    supersplat_camera_poses: str
-    rendered_video: str
-    render_state: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
+from .schemas import ReconstructionResult
 
 def _log_tail(path: Path, limit: int = 4000) -> str:
     if not path.is_file():
@@ -65,6 +45,7 @@ def _run_command(
         raise RuntimeError(message)
 
 
+@runtime_task("dggt", "reconstruct")
 def reconstruct(
     video_path: str | Path,
     edit_config_path: str | Path | None = None,
@@ -110,15 +91,8 @@ def reconstruct(
         if not ego_trajectory_offsets.is_file():
             raise FileNotFoundError(f"DGGT ego trajectory offsets not found: {ego_trajectory_offsets}")
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    run_name = f"run_{stamp}"
-    input_root = config.input_dir / run_name
-    output_root = config.output_dir / run_name
-    run_dir = config.logs_dir / run_name
-
-    input_root.mkdir(parents=True, exist_ok=False)
-    output_root.mkdir(parents=True, exist_ok=False)
-    run_dir.mkdir(parents=True, exist_ok=False)
+    task = current_run("dggt")
+    input_root, output_root, run_dir = task.input, task.output, task.root
 
     preprocess_command = [
         str(config.segformer_python),
@@ -137,7 +111,7 @@ def reconstruct(
     _run_command(
         preprocess_command,
         cwd=config.dggt_root,
-        log_path=run_dir / "01_preprocess.log",
+        log_path=task.logs / "01_preprocess.log",
         python_bin=config.segformer_python,
     )
 
@@ -180,7 +154,7 @@ def reconstruct(
     _run_command(
         reconstruction_command,
         cwd=config.dggt_root,
-        log_path=run_dir / "02_reconstruction.log",
+        log_path=task.logs / "02_reconstruction.log",
         python_bin=config.dggt_python,
     )
 
@@ -246,8 +220,14 @@ def reconstruct(
         render_state=str(scene_dir / "render_state.pt") if export_render_state else None,
     )
 
-    (run_dir / "result.json").write_text(
+    (output_root / "result.json").write_text(
         json.dumps({"status": "success", **result.to_dict()}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     return result
+
+
+# Stable Agent-facing facade; heavyweight execution still uses its subprocess.
+from .client import reconstruct_video
+from .instances import discover_instances
+from .editing import edit_scene

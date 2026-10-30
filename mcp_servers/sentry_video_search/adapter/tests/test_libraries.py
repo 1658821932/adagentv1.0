@@ -8,8 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_servers.sentry_video_search.config import SearchConfig
-from mcp_servers.sentry_video_search.service import _export_reranked_hits, _trim_hit, index_local
+from mcp_servers.sentry_video_search.core.workspace import runtime_task
+from mcp_servers.sentry_video_search.core.config import SearchConfig
+from mcp_servers.sentry_video_search.core.service import _export_reranked_hits, _trim_hit, index_local
 from tools.tool04_video_retriever.real import run as retrieve_video
 
 
@@ -22,9 +23,9 @@ class VideoLibraryTests(unittest.TestCase):
                 for i, score in enumerate((0.7, 0.9, 0.5, 0.6))
             ],
         }
-        with patch("mcp_servers.sentry_video_search.service._trim_hit") as trim_hit:
+        with patch("mcp_servers.sentry_video_search.core.service._trim_hit") as trim_hit:
             trim_hit.side_effect = [Path(f"/output/{i}.mp4") for i in range(5)]
-            winner = _export_reranked_hits(details, "cut-in", SearchConfig(), Path("/logs/run_test"))
+            winner = runtime_task("sentry_video_search", "export")(_export_reranked_hits)(details, "cut-in", SearchConfig(), Path("/logs/run_test"))
 
         self.assertEqual(winner, Path("/output/1.mp4"))
         self.assertEqual([item["candidate_index"] for item in details["ranked_results"]], [1, 0, 3, 2])
@@ -32,7 +33,8 @@ class VideoLibraryTests(unittest.TestCase):
         self.assertEqual(details["ranked_results"][0]["lossless_video_path"], "/output/1.mp4")
         self.assertEqual(trim_hit.call_count, 5)
         self.assertEqual(trim_hit.call_args_list[0].args[0]["candidate_index"], 1)
-        self.assertEqual(trim_hit.call_args_list[0].args[2].output_dir.name, "run_test")
+        self.assertEqual(trim_hit.call_args_list[0].args[2].output_dir.name, "output")
+        self.assertTrue(trim_hit.call_args_list[0].args[2].output_dir.parent.name.startswith("run_"))
         self.assertEqual(trim_hit.call_args_list[0].kwargs["label"], "rank01_score0.900000_compressed")
         self.assertEqual(trim_hit.call_args_list[0].kwargs["crf"], 28)
         self.assertEqual(trim_hit.call_args_list[1].kwargs["label"], "rank01_score0.900000_lossless")
@@ -42,8 +44,8 @@ class VideoLibraryTests(unittest.TestCase):
             config = SearchConfig.for_library("waymo")
             config.output_dir = Path(temp_dir)
             hit = {"source_file": "/video.mp4", "start_time": 10.0, "end_time": 19.8}
-            with patch("mcp_servers.sentry_video_search.vendor.sentrysearch.chunker._get_video_duration", return_value=19.8), patch(
-                "mcp_servers.sentry_video_search.vendor.sentrysearch.trimmer.trim_clip"
+            with patch("mcp_servers.sentry_video_search.core.vendor.sentrysearch.chunker._get_video_duration", return_value=19.8), patch(
+                "mcp_servers.sentry_video_search.core.vendor.sentrysearch.trimmer.trim_clip"
             ) as trim_clip:
                 _trim_hit(hit, "cut-in", config)
 
@@ -78,8 +80,8 @@ class VideoLibraryTests(unittest.TestCase):
             config.library_dir = root / "common-data"
             config.runtime_home = root / "runtime"
 
-            with patch("mcp_servers.sentry_video_search.service._ensure_dashscope_key"), patch(
-                "mcp_servers.sentry_video_search.service.index_segments", return_value=([str(video)], 0.1)
+            with patch("mcp_servers.sentry_video_search.core.service._ensure_dashscope_key"), patch(
+                "mcp_servers.sentry_video_search.core.service.index_segments", return_value=([str(video)], 0.1)
             ) as index_segments:
                 result = index_local(video, config)
 

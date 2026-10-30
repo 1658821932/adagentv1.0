@@ -395,14 +395,3 @@ Claude Desktop 可参考 [claude_desktop_config.example.json](claude_desktop_con
 python -m unittest discover -s tests -v                         # MCP 资源接口集成测试
 npx @modelcontextprotocol/inspector python -m smart_edit         # 交互式调试
 ```
-
-配置好 `.env.local` 后,可以显式运行真实模型的刚体多轮验收:
-
-```bash
-python tools/test_rigid_api.py --rounds 3
-# 单独重测新增车辆的撤销场景
-python tools/test_rigid_api.py --rounds 1 --scenario insertion
-```
-
-每轮覆盖实例编辑、DGGT 像素锚点插入、撤销插入和缺少实例 ID 的追问。该脚本调用当前配置的模型 API,
-把逐轮结果、工具调用记录和 YAML 保存到 `outputs/rigid-multiround-*/`。

@@ -154,16 +154,16 @@ Agent 工具通过各组件的 adapter/ 调用后端。SmartEdit 使用 MCP stdi
 | 组件 | Agent 工具 | adapter 中的主要文件 | 核心能力 |
 |---|---|---|---|
 | worldengine_failure_analysis/ | tool01 | service.py | 按场景 token 调用 WFA 失败取证。 |
-| sentry_video_search/ | tool04 | client.py、runner.py | 调用本地检索；config.py、service.py、pipeline/ 等仍为组件自身实现。 |
+| sentry_video_search/ | tool04 | client.py、runner.py | 调用本地检索；core/ 保存独立检索实现，adapter/ 对接 Agent。 |
 | dggt/ | tool05/06/09 | instances.py、client.py、editing.py、coordinates.py、runner.py、service.py、config.py | 实例发现、mode 2 重建和编辑渲染。 |
 | smart_edit/ | tool08 | service.py、client.py、config.py、prompts/ | 驱动内部 15 个 MCP 子工具生成配置；tool07 只生成编辑计划，不直接调用此服务。 |
 | worldengine/ | tool13/14/15 | client.py、runner.py、service.py、scene_conversion.py、evaluation.py、training.py、config.py | 仿真、动态对象碰撞筛选及 ILFT 监督微调。 |
 
-典型调用链：tools/toolXX/real.py → mcp_servers/组件/adapter/ → 核心实现。
+典型调用链：tools/toolXX/real.py → mcp_servers/组件/adapter/service.py → core/；adapter 内部可进一步调用客户端、runner 或其他模块。
 
-DGGT、SmartEdit、WorldEngine 的核心仍在各自 core/；Sentry、WFA 保留原有核心布局。输入输出、权重和环境路径不会因为增加 adapter 目录而改到其内部。
+五个项目的业务代码全部位于各自 core/；Agent 封装全部位于 adapter/。单次运行文件位于 runtime/<run_id>/，权重、环境和长期数据沿用已配置的路径。
 
-SmartEdit 内部配置生成指令已独立放在 smart_edit/adapter/prompts/。WFA 运行配置仍在组件 configs/，本地凭据仍在 .secrets/。视频检索索引不随源码分发。
+SmartEdit 内部配置生成指令已独立放在 smart_edit/adapter/prompts/。WFA 原生配置模板在 core/configs/，Agent 接入配置在 adapter/config.py，本地凭据仍在 .secrets/。视频检索索引不随源码分发。
 
 每个文件的职责、服务子工具清单与当前验证进度见 [MCP 组件与工具接入说明](MCP_SERVERS.md)。
 

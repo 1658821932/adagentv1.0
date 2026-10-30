@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -52,12 +53,13 @@ def ask(client,messages,name,validate=None):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-name',required=True)
+    parser.add_argument('--run-dir',type=Path,required=True)
     parser.add_argument('--output-name',required=True)
     parser.add_argument('--groups-from',type=Path,help='Keep existing memberships and rewrite descriptions only')
     args=parser.parse_args()
     for name in (args.run_name,args.output_name):
         if not name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in name):parser.error('Invalid name')
-    root=PROJECT/'runs'/args.run_name;out=root/args.output_name;out.mkdir(exist_ok=True)
+    root=args.run_dir.resolve();out=root/args.output_name;out.mkdir(exist_ok=True)
     cases=[]
     for i,token in enumerate(json.loads((root/'selected_tokens.json').read_text()),1):
         p=root/'scenes'/token;r=json.loads((p/'result.json').read_text())
@@ -77,7 +79,7 @@ def main():
     snapshot_path=out/'input.json'
     if snapshot_path.exists() and json.loads(snapshot_path.read_text())!=snapshot:raise ValueError('Inputs changed; use a new output-name')
     save(snapshot_path,snapshot)
-    secret_path=PROJECT/'.secrets/vlm.json'
+    secret_path=Path(os.environ.get('WFA_SECRET_FILE',str(PROJECT.parent/'.secrets/vlm.json')))
     if secret_path.stat().st_mode & 0o077:raise ValueError('Secret file must have mode 0600')
     client=Client(json.loads(secret_path.read_text()),out)
     if existing is not None:

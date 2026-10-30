@@ -5,11 +5,11 @@ import json
 import subprocess
 from pathlib import Path
 from .coordinates import convert_edit_config
+from mcp_servers.runtime import runtime_task, current_run
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-AGENT_PYTHON = PROJECT_ROOT / "environments" / "agent" / ".venv" / "bin" / "python"
-AGENT_FRAME_COUNT = 40
+from .config import PROJECT_ROOT, AGENT_PYTHON, AGENT_FRAME_COUNT
 
+@runtime_task("dggt", "edit_scene")
 def edit_scene(input_data: dict) -> dict:
     if input_data.get("num_frames", AGENT_FRAME_COUNT) != AGENT_FRAME_COUNT:
         raise ValueError("Agent scene_editor requires num_frames=40")
@@ -55,12 +55,12 @@ def edit_scene(input_data: dict) -> dict:
             if isinstance(meters_to_dggt, bool) or not isinstance(meters_to_dggt, (int, float)) or meters_to_dggt <= 0:
                 raise ValueError("scene_editor trajectory_edit requires explicit positive meters_to_dggt")
             converted_config, coordinate_diagnostics = convert_edit_config(source_config, camera_params_path, meters_to_dggt)
-            execution_config = config.with_name(config.stem + ".dggt.json")
+            execution_config = current_run("dggt").input / (config.stem + ".dggt.json")
             execution_config.write_text(json.dumps(converted_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     proc = subprocess.run(
         [str(AGENT_PYTHON), "-m", "mcp_servers.dggt.adapter.runner"],
         input=json.dumps({"video_path": str(video), "edit_config_path": str(execution_config) if execution_config else None, "ego_trajectory_offsets_path": ego_trajectory_offsets_path, "export_dynamic_frame_ply": input_data.get("export_dynamic_frame_ply", True), "num_frames": AGENT_FRAME_COUNT}, ensure_ascii=False),
-        capture_output=True, text=True, cwd=PROJECT_ROOT,
+        capture_output=True, text=True, cwd=PROJECT_ROOT, env=current_run("dggt").child_env(),
     )
     try:
         payload = json.loads(proc.stdout)

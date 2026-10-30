@@ -4,13 +4,18 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from mcp_servers.runtime import runtime_task, current_run
+
+from .schemas import EditConfigResult
 from .config import PROJECT_ROOT, SMART_EDIT_ROOT, SMART_EDIT_PYTHON
 
-def generate_edit_config(input_data: dict[str, Any]) -> dict[str, Any]:
+@runtime_task("smart_edit", "generate_edit_config")
+def generate_edit_config(input_data: dict[str, Any]) -> EditConfigResult:
     edit_plan = input_data.get("edit_plan")
     output_path = input_data.get("output_path")
     if not edit_plan:
@@ -31,10 +36,14 @@ def generate_edit_config(input_data: dict[str, Any]) -> dict[str, Any]:
     asset_scale = input_data.get("asset_scale")
     if asset_scale is not None and (isinstance(asset_scale, bool) or not isinstance(asset_scale, (int, float)) or asset_scale <= 0):
         raise ValueError("edit_config_generator asset_scale must be a positive number")
-    payload = {"edit_request": edit_plan, "instance_info_path": input_data.get("instance_info_path"), "output_path": str(Path(output_path).expanduser().resolve()), "scene_info": input_data.get("scene_info"), "asset_path": input_data.get("asset_path"), "asset_scale": asset_scale, "output_kind": output_kind, "frame_count": 40}
+    task = current_run("smart_edit")
+    requested_output = Path(output_path).expanduser().resolve()
+    internal_output = task.output / requested_output.name
+    payload = {"edit_request": edit_plan, "instance_info_path": input_data.get("instance_info_path"), "output_path": str(internal_output), "scene_info": input_data.get("scene_info"), "asset_path": input_data.get("asset_path"), "asset_scale": asset_scale, "output_kind": output_kind, "frame_count": 40}
     env = os.environ.copy()
     env["SMART_EDIT_ROOT"] = str(SMART_EDIT_ROOT)
     proc = subprocess.run([str(SMART_EDIT_PYTHON), "-m", "mcp_servers.smart_edit.adapter.client"], input=json.dumps(payload, ensure_ascii=False), capture_output=True, text=True, cwd=PROJECT_ROOT, env=env)
+    (task.logs / "smart_edit.log").write_text(proc.stdout + "\n" + proc.stderr)
     try:
         response = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -46,6 +55,9 @@ def generate_edit_config(input_data: dict[str, Any]) -> dict[str, Any]:
     saved_path = Path(result["saved_path"])
     if not saved_path.is_file():
         raise RuntimeError(f"Smart Edit did not create {saved_path}")
+    if saved_path.resolve() != internal_output:
+        raise RuntimeError("Smart Edit saved outside the task output path")
+    result["run_dir"] = str(task.root)
     config = json.loads(saved_path.read_text(encoding="utf-8"))
     if output_kind == "ego_trajectory_offsets":
         offsets = config.get("offsets")
@@ -57,6 +69,8 @@ def generate_edit_config(input_data: dict[str, Any]) -> dict[str, Any]:
         if frame_count is not None and len(offsets) not in (1, int(frame_count)):
             raise ValueError(f"Smart Edit ego offsets require 1 or {frame_count} vectors, got {len(offsets)}")
         result["output_kind"] = output_kind
+        requested_output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(saved_path, requested_output)
         return result
     rigid = config.get("Nodes", {}).get("RigidNodes", {})
     if not isinstance(rigid, dict) or not rigid or set(config.get("Nodes", {})) != {"RigidNodes"}:
@@ -102,4 +116,6 @@ def generate_edit_config(input_data: dict[str, Any]) -> dict[str, Any]:
             generated_asset = saved_path.parent / generated_asset
         if generated_asset.resolve() != Path(asset_path).resolve():
             raise ValueError("Smart Edit asset path differs from the requested asset_path")
+    requested_output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(saved_path, requested_output)
     return result

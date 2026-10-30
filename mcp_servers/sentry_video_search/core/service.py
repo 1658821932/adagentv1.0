@@ -10,12 +10,13 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .config import SearchConfig
+from .workspace import runtime_task, current_run
 from .pipeline.common import safe_name
 from .pipeline.downloader import DownloadConfig, download_candidates
 from .pipeline.indexer import IndexConfig, index_segments
@@ -39,18 +40,7 @@ RERANK_LOG = "09_rerank.json"
 RESULT_LOG = "result.json"
 
 
-@dataclass
-class VideoSearchResult:
-    requirement: str
-    video_path: str
-    run_dir: str
-    mode: str
-    match_score: float
-    timings: dict[str, float]
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
+from .schemas import VideoSearchResult
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,10 +58,7 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _new_run_dir(config: SearchConfig) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    run_dir = config.logs_dir / f"run_{stamp}"
-    run_dir.mkdir(parents=True, exist_ok=False)
-    return run_dir.resolve()
+    return current_run("sentry_video_search").logs
 
 
 def _candidate_count(retrieval: dict[str, Any]) -> int:
@@ -173,7 +160,7 @@ def _trim_hit(
 def _export_reranked_hits(
     details: dict[str, Any], requirement: str, config: SearchConfig, run_dir: Path,
 ) -> Path:
-    output_config = replace(config, output_dir=config.output_dir / run_dir.name)
+    output_config = replace(config, output_dir=current_run("sentry_video_search").output)
     candidates = {item["candidate_index"]: item for item in details["candidates"]}
     ranked = sorted(details["ranked_results"], key=lambda item: item["relevance_score"], reverse=True)
     for rank, result in enumerate(ranked, start=1):
@@ -206,12 +193,12 @@ def _finish(
     result = VideoSearchResult(
         requirement=requirement,
         video_path=str(video_path),
-        run_dir=str(run_dir),
+        run_dir=str(current_run("sentry_video_search").root),
         mode=mode,
         match_score=round(float(hit["similarity_score"]), 6),
         timings=timings,
     )
-    _write_json(run_dir / RESULT_LOG, {"status": "success", **result.to_dict()})
+    _write_json(current_run("sentry_video_search").output / RESULT_LOG, {"status": "success", **result.to_dict()})
     return result
 
 
@@ -227,6 +214,7 @@ def _ensure_dashscope_key() -> None:
     raise RuntimeError("DASHSCOPE_API_KEY or LLM_API_KEY is required")
 
 
+@runtime_task("sentry_video_search", "index_local")
 def index_local(
     path: str | Path,
     config: SearchConfig | None = None,
@@ -234,6 +222,7 @@ def index_local(
     """Import local videos into this component and add them to the local index."""
     _ensure_dashscope_key()
     config = config or SearchConfig()
+    config = replace(config, input_dir=current_run("sentry_video_search").input, output_dir=current_run("sentry_video_search").output)
     config.validate()
 
     source = Path(path).expanduser().resolve()
@@ -274,6 +263,7 @@ def index_local(
     }
 
 
+@runtime_task("sentry_video_search", "search_local")
 def search_local(
     requirement: str,
     config: SearchConfig | None = None,
@@ -285,6 +275,7 @@ def search_local(
     _ensure_dashscope_key()
 
     config = config or SearchConfig()
+    config = replace(config, input_dir=current_run("sentry_video_search").input, output_dir=current_run("sentry_video_search").output)
     config.validate()
     run_dir = _new_run_dir(config)
     total_start = time.perf_counter()
@@ -344,14 +335,17 @@ def search_local(
         raise
 
 
+@runtime_task("sentry_video_search", "search_internet")
 def search_internet(
     requirement: str,
     config: SearchConfig | None = None,
 ) -> VideoSearchResult:
     """Run internet retrieval explicitly, without searching the local index first."""
     config = config or SearchConfig()
+    config = replace(config, input_dir=current_run("sentry_video_search").input, output_dir=current_run("sentry_video_search").output)
     return retrieve_video(requirement, replace(config, local_first=False))
 
+@runtime_task("sentry_video_search", "retrieve_video")
 def retrieve_video(
     requirement: str,
     config: SearchConfig | None = None,
@@ -369,6 +363,7 @@ def retrieve_video(
     _ensure_dashscope_key()
 
     config = config or SearchConfig()
+    config = replace(config, input_dir=current_run("sentry_video_search").input, output_dir=current_run("sentry_video_search").output)
     config.validate()
     run_dir = _new_run_dir(config)
     timings: dict[str, float] = {}
@@ -462,7 +457,7 @@ def retrieve_video(
         download_rows = download_candidates(
             run_dir / PREFILTER_LOG,
             DownloadConfig(
-                output_dir=config.library_dir,
+                output_dir=current_run("sentry_video_search").input / "downloads",
                 limit=config.download_limit,
                 cookies_browser=config.cookies_browser,
             ),
@@ -506,7 +501,7 @@ def retrieve_video(
             scenes = split_scenes(
                 source_video,
                 SceneConfig(
-                    output_dir=config.library_dir,
+                    output_dir=current_run("sentry_video_search").input / "downloads",
                     threshold=config.scene_threshold,
                 ),
             )

@@ -15,8 +15,11 @@ from pathlib import Path
 from typing import Any
 
 
+from mcp_servers.runtime import runtime_task, current_run
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SIMENGINE_PYTHON = PROJECT_ROOT / "environments" / "simengine" / ".conda" / "bin" / "python"
+from .config import SIMENGINE_PYTHON
+from .schemas import EvaluationResult
 
 
 EVALUATOR = r'''
@@ -91,7 +94,8 @@ print(json.dumps({
 '''
 
 
-def filter_failure_cases(input_data: dict[str, Any]) -> dict[str, Any]:
+@runtime_task("worldengine", "evaluation")
+def filter_failure_cases(input_data: dict[str, Any]) -> EvaluationResult:
     scenario_path = input_data.get("scenario_pkl") or input_data.get("scenario_path")
     if not isinstance(scenario_path, str) or not scenario_path.strip():
         raise ValueError("failure_case_filter requires scenario_pkl")
@@ -108,18 +112,15 @@ def filter_failure_cases(input_data: dict[str, Any]) -> dict[str, Any]:
         if not candidates:
             raise FileNotFoundError("WorldEngine result has no executed ego trajectory metadata")
         metadata_file = candidates[0]
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as output:
-        output_path = Path(output.name)
     try:
         process = subprocess.run(
             [str(python), "-c", EVALUATOR, str(scenario), str(metadata_file or "")],
             capture_output=True, text=True, check=True,
         )
+        (current_run("worldengine").logs / "evaluation.log").write_text(process.stdout + "\n" + process.stderr)
         evaluation = json.loads(process.stdout)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(exc.stderr.strip() or "decision evaluation failed") from exc
-    finally:
-        output_path.unlink(missing_ok=True)
 
     reasons = []
     if evaluation["collision"]:
@@ -130,6 +131,7 @@ def filter_failure_cases(input_data: dict[str, Any]) -> dict[str, Any]:
         "evaluation": evaluation,
     }
     return {
+            "run_dir": str(current_run("worldengine").root),
             "is_failure_case": bool(reasons),
             "failure_cases": [failure] if reasons else [],
             **evaluation,

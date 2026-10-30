@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
-COMPONENT_ROOT = Path(__file__).resolve().parent
+COMPONENT_ROOT = Path(__file__).resolve().parents[1]
 LIBRARIES = ("default", "waymo")
 
 
@@ -28,11 +29,12 @@ class SearchConfig:
     search_results: int = 5
     cookies_browser: str = ""
 
+    # Legacy fields retained for API compatibility; adapters use runtime task paths.
     input_dir: Path = field(default_factory=lambda: (COMPONENT_ROOT / "input").resolve())
-    library_dir: Path = field(default_factory=lambda: (COMPONENT_ROOT / "data").resolve())
+    library_dir: Path = field(default_factory=lambda: Path(os.getenv("SENTRY_LIBRARY_DIR", str(COMPONENT_ROOT / "data"))).expanduser().resolve())
     output_dir: Path = field(default_factory=lambda: (COMPONENT_ROOT / "output").resolve())
     logs_dir: Path = field(default_factory=lambda: (COMPONENT_ROOT / "logs").resolve())
-    runtime_home: Path = field(default_factory=lambda: (COMPONENT_ROOT / "runtime").resolve())
+    runtime_home: Path = field(default_factory=lambda: Path(os.getenv("SENTRY_INDEX_HOME", str(COMPONENT_ROOT / "runtime"))).expanduser().resolve())
     preprocess_index_chunks: bool = False
     import_source_videos: bool = True
 
@@ -46,7 +48,7 @@ class SearchConfig:
         if library == "default":
             return cls()
         if library == "waymo":
-            root = COMPONENT_ROOT / "data_waymo_front"
+            root = Path(os.getenv("SENTRY_WAYMO_ROOT", str(COMPONENT_ROOT / "data_waymo_front"))).expanduser()
             return cls(
                 chunk_duration=10,
                 runtime_home=(root / "runtime").resolve(),
