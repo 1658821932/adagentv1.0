@@ -90,7 +90,7 @@ mock/real 共用输入输出校验。目录规范、模型角色和逐工具测�
 ## 密钥与模型分工
 
 - Agent 主模型：`OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL`（或旧 `LLM_*`），例 `qwen3.5-plus`。
-- tool10 视觉验证：默认 `kimi-k3`，base 取 `LLM_BASE_URL`，密钥回退 `LLM_API_KEY`；可用 `SCENE_VALIDATOR_MODEL` 覆盖。
+- tool10 视觉验证：默认 `kimi-k3`，端点和模型默认值在 `tools/tool10_scene_validator/config.json`，可用 `SCENE_VALIDATOR_BASE_URL` / `SCENE_VALIDATOR_MODEL` 覆盖；密钥按 `SCENE_VALIDATOR_API_KEY` → `OPENAI_API_KEY` → `LLM_API_KEY` 顺序读取。
 - tool04 视频检索：召回/重排用 DashScope `qwen3-vl-embedding`，需真实 `DASHSCOPE_API_KEY`（中转站不支持该端点）。
 - OSS（可选）：`OSS_*` 供重排产物上传；不入库。
 
@@ -101,8 +101,11 @@ Agent 日志保存在 `logs/`，组件产物写入各自的 output、outputs 或
 - [项目架构与目录分工](docs/ARCHITECTURE.md)
 - [Agent 文件、configs 和 logs 说明](docs/AGENT_FILES.md)
 - [tools 目录与 13 个工具说明](docs/TOOLS.md)
+- [工具字段级接口参考](docs/INTERFACES.md)（自动生成）
+- [工具调用契约、服务配置与长任务管理](docs/EXECUTION_CONTRACTS.md)
 - [后端组件、工具映射与适配层说明](docs/MCP_SERVERS.md)
 - [纯文本 LLM 工具规范](docs/LLM_TOOLS.md)
+- [IL/RL 训练工具说明](docs/policy_training.md)
 
 ## 许可
 

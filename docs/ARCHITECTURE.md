@@ -134,7 +134,7 @@ tools/registry.py 是总调度：维护 MOCK_TOOL_REGISTRY 和 REAL_TOOL_REGISTR
 | 10 | scene_validator | 检查输出文件和渲染画面是否符合需求（VLM 视觉验证） | 结果验证 |
 | 13 | policy_runner | 用 WorldEngine 跑闭环策略仿真 | 闭环仿真 |
 | 14 | failure_case_filter | 从仿真结果里筛出失败案例 | 失败筛选 |
-| 15 | policy_trainer | 用 AlgEngine 对筛选数据做监督微调（ILFT，**不含 RL**） | 策略训练 |
+| 15 | policy_trainer | 用 AlgEngine 做后训练（training_mode 选 ilft 或 rlft） | 策略训练 |
 
 > 编号保留现有目录命名，当前为 tool01–tool10、tool13–tool15。独立 tool11 已移除，其恢复决策规则位于 agent/orchestrator.py 的主提示词中；tool12 不作为独立工具提供。
 
@@ -157,7 +157,7 @@ Agent 工具通过各组件的 adapter/ 调用后端。SmartEdit 使用 MCP stdi
 | sentry_video_search/ | tool04 | client.py、runner.py | 调用本地检索；core/ 保存独立检索实现，adapter/ 对接 Agent。 |
 | dggt/ | tool05/06/09 | instances.py、client.py、editing.py、coordinates.py、runner.py、service.py、config.py | 实例发现、mode 2 重建和编辑渲染。 |
 | smart_edit/ | tool08 | service.py、client.py、config.py、prompts/ | 驱动内部 15 个 MCP 子工具生成配置；tool07 只生成编辑计划，不直接调用此服务。 |
-| worldengine/ | tool13/14/15 | client.py、runner.py、service.py、scene_conversion.py、evaluation.py、training.py、config.py | 仿真、动态对象碰撞筛选及 ILFT 监督微调。 |
+| worldengine/ | tool13/14/15 | client.py、runner.py、service.py、scene_conversion.py、evaluation.py、training.py、config.py | 仿真、失败案例筛选及 IL/RL 后训练。 |
 
 典型调用链：tools/toolXX/real.py → mcp_servers/组件/adapter/service.py → core/；adapter 内部可进一步调用客户端、runner 或其他模块。
 
@@ -199,7 +199,7 @@ SmartEdit 内部配置生成指令已独立放在 smart_edit/adapter/prompts/。
 
 ## tests/ — 测试
 
-pytest，47 项。覆盖配置加载、决策校验、工具结果信封、坐标转换、场景验证等。跑法：
+pytest，147 项。覆盖配置加载、决策校验、工具结果信封、坐标转换、场景验证、批量失败筛选等。跑法：
 
     environments/video_retriever/.venv/bin/python -m pytest tests/
 
@@ -207,7 +207,8 @@ pytest，47 项。覆盖配置加载、决策校验、工具结果信封、坐�
 
 - _dev_scripts_archive/：研发过程中的一次性脚本（对齐地图、渲染诊断、数据准备等），已归档，**不是产品代码**，一般不用管。
 - logs/：每次 run 的日志，不随源码分发。
-- tools/scripts/：当前为空，预留放工具辅助脚本。
+- tools/scripts/：LLM 工具与恢复决策的 smoke 验证脚本。
+- scripts/：仓库级辅助脚本，当前有接口文档生成脚本 generate_interface_docs.py。
 
 ## 数据怎么流转
 
