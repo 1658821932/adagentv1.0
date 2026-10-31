@@ -22,6 +22,11 @@ ROOT = Path(__file__).resolve().parents[2]
 # Non-secret defaults live in config.json; overridable via SCENE_VALIDATOR_* env vars.
 _SETTINGS = json.loads(Path(__file__).with_name("config.json").read_text())
 
+# Evaluation rules live in prompt.md; {ignored_artifacts} and {requirement} are filled per call.
+_PROMPT_TEMPLATE = Path(__file__).with_name("prompt.md").read_text(encoding="utf-8").strip()
+if not _PROMPT_TEMPLATE:
+    raise ValueError("scene_validator prompt.md must not be empty")
+
 
 def frame_python():
     value = os.getenv("SCENE_VALIDATOR_FRAME_PYTHON") or _SETTINGS["frame_python"]
@@ -161,22 +166,11 @@ def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) ->
         frames = _sample_frames(video, int(input_data.get("frame_count", 8)))
         cleanup = True
     try:
-        prompt = (
-            "只评估编辑是否满足最初场景需求：目标车辆是否清晰可见、位置和尺度是否合理、是否接地、"
-            "跨帧是否连续，以及目标附近是否有编辑引入的伪影。以下是已知的 DGGT 基础重建缺陷，"
-            "不属于本次编辑质量，不要因此判定失败，也不要放入 issues："
-            + "；".join(input_data.get("ignored_reconstruction_artifacts", [])) + "。"
-            "可将它们记入 ignored_reconstruction_artifacts。若缺陷遮住目标，导致无法确认编辑效果，仍应判定失败。"
-            "逐张检查提供的关键帧，证据注明帧序号；对于前车切入，确认切入后不继续向右越过自车车道，"
-            "并检查末帧车辆仍可辨认；只看到车辆接近画面中心不足以证明它在车道内。"
-            "若任一关键帧车辆明显悬空、出道路或破碎，"
-            "geometry_valid 或 visual_valid 必须为 false，并写入 issues。"
-            "不要从画面推断配置文件中的数值尺度、精确车距、自车已刹车或闭环策略决策；"
-            "这些只能从相应轨迹和仿真结果验证。严格只输出 JSON："
-            '{"requirement_consistency":true,"visual_valid":true,"geometry_valid":true,'
-            '"physics_valid":true,"traffic_logic_valid":true,"confidence":0.0,'
-            '"evidence":[],"issues":[],"ignored_reconstruction_artifacts":[]}。\n'
-            "最初场景需求：" + json.dumps(requirement, ensure_ascii=False)
+        prompt = _PROMPT_TEMPLATE.replace(
+            "{ignored_artifacts}",
+            "；".join(input_data.get("ignored_reconstruction_artifacts", [])),
+        ).replace(
+            "{requirement}", json.dumps(requirement, ensure_ascii=False)
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         content.extend({"type": "image_url", "image_url": {"url": _image_data_url(frame)}} for frame in frames)
