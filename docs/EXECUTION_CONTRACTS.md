@@ -12,7 +12,7 @@ result = call_tool("video_retriever", {
 }, mode="real")
 ```
 
-每个 Tool 都有 real.py、mock.py、schemas.py 和 description.py。旧 tool.py 仅作兼容入口，保留原有 mock/real 语义，新代码使用 registry。
+每个 Tool 都有 real.py、mock.py、schemas.py 和 description.py。调用统一使用 registry（旧 tool.py 兼容入口已删除）。
 三个纯文本 LLM 工具由 LLMTool 校验，其余后端工具在 registry 的统一边界校验。
 
 - schemas.py 的 Input/Output 是可执行契约；description.py 提供用途和字段解释，并从 Schema 生成参数结构。

@@ -49,7 +49,7 @@ Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索�
 |---|---|
 | `description.py` | 主 Agent 看到的工具说明，包括用途、调用时机和参数。由 agent/tool_descriptions.py 汇总。 |
 | `real.py` | 实际执行入口。后端工具调用对应 adapter 并包装结果；tool02/03/07 绑定公共 LLM 运行器；tool10 保留自己的评估实现。 |
-| `mock.py` 或 `tool.py` | 提供模拟结果，用于验证接口和编排流程。各目录情况不同，真正使用哪个文件以 registry.py 的注册为准。 |
+| `mock.py` | 提供模拟结果，用于验证接口和编排流程。 |
 | `schemas.py` | tool02/03/07 的输入输出结构与业务校验。 |
 | `prompt.md` | tool02/03/07 内部模型的指令。 |
 | `config.json` | tool02/03/07 的模型角色、提示词版本、输出长度和纠错设置。 |

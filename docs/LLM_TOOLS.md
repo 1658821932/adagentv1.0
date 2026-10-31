@@ -19,7 +19,7 @@ inputs、outputs、input_schema 和 output_schema；不再手写第二份参数�
 
 ## 调用与返回
 
-统一函数签名为 run(input_data: dict) -> dict。调用时使用注册表，或明确导入 real.run / mock.run；不提供 tool.py 旧入口。
+统一函数签名为 run(input_data: dict) -> dict。调用时使用注册表，或明确导入 real.run / mock.run；不提供 tool.py 旧入口（与其他工具一致，已删除）。
 推荐调用注册表，以便遵循明确的 mock/real 模式：
 ```python
 from tools.registry import call_tool

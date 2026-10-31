@@ -113,8 +113,8 @@ stop 由主循环记录为 error，而非成功完成；全局最大步数仍限
       mock.py         # 通过相同契约的确定性模拟实现
       __init__.py
 
-这三个工具不再提供 tool.py 旧入口，调用统一使用注册表或明确的 real/mock 模块。公共实现是 tools/llm_runtime.py。完整约定与验证命令见 [LLM 工具开发规范](LLM_TOOLS.md)。
-其他后端工具的 real.py 负责调用对应组件 adapter 并包装标准返回格式；环境选择、进程启动和后端格式转换集中在 mcp_servers/<组件>/adapter/。mock 仍由各工具自己的 tool.py/mock.py 提供。
+所有工具均不提供旧 tool.py 入口（已删除），调用统一使用注册表或明确的 real/mock 模块。公共实现是 tools/llm_runtime.py。完整约定与验证命令见 [LLM 工具开发规范](LLM_TOOLS.md)。
+其他后端工具的 real.py 负责调用对应组件 adapter 并包装标准返回格式；环境选择、进程启动和后端格式转换集中在 mcp_servers/<组件>/adapter/。mock 由各工具自己的 mock.py 提供。
 
 tools/registry.py 是总调度：维护 MOCK_TOOL_REGISTRY 和 REAL_TOOL_REGISTRY 两张表，call_tool(name, args, mode) 按模式分发。**新增工具要在这里登记。**
 
