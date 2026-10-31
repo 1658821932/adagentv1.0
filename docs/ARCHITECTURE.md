@@ -199,7 +199,7 @@ SmartEdit 内部配置生成指令已独立放在 smart_edit/adapter/prompts/。
 
 ## tests/ — 测试
 
-pytest，147 项。覆盖配置加载、决策校验、工具结果信封、坐标转换、场景验证、批量失败筛选等。跑法：
+pytest，148 项。覆盖配置加载、决策校验、工具结果信封、坐标转换、场景验证、批量失败筛选等。跑法：
 
     environments/video_retriever/.venv/bin/python -m pytest tests/
 

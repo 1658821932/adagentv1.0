@@ -26,22 +26,25 @@ def tool_dirs():
         yield path.parent.name
 
 
-def type_of(prop: dict, defs: dict) -> str:
+def type_of(prop: dict, refs: list | None = None) -> str:
     if "$ref" in prop:
-        return prop["$ref"].rsplit("/", 1)[-1]
+        name = prop["$ref"].rsplit("/", 1)[-1]
+        if refs is not None and name not in refs:
+            refs.append(name)
+        return name
     if "enum" in prop:
         return "enum[" + ", ".join(json.dumps(v, ensure_ascii=False) for v in prop["enum"]) + "]"
     if "anyOf" in prop:
         parts = []
         for p in prop["anyOf"]:
-            t = type_of(p, defs)
+            t = type_of(p, refs)
             if t not in parts:
                 parts.append(t)
         return " \\| ".join(parts)
     t = prop.get("type")
     if t == "array":
         items = prop.get("items")
-        return f"array<{type_of(items, defs)}>" if items else "array"
+        return f"array<{type_of(items, refs)}>" if items else "array"
     if t == "object":
         return "object"
     if t in {"integer", "number"}:
@@ -64,7 +67,7 @@ def default_of(prop: dict) -> str:
 
 
 def aliases_of(model, field: str) -> str:
-    info = model.model_fields.get(field)
+    info = model.model_fields.get(field) if model is not None else None
     alias = getattr(info, "validation_alias", None) if info else None
     choices = getattr(alias, "choices", None)
     if not choices:
@@ -73,21 +76,37 @@ def aliases_of(model, field: str) -> str:
     return ("（别名：`" + "`, `".join(extras) + "`）") if extras else ""
 
 
-def render_table(schema: dict, notes: dict, model) -> str:
+def render_table(schema: dict, notes: dict, model) -> tuple[str, list]:
+    """Render a field table; returns (markdown, referenced sub-model names)."""
     props = schema.get("properties", {})
     if not props:
-        return "（无字段）\n"
+        return "（无字段）\n", []
     required = set(schema.get("required", []))
-    defs = schema.get("$defs", {})
+    refs: list = []
     lines = ["| 字段 | 类型 | 必填 | 默认值 | 说明 |", "|---|---|---|---|---|"]
     for name, prop in props.items():
         note = notes.get(name) or prop.get("description") or ""
         note = str(note).replace("|", "\\|").replace("\n", " ") + aliases_of(model, name)
         lines.append(
-            f"| `{name}` | {type_of(prop, defs)} | {'✅' if name in required else '—'} "
+            f"| `{name}` | {type_of(prop, refs)} | {'✅' if name in required else '—'} "
             f"| {default_of(prop)} | {note} |"
         )
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", refs
+
+
+def render_nested(schema: dict, refs: list, schemas_module) -> list:
+    """Expand one level of referenced sub-models below the main table."""
+    defs = schema.get("$defs", {})
+    out = []
+    for name in refs:
+        sub = defs.get(name)
+        if not sub:
+            continue
+        sub_model = getattr(schemas_module, name, None)
+        md, _ = render_table(sub, {}, sub_model)
+        out.append(f"**`{name}` 对象字段：**\n")
+        out.append(md)
+    return out
 
 
 def main():
@@ -104,12 +123,13 @@ def main():
         "本文档只列字段级契约。",
         "",
     ]
+    count = 0
     for dirname in tool_dirs():
+        count += 1
         module = importlib.import_module(f"tools.{dirname}.description")
         schemas = importlib.import_module(f"tools.{dirname}.schemas")
         desc = module.DESCRIPTION
-        title = f"## {dirname}: `{desc['name']}`"
-        sections.append(title)
+        sections.append(f"## {dirname}: `{desc['name']}`")
         sections.append("")
         sections.append(desc.get("description", "").strip())
         when = desc.get("when_to_use", "").strip()
@@ -117,15 +137,18 @@ def main():
             sections.append("")
             sections.append(f"**何时使用**：{when}")
         sections.append("")
-        sections.append("### 输入")
-        sections.append("")
-        sections.append(render_table(desc.get("input_schema", {}), desc.get("inputs", {}), schemas.Input))
-        sections.append("### 输出")
-        sections.append("")
-        sections.append(render_table(desc.get("output_schema", {}), desc.get("outputs", {}), schemas.Output))
+        for label, key, notes_key, model in (
+                ("输入", "input_schema", "inputs", schemas.Input),
+                ("输出", "output_schema", "outputs", schemas.Output)):
+            schema = desc.get(key, {})
+            md, refs = render_table(schema, desc.get(notes_key, {}), model)
+            sections.append(f"### {label}")
+            sections.append("")
+            sections.append(md)
+            sections.extend(render_nested(schema, refs, schemas))
         sections.append("")
     OUTPUT.write_text("\n".join(sections), encoding="utf-8")
-    print(f"wrote {OUTPUT.relative_to(ROOT)} ({len(tool_dirs().__class__(list(tool_dirs()))) if False else len(list(tool_dirs()))} tools)")
+    print(f"wrote {OUTPUT.relative_to(ROOT)} ({count} tools)")
 
 
 if __name__ == "__main__":

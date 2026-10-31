@@ -84,6 +84,14 @@ Use an LLM to plan a scenario, source-video requirements and feasible editing id
 | `retrieval_query` | string | ✅ | — | Natural-language query for video_retriever.requirement. |
 | `source_requirement` | object \| string | ✅ | — | Original requirement attached by code. |
 
+**`EditIdea` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `operation` | string | ✅ | — | Proposed editing operation. |
+| `target_role` | string | ✅ | — | Participant role; do not invent an instance ID. |
+| `parameters` | object | — | — | Proposed design parameters, not measurements. |
+
 
 ## tool04_video_retriever: `video_retriever`
 
@@ -187,6 +195,14 @@ Use an LLM to turn an edit request and discovered scene context into a grounded 
 | `operations` | array<Operation> | ✅ | — | Concrete proposed operations. |
 | `constraints` | array<string> | — | — | Geometry, motion and evidence constraints. |
 
+**`Operation` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `operation` | string | ✅ | — | Named proposed edit operation. |
+| `target` | integer \| string \| null | — | null | A supplied instance ID, or null when not yet known. Role descriptions belong in parameters.target_role. |
+| `parameters` | object | — | — | Proposed edit parameters; distinguish design targets from measurements. |
+
 
 ## tool08_edit_config_generator: `edit_config_generator`
 
@@ -266,6 +282,22 @@ Evaluate whether an edited scene satisfies requirements and remains physically a
 | `scene_ply` | string \| null | — | null | Scene Ply |
 | `ignored_reconstruction_artifacts` | array<string> | — | — | Ignored Reconstruction Artifacts |
 | `mock_force_fail` | boolean | — | `false` | Mock Force Fail |
+
+**`VisualEvaluation` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `requirement_consistency` | boolean | ✅ | — |  |
+| `visual_valid` | boolean | ✅ | — |  |
+| `geometry_valid` | boolean | ✅ | — |  |
+| `physics_valid` | boolean | ✅ | — |  |
+| `traffic_logic_valid` | boolean | ✅ | — |  |
+| `confidence` | number >=0 | — | `0.0` |  |
+| `issues` | array<string> | — | — |  |
+| `evidence` | array | — | — |  |
+| `ignored_reconstruction_artifacts` | array<string> | — | — |  |
+| `model` | string \| null | — | null |  |
+| `sampled_frames` | integer >=0 | — | `0` |  |
 
 ### 输出
 
@@ -377,6 +409,15 @@ Fine-tune the driving policy with imitation learning (ilft) or reinforcement lea
 | `work_dir` | string \| null | — | null | Optional export parent; execution always uses an isolated runtime directory. |
 | `timeout` | integer >0 | — | `86400` | Positive per-process timeout in seconds. |
 | `seed` | integer >=0 | — | `0` | Nonnegative random seed, default 0. |
+
+**`TrainingData` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `ann_file` | string \| null | — | null |  |
+| `token_file` | string | ✅ | — | （别名：`nav_filter_path`） |
+| `rollout_dir` | string \| null | — | null |  |
+| `vocab_path` | string \| null | — | null |  |
 
 ### 输出
 
