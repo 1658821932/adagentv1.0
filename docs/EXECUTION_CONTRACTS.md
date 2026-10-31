@@ -34,7 +34,8 @@ result = call_tool("video_retriever", {
 | WFA | WFA_PYTHON |
 
 SmartEdit 的模型默认值由自己的 adapter/settings.json 管理，不再读取 configs/agent.json。
-视觉验证使用 tools/tool10_scene_validator/config.json，默认仍为 Kimi。
+纯文本 LLM 工具（tool02/03/07）的配置在各自目录 config.json，由 tools/llm_runtime.py 统一加载。
+视觉验证使用 tools/tool10_scene_validator/config.json，由工具自己的 config.py 解析，默认仍为 Kimi。
 密钥继续从本地环境/.env 读取，不写入上述 JSON。
 基础重建缺陷只允许通过某次验证的 ignored_reconstruction_artifacts 显式传入，不再对所有场景应用固定排除项。
 
