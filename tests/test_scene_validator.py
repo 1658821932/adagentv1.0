@@ -32,6 +32,9 @@ class SceneValidatorTests(unittest.TestCase):
             evaluation = {
                 "requirement_consistency": False,
                 "visual_valid": False,
+                "geometry_valid": False,
+                "physics_valid": False,
+                "traffic_logic_valid": False,
                 "issues": ["救护车未清晰出现"],
                 "ignored_reconstruction_artifacts": ["右侧山体破碎"],
             }

@@ -12,7 +12,8 @@ DESCRIPTION = {
     "when_to_use": 'Optional dynamic-object geometric diagnosis after execution. Not an RL reward calculator or road-compliance evaluator. For RL use policy_runner dense rewards and policy_trainer sample_filter.',
     'inputs': {
         'scenario_pkl': 'WorldEngine custom scenario pickle containing ego and dynamic-object tracks.',
-        'result_dir': 'Optional policy_runner result directory containing the actual WorldEngine ego trajectory.',
+        'result_dir': 'Optional policy_runner result directory. Scene identities must match executed metadata; missing or ambiguous matches fail explicitly.',
+        'scene_token': 'Optional full scene ID or unambiguous 16-character suffix to evaluate only one scene.',
     },
     'outputs': {
         'is_failure_case': 'Whether a dynamic-vehicle collision failure was found.',

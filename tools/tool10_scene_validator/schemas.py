@@ -5,13 +5,28 @@ from tools.contracts import InputModel, OutputModel, NonEmptyStr
 PositiveInt = Annotated[int, Field(gt=0)]
 PositiveFloat = Annotated[float, Field(gt=0)]
 
+class VisualEvaluation(OutputModel):
+    """Untrusted evaluator output: no string/number-to-boolean coercion."""
+    requirement_consistency: bool
+    visual_valid: bool
+    geometry_valid: bool
+    physics_valid: bool
+    traffic_logic_valid: bool
+    confidence: Annotated[float, Field(ge=0, le=1)] = 0.0
+    issues: list[str] = Field(default_factory=list)
+    evidence: list[Any] = Field(default_factory=list)
+    ignored_reconstruction_artifacts: list[str] = Field(default_factory=list)
+    model: str | None = None
+    sampled_frames: Annotated[int, Field(ge=0)] = 0
+
+
 class Input(InputModel):
     rendered_video: NonEmptyStr
     scene_requirement: NonEmptyStr | dict[str, Any]
     frame_count: Annotated[int, Field(ge=8)] = 8
     frame_paths: list[NonEmptyStr] | None = None
     edited_scene: dict[str, Any] | None = None
-    visual_evaluation: dict[str, Any] | None = None
+    visual_evaluation: VisualEvaluation | None = None
     local_evaluator: NonEmptyStr | list[NonEmptyStr] | None = None
     scene_config: NonEmptyStr | None = None
     scene_ply: NonEmptyStr | None = None

@@ -11,7 +11,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_BASE_URL, DEFAULT_MODEL, SETTINGS, frame_python
+from .config import DEFAULT_BASE_URL, DEFAULT_MODEL, SETTINGS, frame_python, vlm_settings
+from .schemas import VisualEvaluation
+from pydantic import ValidationError
+from tools.llm_runtime import validation_details
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -105,9 +108,7 @@ def _evaluate_locally(input_data: dict[str, Any], video: Path, requirement: Any)
 
 
 def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) -> dict[str, Any]:
-    api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("LLM_API_KEY")
-    if not api_key:
-        raise RuntimeError("scene_validator requires DASHSCOPE_API_KEY or LLM_API_KEY for VLM evaluation")
+    settings = vlm_settings()
     supplied_frames = input_data.get("frame_paths")
     if isinstance(supplied_frames, list) and supplied_frames:
         frames = [Path(item).expanduser().resolve() for item in supplied_frames]
@@ -140,11 +141,11 @@ def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) ->
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         content.extend({"type": "image_url", "image_url": {"url": _image_data_url(frame)}} for frame in frames)
-        body = _dashscope_chat(os.environ.get("DASHSCOPE_BASE_URL") or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL, api_key, {"model": os.environ.get("SCENE_VALIDATOR_MODEL", DEFAULT_MODEL), "messages": [{"role": "user", "content": content}], "max_tokens": 8192}, int(os.environ.get("SCENE_VALIDATOR_TIMEOUT", str(SETTINGS["timeout"]))))
+        body = _dashscope_chat(settings.base_url, settings.api_key, {"model": settings.model, "messages": [{"role": "user", "content": content}], "max_tokens": 8192}, settings.timeout)
         result = _extract_json(body["choices"][0]["message"]["content"])
         if not isinstance(result, dict):
             raise ValueError("Qwen-VL scene evaluation must return a JSON object")
-        result["model"] = os.environ.get("SCENE_VALIDATOR_MODEL", DEFAULT_MODEL)
+        result["model"] = settings.model
         result["sampled_frames"] = len(frames)
         return result
     finally:
@@ -188,15 +189,23 @@ def run(input_data: dict[str, Any]) -> dict[str, Any]:
     visual = _evaluate_locally(input_data, video, requirement) if video.is_file() else None
     if visual is None and video.is_file() and not input_data.get("visual_evaluation") and not (input_data.get("local_evaluator") or os.environ.get("SCENE_VALIDATOR_LOCAL_COMMAND")):
         visual = _evaluate_qwen(input_data, video, requirement)
+    if visual is not None:
+        try:
+            visual = VisualEvaluation.model_validate(visual).model_dump()
+        except ValidationError as exc:
+            return {"status": "error", "tool": "scene_validator", "error": {
+                "type": "output_validation_error",
+                "message": "Visual evaluator output must contain five strict boolean decisions",
+                "validation_errors": validation_details(exc)}}
     if visual is None:
         issues.append("no visual evaluator configured; scene requirement was not evaluated")
     elif isinstance(visual.get("issues"), list):
         issues.extend(str(item) for item in visual["issues"])
-    requirement_consistency = bool(visual and visual.get("requirement_consistency", False))
-    visual_valid = bool(visual and visual.get("visual_valid", False))
-    geometry_valid = bool(visual and visual.get("geometry_valid", False))
-    physics_valid = bool(visual and visual.get("physics_valid", False))
-    traffic_logic_valid = bool(visual and visual.get("traffic_logic_valid", False))
+    requirement_consistency = visual["requirement_consistency"] if visual is not None else False
+    visual_valid = visual["visual_valid"] if visual is not None else False
+    geometry_valid = visual["geometry_valid"] if visual is not None else False
+    physics_valid = visual["physics_valid"] if visual is not None else False
+    traffic_logic_valid = visual["traffic_logic_valid"] if visual is not None else False
     passed = all((requirement_consistency, visual_valid, geometry_valid, physics_valid, traffic_logic_valid)) and not issues
     return {"status": "success", "tool": "scene_validator", "result": {
         "passed": passed,

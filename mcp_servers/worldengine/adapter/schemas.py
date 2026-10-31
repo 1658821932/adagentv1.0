@@ -31,3 +31,7 @@ class EvaluationResult(TypedDict, total=False):
     collision_events: List[Any]
     frames_evaluated: int
     trajectory_source: str
+    scene_count: int
+    scene_results: List[Any]
+    evaluated_scene_ids: List[str]
+    skipped_scene_ids: List[str]
