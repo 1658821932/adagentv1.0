@@ -82,3 +82,5 @@ python mcp_servers/worldengine_failure_analysis/core/run.py scene --config <conf
 WorldEngine 默认使用 adapter/run_testing.sh 启动，算法源码仍从 WORLDENGINE_ROOT 读取；上游 core 的启动脚本保持原样。显式自定义启动脚本必须支持 WORLDENGINE_TEST_PATH 指定的独立输出路径。
 
 这些改动只规范文件布局，不改变训练算法；policy_trainer 当前仍为 IL。
+
+工具契约、服务配置、WorldEngine 参数与长任务管理见 [执行接口说明](../docs/EXECUTION_CONTRACTS.md)。

@@ -11,6 +11,7 @@ Task -> LLM decision -> Tool execution -> State update -> Next decision
 import sys
 from typing import Any, Dict, Optional
 
+from mcp_servers.runtime import trace_context
 from agent.config import AgentConfig
 from agent.executor import ToolExecutor
 from agent.logger import RunLogger
@@ -132,10 +133,10 @@ class Agent:
                 )
 
                 try:
-                    result = self.executor.execute(
-                        tool_name,
-                        arguments,
-                    )
+                    with trace_context(agent_run_id=self.logger.run_id,
+                                       parent_run_id=self.logger.run_id,
+                                       tool_call_id=f"{self.logger.run_id}:step_{step:02d}:{tool_name}"):
+                        result = self.executor.execute(tool_name, arguments)
                 except Exception as exc:
                     self.logger.log_tool_error(
                         step,
@@ -153,10 +154,8 @@ class Agent:
                 print("Tool Result:")
                 print(result)
 
-                self.state.add_tool_result(
-                    tool_name,
-                    result,
-                )
+                self.state.add_tool_result(tool_name, result)
+                self.logger.save_state(self.state.to_dict())
 
             self.state.mark_error("Maximum agent steps reached")
             final_state = self.state.to_dict()

@@ -1,0 +1,5 @@
+{
+  "paths": {
+    "python": "environments/simengine/.conda/bin/python"
+  }
+}

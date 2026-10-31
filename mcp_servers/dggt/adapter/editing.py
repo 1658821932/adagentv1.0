@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from mcp_servers.process import run_logged
 from pathlib import Path
 from .coordinates import convert_edit_config
 from mcp_servers.runtime import runtime_task, current_run
@@ -57,10 +58,10 @@ def edit_scene(input_data: dict) -> dict:
             converted_config, coordinate_diagnostics = convert_edit_config(source_config, camera_params_path, meters_to_dggt)
             execution_config = current_run("dggt").input / (config.stem + ".dggt.json")
             execution_config.write_text(json.dumps(converted_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    proc = subprocess.run(
+    proc = run_logged(
         [str(AGENT_PYTHON), "-m", "mcp_servers.dggt.adapter.runner"],
         input=json.dumps({"video_path": str(video), "edit_config_path": str(execution_config) if execution_config else None, "ego_trajectory_offsets_path": ego_trajectory_offsets_path, "export_dynamic_frame_ply": input_data.get("export_dynamic_frame_ply", True), "num_frames": AGENT_FRAME_COUNT}, ensure_ascii=False),
-        capture_output=True, text=True, cwd=PROJECT_ROOT, env=current_run("dggt").child_env(),
+        cwd=PROJECT_ROOT, env=current_run("dggt").child_env(), log_path=current_run("dggt").logs / "editing.log", json_stdout=True, timeout=int(input_data.get("timeout",86400)),
     )
     try:
         payload = json.loads(proc.stdout)

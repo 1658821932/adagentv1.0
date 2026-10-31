@@ -1,147 +1,89 @@
-"""Run ordinary supervised WorldEngine fine-tuning on converted scene data."""
-
+"""Mode-specific WorldEngine fine-tuning with isolated runtime data."""
 from __future__ import annotations
-
 import json
 import os
-import re
-import subprocess
+import shutil
 from pathlib import Path
 from typing import Any
-
-
 from .config import WorldEngineConfig, ALGENGINE_PYTHON
 from .schemas import TrainingResult
+from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-
 DEFAULT_WORLDENGINE_ROOT = WorldEngineConfig().project_root
 DEFAULT_PYTHON = ALGENGINE_PYTHON
-LOSS_RE = re.compile(r"loss\.imi:\s*([0-9]+(?:\.[0-9]+)?)")
 
-
-def _path(value: Any, name: str, *, required: bool = True) -> Path | None:
-    if value is None and not required:
-        return None
+def _path(value, name):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"policy_trainer requires a non-empty '{name}'")
-    result = Path(value).expanduser().resolve()
-    if not result.is_file():
-        raise FileNotFoundError(f"policy_trainer {name} does not exist: {result}")
-    return result
-
+    p = Path(value).expanduser().resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"policy_trainer {name} does not exist: {p}")
+    return p
 
 @runtime_task("worldengine", "training")
 def train_policy(input_data: dict[str, Any]) -> TrainingResult:
-    mode = input_data.get("training_mode", "ilft")
-    if mode != "ilft":
-        raise ValueError("policy_trainer currently supports training_mode='ilft' only")
+    # Direct adapter calls receive the same validation as Agent tool calls.
+    from tools.tool15_policy_trainer.schemas import Input
+    args = Input.model_validate(input_data).model_dump()
+    mode, data = args["training_mode"], args["training_data"]
+    root = Path(args["worldengine_root"] or DEFAULT_WORLDENGINE_ROOT).expanduser().resolve()
+    checkpoint = _path(args["base_checkpoint"], "base_checkpoint")
+    _path(data["token_file"], "training_data.token_file")
+    default = (root / "experiments/posttrain/e2e_vadv2_50pct_waymo_ilft.py" if mode == "ilft"
+               else root / "projects/AlgEngine/configs/worldengine/e2e_vadv2_50pct_rlft_rare_rollout.py")
+    config = _path(args["config_path"] or str(default), "config_path")
+    python = _path(args["python"] or os.getenv("WORLDENGINE_TRAIN_PYTHON") or str(DEFAULT_PYTHON), "python")
+    _path(str(root / "projects/AlgEngine/scripts/train.py"), "train_entry")
+    if mode == "ilft":
+        _path(data["ann_file"], "training_data.ann_file")
+    else:
+        _path(data["vocab_path"], "training_data.vocab_path")
+        if not Path(data["rollout_dir"]).expanduser().is_dir():
+            raise FileNotFoundError("training_data.rollout_dir must be a WE openscene_format directory")
 
-    training_data = input_data.get("training_data")
-    if isinstance(training_data, str):
-        training_data = {"ann_file": training_data}
-    if not isinstance(training_data, dict):
-        training_data = {}
-    ann_file = _path(training_data.get("ann_file") or input_data.get("ann_file"), "training_data.ann_file")
-    token_file = _path(
-        training_data.get("token_file")
-        or training_data.get("nav_filter_path")
-        or input_data.get("token_file"),
-        "training_data.token_file",
-    )
-    checkpoint = _path(input_data.get("base_checkpoint") or input_data.get("checkpoint_path"), "base_checkpoint")
-
-    worldengine_root = Path(
-        input_data.get("worldengine_root") or DEFAULT_WORLDENGINE_ROOT
-    ).expanduser().resolve()
-    config = _path(
-        input_data.get("config_path")
-        or str(worldengine_root / "experiments/posttrain/waymo_090_ilft_adagent_smoke/e2e_vadv2_50pct_waymo_ilft.py"),
-        "config_path",
-    )
-    python = Path(
-        input_data.get("python")
-        or os.environ.get("WORLDENGINE_TRAIN_PYTHON")
-        or DEFAULT_PYTHON
-    ).expanduser().resolve()
-    if not python.is_file():
-        raise FileNotFoundError(f"policy_trainer Python executable does not exist: {python}")
-
-    epochs = int(input_data.get("epochs", input_data.get("total_epochs", 1)))
-    if epochs < 1:
-        raise ValueError("policy_trainer epochs must be positive")
     task = current_run("worldengine")
-    work_dir = task.output / "training"
-    work_dir.mkdir(parents=True, exist_ok=False)
+    work = task.output / "training"
+    work.mkdir(parents=True, exist_ok=False)
+    request = {**args, "config_path": str(config), "base_checkpoint": str(checkpoint),
+               "worldengine_root": str(root), "work_dir": str(work)}
+    request_path = task.input / "training_request.json"
+    request_path.write_text(json.dumps(request, indent=2))
+    helper = Path(__file__).with_name("prepare_training.py")
+    env = task.child_env()
+    env["WORLDENGINE_ROOT"] = str(root)
+    env["PYTHONPATH"] = os.pathsep.join([str(root / "projects/AlgEngine"),
+        str(helper.parent), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    preparation_log = task.logs / "preparation.log"
+    prepared = run_logged([str(python), str(helper), str(request_path)],
+        cwd=root, env=env, log_path=preparation_log, timeout=args["timeout"])
+    if prepared.returncode:
+        raise RuntimeError(f"Training data preparation failed; log: {preparation_log}\n{prepared.stdout[-3000:]}")
+    preparation = json.loads((work / "data_preparation.json").read_text())
+    env["WORLDENGINE_ROOT"] = preparation["runtime_root"]
+    command = [str(python), str(root / "projects/AlgEngine/scripts/train.py"),
+        str(work / "training_config.py"), "--work-dir", str(work),
+        "--no-validate", "--seed", str(args["seed"])]
     log_path = task.logs / "training.log"
-    export_parent = input_data.get("work_dir")
-
-    command = [
-        str(python),
-        str(worldengine_root / "projects/AlgEngine/scripts/train.py"),
-        str(config),
-        "--work-dir",
-        str(work_dir),
-        "--no-validate",
-        "--cfg-options",
-        f"load_from={checkpoint}",
-        f"total_epochs={epochs}",
-        f"runner.max_epochs={epochs}",
-        f"data.train.ann_file={ann_file}",
-        f"data.train.nav_filter_path={token_file}",
-        f"data.train.finetune_yaml=[\"{token_file}\"]",
-    ]
-    env = os.environ.copy()
-    env["WORLDENGINE_ROOT"] = str(worldengine_root)
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(worldengine_root / "projects/AlgEngine"), env.get("PYTHONPATH", "")]
-    ).rstrip(os.pathsep)
-    timeout = int(input_data.get("timeout", os.environ.get("POLICY_TRAINER_TIMEOUT", "86400")))
-    if timeout <= 0:
-        raise ValueError("policy_trainer timeout must be positive")
-
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=worldengine_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        log_path.write_text(
-            f"$ {' '.join(command)}\n\nstdout:\n{exc.stdout or ''}\n\nstderr:\n{exc.stderr or ''}\n",
-            encoding="utf-8",
-        )
-        raise RuntimeError(f"policy_trainer timed out after {timeout}s; log: {log_path}") from exc
-
-    log_path.write_text(
-        f"$ {' '.join(command)}\n\nstdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}\n",
-        encoding="utf-8",
-    )
-    if completed.returncode != 0:
-        tail = (completed.stderr or completed.stdout)[-4000:]
-        raise RuntimeError(f"policy_trainer failed; log: {log_path}\n{tail}")
-
-    checkpoints = sorted(work_dir.glob("epoch_*.pth"), key=lambda p: p.stat().st_mtime)
+    completed = run_logged(command, cwd=root, env=env, log_path=log_path, timeout=args["timeout"])
+    if completed.returncode:
+        raise RuntimeError(f"policy_trainer failed; log: {log_path}\n{completed.stdout[-3000:]}")
+    checkpoints = sorted(work.glob("epoch_*.pth"), key=lambda p: p.stat().st_mtime)
     if not checkpoints:
-        raise RuntimeError(f"training finished without a checkpoint: {work_dir}")
-    losses = [float(value) for value in LOSS_RE.findall(completed.stdout + "\n" + completed.stderr)]
-    result = {
-        "run_dir": str(task.root),
-        "training_mode": mode,
-        "checkpoint": str(checkpoints[-1]),
-        "work_dir": str(work_dir),
-        "log_path": str(log_path),
-        "epochs": epochs,
-    }
-    if losses:
-        result["final_loss"] = losses[-1]
-    if export_parent:
-        import shutil
-        export_dir = Path(export_parent).expanduser().resolve() / task.root.name
-        shutil.copytree(work_dir, export_dir)
-        result["export_dir"] = str(export_dir)
+        raise RuntimeError(f"Training finished without a checkpoint: {work}")
+    audit = json.loads((work / "training_audit.json").read_text())
+    if not audit["finite_losses"] or not audit["changed_parameter_count"]:
+        raise RuntimeError("Training must have finite losses and actual parameter updates")
+    result = {"run_dir": str(task.root), "training_mode": mode,
+        "checkpoint": str(checkpoints[-1]), "work_dir": str(work),
+        "log_path": str(log_path), "epochs": args["epochs"],
+        "training_config": str(work / "training_config.py"),
+        "data_preparation": preparation, "training_audit": audit}
+    if "loss" in audit["losses"]:
+        result["final_loss"] = audit["losses"]["loss"]
+    if args["work_dir"]:
+        export = Path(args["work_dir"]).expanduser().resolve() / task.root.name
+        shutil.copytree(work, export)
+        result["export_dir"] = str(export)
     return result

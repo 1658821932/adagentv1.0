@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .schemas import SimulationResult
-from .config import WorldEngineConfig
+from .config import WorldEngineConfig, SIMENGINE_PYTHON, ALGENGINE_PYTHON, AGENT_PYTHON
+from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
 
 
@@ -41,11 +42,11 @@ def _prepare_dggt_scene(
     if builder_python is None:
         raise FileNotFoundError("No compatible WorldEngine scene-builder Python environment found")
     scene_id = f"{data_type}-000"
-    completed = subprocess.run(
+    completed = run_logged(
         [str(builder_python), str(builder), "--source", str(staged),
          "--output-root", str(output_root), "--scene-id", scene_id,
          "--translation-scale", str(translation_scale)],
-        cwd=runtime.project_root, capture_output=True, text=True, check=False,
+        cwd=runtime.project_root, log_path=current_run("worldengine").logs / "scene_conversion.log", timeout=runtime.timeout,
     )
     if completed.returncode:
         raise RuntimeError((completed.stderr or completed.stdout).strip() or "WorldEngine scene conversion failed")
@@ -87,8 +88,11 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
             float(options.get("translation_scale", 10000.0)),
         )
         scenario_pkl_file_name = "all_scenarios.pkl"
-    env = os.environ.copy()
+    env = current_run("worldengine").child_env()
     env["WORLDENGINE_ROOT"] = str(runtime.project_root)
+    env.setdefault("SIMENGINE_PYTHON", str(SIMENGINE_PYTHON))
+    env.setdefault("ALGENGINE_PYTHON", str(ALGENGINE_PYTHON))
+    env.setdefault("WORLDENGINE_LAUNCH_PYTHON", str(AGENT_PYTHON))
     # WorldEngine shell scripts call "conda run"; ensure a conda installation
     # is on PATH even when the parent process was not a login shell.
     if not shutil.which("conda", path=env.get("PATH")):
@@ -122,6 +126,7 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
     if scenario_pkl_file_name:
         env["SCENARIO_PKL_FILE_NAME"] = str(scenario_pkl_file_name)
     option_env = {
+        "with_dense_reward_manager": "WITH_DENSE_REWARD_MANAGER",
         "num_history": "NUM_HISTORY",
         "planner_interval_frames": "PLANNER_INTERVAL_FRAMES",
         "planner_history_stride": "PLANNER_HISTORY_STRIDE",
@@ -137,6 +142,9 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         "agent_client": "AGENT_CLIENT",
         "multi_agent_vadv2": "MULTI_AGENT_VADV2",
     }
+    for key in ("planner_interval_frames", "planner_history_stride", "multi_agent_vadv2"):
+        if options.get(key) is not None:
+            raise ValueError(f"{key} is not supported by the native runner")
     for key, env_key in option_env.items():
         if key in options and options[key] is not None:
             value = options[key]
@@ -151,15 +159,8 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
     env["WORLDENGINE_TEST_PATH"] = str(result_dir)
     external_result_dir = result_dir
     log_path = task.logs / "simulation.log"
-    try:
-        completed = subprocess.run(command, cwd=runtime.project_root, env=env, capture_output=True, text=True, timeout=timeout)
-    except Exception as exc:
-        log_path.write_text(f"$ {' '.join(command)}\n{exc}\n", encoding="utf-8")
-        raise
-    log_path.write_text(
-        f"$ {' '.join(command)}\n\n[stdout]\n{completed.stdout}\n\n[stderr]\n{completed.stderr}\n",
-        encoding="utf-8",
-    )
+    completed = run_logged(command, cwd=runtime.project_root, env=env,
+                           log_path=log_path, timeout=timeout)
     if completed.returncode:
         raise RuntimeError((completed.stderr or completed.stdout).strip() or "WorldEngine simulation failed")
     report_files = sorted(result_dir.rglob("runner_report_*.json"))

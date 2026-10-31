@@ -22,3 +22,10 @@ DESCRIPTION = {
         'instance_info_path': 'DGGT-compatible per-frame instance_info.json for dggt_yolo. The returned state contains only sampled bbox frames; pass this path to Smart Edit tools for complete per-frame data instead of copying every detection frame into arguments.',
     },
 }
+
+from .schemas import Input, Output
+DESCRIPTION["input_schema"] = Input.model_json_schema()
+DESCRIPTION["output_schema"] = Output.model_json_schema()
+DESCRIPTION["inputs"] = {key: DESCRIPTION["inputs"].get(key, value.get("description", value.get("title", key))) for key,value in DESCRIPTION["input_schema"]["properties"].items()}
+
+DESCRIPTION["outputs"] = {key: DESCRIPTION["outputs"].get(key, value.get("description", value.get("title", key))) for key,value in DESCRIPTION["output_schema"]["properties"].items()}

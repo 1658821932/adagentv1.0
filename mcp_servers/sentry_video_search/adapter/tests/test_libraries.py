@@ -100,10 +100,11 @@ class VideoLibraryTests(unittest.TestCase):
             "stdout": json.dumps(response),
             "stderr": "",
         })()
-        with patch("mcp_servers.sentry_video_search.adapter.client.subprocess.run", return_value=completed) as subprocess_run:
+        with patch("mcp_servers.sentry_video_search.adapter.client.run_logged", return_value=completed) as subprocess_run:
             result = retrieve_video({"requirement": "highway", "library": "waymo"})
 
-        self.assertEqual(result["result"], response["result"])
+        self.assertEqual(result["result"]["video_path"], response["result"]["video_path"])
+        self.assertIn("run_dir", result["result"])
         self.assertEqual(json.loads(subprocess_run.call_args.kwargs["input"])["library"], "waymo")
         with self.assertRaisesRegex(ValueError, "library must be"):
             retrieve_video({"requirement": "highway", "library": "unknown"})

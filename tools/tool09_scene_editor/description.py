@@ -24,3 +24,10 @@ DESCRIPTION = {
         'edited_scene': 'DGGT reconstruction result containing edited render, exact scene_config/edit_config_path, and scene artifacts.',
     },
 }
+
+from .schemas import Input, Output
+DESCRIPTION["input_schema"] = Input.model_json_schema()
+DESCRIPTION["output_schema"] = Output.model_json_schema()
+DESCRIPTION["inputs"] = {key: DESCRIPTION["inputs"].get(key, value.get("description", value.get("title", key))) for key,value in DESCRIPTION["input_schema"]["properties"].items()}
+
+DESCRIPTION["outputs"] = {key: DESCRIPTION["outputs"].get(key, value.get("description", value.get("title", key))) for key,value in DESCRIPTION["output_schema"]["properties"].items()}

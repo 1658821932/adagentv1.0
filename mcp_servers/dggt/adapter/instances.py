@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+from mcp_servers.process import run_logged
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +40,7 @@ def _dggt_yolo_backend(input_data: dict[str, Any]) -> dict[str, Any]:
         command.extend(["--vis_dir", str(task.output / "visualizations")])
     env = os.environ.copy()
     env["PYTHONPATH"] = str(DGGT_ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    proc = subprocess.run(command, capture_output=True, text=True, cwd=DGGT_ROOT, env=env)
-    (task.logs / "instances.log").write_text(proc.stdout + "\n" + proc.stderr)
+    proc = run_logged(command, cwd=DGGT_ROOT, env=env, log_path=task.logs / "instances.log", timeout=int(input_data.get("timeout",3600)))
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "DGGT YOLO instance generation failed")
     if not output.is_file():

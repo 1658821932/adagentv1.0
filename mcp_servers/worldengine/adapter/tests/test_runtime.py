@@ -32,12 +32,12 @@ def test_simulation_directs_backend_into_distinct_output_dirs(tmp_path):
         assert result["reports"] == [[{"succeeded": True}]]
     assert not (tmp_path / "experiments/closed_loop_exps").exists()
 
-def test_training_ignores_stale_checkpoints_and_keeps_export(tmp_path):
+def test_training_ignores_stale_checkpoints_and_keeps_export(tmp_path, stub_training_preparation):
     from mcp_servers.worldengine.adapter.training import train_policy
     core = tmp_path / "core"
     script = core / "projects/AlgEngine/scripts/train.py"
     script.parent.mkdir(parents=True)
-    script.write_text('import sys\nfrom pathlib import Path\np=Path(sys.argv[sys.argv.index("--work-dir")+1]);(p/"epoch_1.pth").write_bytes(b"fresh")\nprint("loss.imi: 0.25")\n')
+    script.write_text('import sys,json\nfrom pathlib import Path\np=Path(sys.argv[sys.argv.index("--work-dir")+1]);(p/"epoch_1.pth").write_text("fresh")\n(p/"training_audit.json").write_text(json.dumps({"finite_losses":True,"changed_parameter_count":1,"losses":{"loss":0.25}}))\nprint("loss.imi: 0.25")\n')
     files = {}
     for name in ("ann", "tokens", "base", "config"):
         files[name] = tmp_path / name

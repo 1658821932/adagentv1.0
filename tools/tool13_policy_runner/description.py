@@ -8,7 +8,7 @@ about this tool here, not in the global system prompt.
 
 DESCRIPTION = {
     "name": 'policy_runner',
-    "description": 'Load a WorldEngine scenario and run the autonomous driving policy in one closed-loop execution for imitation-learning data generation.',
+    "description": 'Run a driving policy in WorldEngine closed loop for evaluation or IL/RL data collection.',
     "when_to_use": 'Use after scene validation succeeds to load the scenario, start SimEngine and run the policy.',
     'inputs': {
         'config_path': 'Absolute existing AlgEngine config. Standard: <WORLDENGINE_ROOT>/projects/AlgEngine/configs/worldengine/e2e_vadv2_50pct.py.',
@@ -27,10 +27,21 @@ DESCRIPTION = {
         'translation_scale': 'WorldEngine metres per DGGT reconstruction unit; defaults to 10000 for normalized DGGT outputs.',
         'num_history': 'Optional history frame count.',
         'num_future': 'Optional future frame count.',
-        'max_frame_per_scene': 'Exactly 40; closed-loop simulation uses only the first 40 frames.',
+        'max_frame_per_scene': 'Positive frame budget (at least 5), default 40. num_history + num_future must equal this budget; future is derived when omitted. Never pad observations.',
+        'with_dense_reward_manager': 'Set true to collect native 8192-candidate rewards for RL; false preserves ordinary IL/evaluation collection.',
         'sampling_poses': 'Optional native rollout timing override in 0.5-second units.',
     },
     'outputs': {
-        'results': 'WorldEngine closed-loop result, output directory and runner reports.',
+        'result_dir': 'WorldEngine closed-loop output directory.',
+        'reports': 'Native runner reports.',
+        'rollout_dir': 'WE openscene_format directory; pass as training_data.rollout_dir to RL training.',
+        'reward_dir': 'Candidate rewards and actual plan_idx.csv when dense rewards were requested.',
     },
 }
+
+from .schemas import Input, Output
+DESCRIPTION["input_schema"] = Input.model_json_schema()
+DESCRIPTION["output_schema"] = Output.model_json_schema()
+DESCRIPTION["inputs"] = {key: DESCRIPTION["inputs"].get(key, value.get("description", value.get("title", key))) for key,value in DESCRIPTION["input_schema"]["properties"].items()}
+
+DESCRIPTION["outputs"] = {key: DESCRIPTION["outputs"].get(key, value.get("description", value.get("title", key))) for key,value in DESCRIPTION["output_schema"]["properties"].items()}

@@ -1,13 +1,4 @@
-"""Local mock implementation of policy training."""
+"""Compatibility entry point for the mock; prefer mock.py or registry."""
+from .mock import run
 
-
-def run(input_data: dict) -> dict:
-    """Return mock model metadata without training or saving a checkpoint."""
-    return {
-        "status": "success",
-        "tool": "policy_trainer",
-        "result": {
-            "model_id": "mock_policy_v2",
-            "checkpoint": "outputs/mock/model_v2.ckpt",
-        },
-    }
+__all__ = ["run"]

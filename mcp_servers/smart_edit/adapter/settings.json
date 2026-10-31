@@ -1,0 +1,11 @@
+{
+  "paths": {
+    "python": "environments/smart-edit/.venv/bin/python"
+  },
+  "llm": {
+    "base_url": "https://apicz.boyuerichdata.com/v1",
+    "model": "qwen3.5-plus",
+    "timeout": 600,
+    "max_tokens": 2048
+  }
+}

@@ -1,4 +1,4 @@
-"""Local mock implementation of the Smart Edit configuration generator."""
+"""Compatibility entry point for the mock; prefer mock.py or registry."""
+from .mock import run
 
-def run(input_data: dict) -> dict:
-    return {"status": "success", "tool": "edit_config_generator", "result": {"edit_config": {"Nodes": {"RigidNodes": {}}}}}
+__all__ = ["run"]

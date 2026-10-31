@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import ReconstructionConfig
+from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
 
 
@@ -28,15 +29,8 @@ def _run_command(
     env = os.environ.copy()
     if python_bin is not None:
         env["PATH"] = str(python_bin.parent) + os.pathsep + env.get("PATH", "")
-    with log_path.open("w", encoding="utf-8") as log_handle:
-        completed = subprocess.run(
-            command,
-            cwd=cwd,
-            env=env,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+    completed = run_logged(command, cwd=cwd, env=env, log_path=log_path,
+                           timeout=int(os.environ.get("DGGT_TIMEOUT", "86400")))
     if completed.returncode != 0:
         tail = _log_tail(log_path)
         message = f"Command failed with exit code {completed.returncode}: {' '.join(command)}"
@@ -79,7 +73,7 @@ def reconstruct(
          "print(json.dumps({'fps':cap.get(cv2.CAP_PROP_FPS),"
          "'frames':int(cap.get(cv2.CAP_PROP_FRAME_COUNT))})); cap.release()",
          str(source_video)],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, timeout=60,
     )
     video_info = json.loads(probe.stdout)
     source_fps = float(video_info["fps"])

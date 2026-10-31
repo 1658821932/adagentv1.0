@@ -1,0 +1,5 @@
+{
+  "paths": {
+    "python": "environments/video_retriever/.venv/bin/python"
+  }
+}

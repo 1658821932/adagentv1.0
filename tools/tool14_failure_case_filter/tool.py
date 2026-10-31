@@ -1,13 +1,4 @@
-"""Local mock implementation of failure-case filtering."""
+"""Compatibility entry point for the mock; prefer mock.py or registry."""
+from .mock import run
 
-
-def run(input_data: dict) -> dict:
-    """Return mock filtering output without writing to a database."""
-    return {
-        "status": "success",
-        "tool": "failure_case_filter",
-        "result": {
-            "is_failure_case": False,
-            "failure_cases": [],
-        },
-    }
+__all__ = ["run"]

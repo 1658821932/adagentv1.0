@@ -1,0 +1,7 @@
+{
+  "paths": {
+    "agent_python": "environments/agent/.venv/bin/python",
+    "simengine_python": "environments/simengine/.conda/bin/python",
+    "algengine_python": "environments/algengine/.conda/bin/python"
+  }
+}

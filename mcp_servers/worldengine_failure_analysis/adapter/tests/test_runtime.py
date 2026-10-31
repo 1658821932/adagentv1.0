@@ -24,7 +24,7 @@ def test_wfa_reads_only_this_task_output(tmp_path):
         (scene / "result.json").write_text(json.dumps({"token": "token", "status": "supported", "failure_reason": "test"}))
         (scene / "status.json").write_text('{"state":"completed"}')
         return subprocess.CompletedProcess(command, 0, "done", "")
-    with patch("mcp_servers.worldengine_failure_analysis.adapter.service._check_secret"), patch("mcp_servers.worldengine_failure_analysis.adapter.service.subprocess.run", side_effect=backend):
+    with patch("mcp_servers.worldengine_failure_analysis.adapter.service._check_secret"), patch("mcp_servers.worldengine_failure_analysis.adapter.service.run_logged", side_effect=backend):
         first = analyze_scene("token", config_path=str(config))
         second = analyze_scene("token", config_path=str(config))
     assert first.run_dir != second.run_dir

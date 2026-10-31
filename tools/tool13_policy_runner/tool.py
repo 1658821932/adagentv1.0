@@ -1,15 +1,4 @@
-"""Local mock implementation of policy execution and data collection."""
+"""Compatibility entry point for the mock; prefer mock.py or registry."""
+from .mock import run
 
-
-def run(input_data: dict) -> dict:
-    """Return a mock policy execution result without loading a model."""
-    return {
-        "status": "success",
-        "tool": "policy_runner",
-        "result": {
-            "trajectory": [],
-            "collision": False,
-            "ttc": 3.5,
-            "policy_result": "mock_success",
-        },
-    }
+__all__ = ["run"]

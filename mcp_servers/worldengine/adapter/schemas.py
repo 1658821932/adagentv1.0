@@ -19,6 +19,9 @@ class TrainingResult(TypedDict, total=False):
     epochs: int
     final_loss: float
     export_dir: str
+    training_config: str
+    data_preparation: dict
+    training_audit: dict
 
 class EvaluationResult(TypedDict, total=False):
     run_dir: str

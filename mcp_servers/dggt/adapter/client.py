@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from mcp_servers.runtime import runtime_task, current_run
 import json
 import subprocess
+from mcp_servers.process import run_logged
 from pathlib import Path
 
 
 from .config import PROJECT_ROOT, AGENT_PYTHON, AGENT_FRAME_COUNT
 
 
+@runtime_task("dggt", "reconstruction")
 def reconstruct_video(input_data: dict) -> dict:
     if input_data.get("num_frames", AGENT_FRAME_COUNT) != AGENT_FRAME_COUNT:
         raise ValueError("Agent reconstruction requires num_frames=40")
@@ -29,13 +32,15 @@ def reconstruct_video(input_data: dict) -> dict:
             "Agent environment is missing: environments/agent/.venv/bin/python"
         )
 
-    proc = subprocess.run(
+    proc = run_logged(
         [str(AGENT_PYTHON), "-m", "mcp_servers.dggt.adapter.runner"],
         input=json.dumps({"video_path": video_path.strip(), "num_frames": AGENT_FRAME_COUNT,
                           "export_render_state": input_data.get("export_render_state", False)}, ensure_ascii=False),
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=current_run("dggt").child_env(),
+        log_path=current_run("dggt").logs / "reconstruction.log",
+        json_stdout=True,
+        timeout=int(input_data.get("timeout", 86400)),
     )
 
     try:

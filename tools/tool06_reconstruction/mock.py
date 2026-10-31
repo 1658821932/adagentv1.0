@@ -23,6 +23,7 @@ def run(input_data: dict) -> dict:
         "result": {
             "video_path": video_path.strip(),
             "run_dir": str((PROJECT_ROOT / "logs" / "mock_reconstruction").resolve()),
+            "input_scene_name": "000",
             "input_dir": str((mock_root / "input").resolve()),
             "output_dir": str(mock_root),
             "scene_ply": str((point_clouds / "combined_001.ply").resolve()),

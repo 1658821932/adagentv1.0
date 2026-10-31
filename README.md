@@ -32,7 +32,7 @@ tool10 检查输出文件、编辑配置及渲染画面，返回验证报告。�
 
 通过 WorldEngine 运行闭环策略仿真，并按配置保存仿真产物与指标。自定义高斯场景需先完成格式转换；地图与指标所需数据必须单独准备。
 
-支持对已转换的训练数据调用 AlgEngine 执行监督微调，保存训练日志和 checkpoint。当前 Agent 训练工具支持 ILFT，不提供 RL 训练。动态对象几何筛选工具不覆盖静态高斯和道路边界，也不等同于官方 NC/DAC。
+支持对已转换的训练数据调用 AlgEngine 执行监督微调，保存训练日志和 checkpoint。当前 Agent 训练工具兼容 ILFT 和 RLFT；RL 需要 WE 导出的图像、元数据及候选轨迹奖励。动态对象几何筛选工具不覆盖静态高斯和道路边界，也不等同于官方 NC/DAC。
 
 ## MCP 服务与适配组件
 
@@ -117,3 +117,9 @@ SmartEdit 的原生 MCP 测试在其自身环境中单独运行：
 ```bash
 PYTHONPATH=mcp_servers/smart_edit/core environments/smart-edit/.venv/bin/python -m unittest discover -s mcp_servers/smart_edit/core/tests -v
 ```
+
+## IL / RL 训练
+
+policy_trainer 支持 training_mode=ilft（默认）和 rlft。IL使用标注，RL使用WE导出的图像、元数据和候选轨迹奖励。调用示例见 [训练工具说明](docs/policy_training.md)。
+
+工具契约、服务配置、WorldEngine 参数与长任务管理见 [执行接口说明](docs/EXECUTION_CONTRACTS.md)。

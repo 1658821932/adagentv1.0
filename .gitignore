@@ -98,3 +98,6 @@ mcp_servers/worldengine/core/logs/
 
 # Local scene datasets (never publish)
 /data/
+
+# Native simulator debug artifacts
+/mcp_servers/worldengine/core/projects/SimEngine/dbg/

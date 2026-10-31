@@ -1,6 +1,8 @@
 """Per-task workspaces shared by service adapters (no model dependencies)."""
 from __future__ import annotations
+from contextlib import contextmanager
 import contextvars
+import subprocess
 import functools
 import json
 import os
@@ -8,6 +10,17 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+_TRACE = contextvars.ContextVar("execution_trace", default={})
+
+@contextmanager
+def trace_context(**fields):
+    token = _TRACE.set({**_TRACE.get(), **fields})
+    try:
+        yield
+    finally:
+        _TRACE.reset(token)
+
 
 _ACTIVE = contextvars.ContextVar("service_runs", default={})
 ROOT = Path(__file__).resolve().parent
@@ -55,6 +68,12 @@ class Run:
                          "status": "running"}
         if directory is not None and (self.root / "manifest.json").is_file():
             self.manifest = json.loads((self.root / "manifest.json").read_text())
+        if "owner_pid" not in self.manifest:
+            self.manifest["owner_pid"] = os.getpid()
+        for field in ("agent_run_id", "tool_call_id", "parent_run_id"):
+            value = _TRACE.get().get(field) or os.getenv("ADAGENT_" + field.upper())
+            if value:
+                self.manifest[field] = value
         self.update()
 
     def update(self, **fields):
@@ -62,7 +81,11 @@ class Run:
         write_json(self.root / "manifest.json", self.manifest)
 
     def child_env(self):
-        return {**os.environ, "ADAGENT_ACTIVE_SERVICE": self.service, "ADAGENT_ACTIVE_RUN": str(self.root)}
+        env = {**os.environ, "ADAGENT_ACTIVE_SERVICE": self.service, "ADAGENT_ACTIVE_RUN": str(self.root)}
+        for field in ("agent_run_id", "tool_call_id", "parent_run_id"):
+            if self.manifest.get(field):
+                env["ADAGENT_" + field.upper()] = str(self.manifest[field])
+        return env
 
 
 def current_run(service):
@@ -94,7 +117,11 @@ def runtime_task(service, operation):
                 run.update(status="success", finished_at=datetime.now(timezone.utc).isoformat())
                 return result
             except BaseException as exc:
-                run.update(status="error", error_type=type(exc).__name__, finished_at=datetime.now(timezone.utc).isoformat())
+                state = "cancelled" if isinstance(exc, KeyboardInterrupt) else "timed_out" if isinstance(exc, subprocess.TimeoutExpired) else "error"
+                recorded = json.loads((run.root / "manifest.json").read_text())
+                if state == "error" and recorded.get("status") in {"cancelled", "timed_out"}:
+                    state = recorded["status"]
+                run.update(status=state, error_type=type(exc).__name__, finished_at=datetime.now(timezone.utc).isoformat())
                 raise
             finally:
                 _ACTIVE.reset(token)

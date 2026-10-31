@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
 
 from .schemas import EditConfigResult
@@ -42,8 +43,7 @@ def generate_edit_config(input_data: dict[str, Any]) -> EditConfigResult:
     payload = {"edit_request": edit_plan, "instance_info_path": input_data.get("instance_info_path"), "output_path": str(internal_output), "scene_info": input_data.get("scene_info"), "asset_path": input_data.get("asset_path"), "asset_scale": asset_scale, "output_kind": output_kind, "frame_count": 40}
     env = os.environ.copy()
     env["SMART_EDIT_ROOT"] = str(SMART_EDIT_ROOT)
-    proc = subprocess.run([str(SMART_EDIT_PYTHON), "-m", "mcp_servers.smart_edit.adapter.client"], input=json.dumps(payload, ensure_ascii=False), capture_output=True, text=True, cwd=PROJECT_ROOT, env=env)
-    (task.logs / "smart_edit.log").write_text(proc.stdout + "\n" + proc.stderr)
+    proc = run_logged([str(SMART_EDIT_PYTHON), "-m", "mcp_servers.smart_edit.adapter.client"], input=json.dumps(payload, ensure_ascii=False), cwd=PROJECT_ROOT, env={**env, **task.child_env(), "SMART_EDIT_ROOT": str(SMART_EDIT_ROOT)}, log_path=task.logs / "smart_edit.log", json_stdout=True, timeout=int(input_data.get("timeout",1800)))
     try:
         response = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:

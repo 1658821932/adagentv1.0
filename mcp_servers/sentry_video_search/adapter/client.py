@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from mcp_servers.runtime import runtime_task, current_run
 import json
 import subprocess
+from mcp_servers.process import run_logged
 from pathlib import Path
 
 
 from .config import PROJECT_ROOT, VIDEO_RETRIEVER_PYTHON
 
+@runtime_task("sentry_video_search", "retrieval")
 def retrieve_video(input_data: dict) -> dict:
     requirement = input_data.get("requirement")
     if not isinstance(requirement, str) or not requirement.strip():
@@ -24,12 +27,14 @@ def retrieve_video(input_data: dict) -> dict:
             "environments/video_retriever/requirements.txt"
         )
 
-    proc = subprocess.run(
+    proc = run_logged(
         [str(VIDEO_RETRIEVER_PYTHON), "-m", "mcp_servers.sentry_video_search.adapter.runner"],
         input=json.dumps({"requirement": requirement.strip(), "library": library}, ensure_ascii=False),
-        capture_output=True,
-        text=True,
         cwd=PROJECT_ROOT,
+        env=current_run("sentry_video_search").child_env(),
+        log_path=current_run("sentry_video_search").logs / "retrieval.log",
+        json_stdout=True,
+        timeout=int(input_data.get("timeout", 86400)),
     )
 
     try:

@@ -49,6 +49,11 @@ def run_simulation(sim_env: BaseEnv, exit_on_failure: bool = False) -> List[Runn
     :return report for the simulation.
     """
     reports = sim_env.run()
+    # The last scene has no subsequent reset to flush its buffered metadata.
+    # Persist it before telling the planner that this job is complete.
+    manager = sim_env.engine.managers.get("data_manager")
+    if manager is not None:
+        manager.save_data()
 
     # Create worker-specific completion flag file
     # The config is resolved inside the worker's lazy_init(), so output_dir has the correct worker-specific path

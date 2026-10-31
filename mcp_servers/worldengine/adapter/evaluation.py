@@ -10,6 +10,7 @@ import json
 import os
 import pickle
 import subprocess
+from mcp_servers.process import run_logged
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -113,11 +114,12 @@ def filter_failure_cases(input_data: dict[str, Any]) -> EvaluationResult:
             raise FileNotFoundError("WorldEngine result has no executed ego trajectory metadata")
         metadata_file = candidates[0]
     try:
-        process = subprocess.run(
+        process = run_logged(
             [str(python), "-c", EVALUATOR, str(scenario), str(metadata_file or "")],
-            capture_output=True, text=True, check=True,
+            cwd=PROJECT_ROOT, log_path=current_run("worldengine").logs / "evaluation.log", json_stdout=True, timeout=int(input_data.get("timeout",120)),
         )
-        (current_run("worldengine").logs / "evaluation.log").write_text(process.stdout + "\n" + process.stderr)
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode,process.args,process.stdout,process.stderr)
         evaluation = json.loads(process.stdout)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(exc.stderr.strip() or "decision evaluation failed") from exc

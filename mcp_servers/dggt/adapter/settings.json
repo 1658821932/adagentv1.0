@@ -1,0 +1,5 @@
+{
+  "paths": {
+    "agent_python": "environments/agent/.venv/bin/python"
+  }
+}

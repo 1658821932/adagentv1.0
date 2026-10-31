@@ -1,4 +1,4 @@
-"""Local mock implementation of DGGT scene editing."""
+"""Compatibility entry point for the mock; prefer mock.py or registry."""
+from .mock import run
 
-def run(input_data: dict) -> dict:
-    return {"status": "success", "tool": "scene_editor", "result": {"edited_scene": "outputs/mock/edited_scene.ply"}}
+__all__ = ["run"]

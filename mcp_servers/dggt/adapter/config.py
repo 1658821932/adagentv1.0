@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from mcp_servers.configuration import runtime_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 COMPONENT_ROOT = Path(__file__).resolve().parents[1]
-AGENT_PYTHON = PROJECT_ROOT / "environments" / "agent" / ".venv" / "bin" / "python"
+AGENT_PYTHON = runtime_path(COMPONENT_ROOT, "agent_python", "AGENT_PYTHON", "environments/agent/.venv/bin/python")
 AGENT_FRAME_COUNT = 40
 
 

@@ -1,6 +1,7 @@
 """Failure-analysis integration paths and environment resolution."""
 import os
 from pathlib import Path
+from mcp_servers.configuration import runtime_path
 
 COMPONENT_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = COMPONENT_ROOT.parents[1]
@@ -13,19 +14,12 @@ DEFAULT_RUN_NAME = "adagent_failure_analysis"
 
 def _resolve_python() -> str:
     """Pick a Python that can run wfa (needs numpy/opencv/Pillow)."""
-    env = os.environ.get("WFA_PYTHON")
-    if env:
-        return env
-    project = PROJECT_ROOT  # adagent/
-    candidates = [
-        project / "environments" / "simengine" / ".conda" / "bin" / "python",
-        project / "environments" / "dggt" / ".conda" / "bin" / "python",
-        project / "environments" / "agent" / ".venv" / "bin" / "python",
-    ]
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    return "python3"
+    python = runtime_path(COMPONENT_ROOT, "python", "WFA_PYTHON",
+                          "environments/simengine/.conda/bin/python")
+    if not python.is_file():
+        raise FileNotFoundError(f"WFA interpreter not found: {python}; set WFA_PYTHON or adapter/settings.json")
+    return str(python)
+
 
 
 def _check_secret() -> Path:

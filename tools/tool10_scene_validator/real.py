@@ -11,12 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-DEFAULT_BASE_URL = "https://apicz.boyuerichdata.com/v1"  # fallback only; prefer LLM_BASE_URL
-DEFAULT_MODEL = "kimi-k3"
-IGNORED_RECONSTRUCTION_ARTIFACTS = (
-    "画面中央的黑色横向空洞",
-    "右侧山体和植被边缘的破碎、涂抹",
-)
+from .config import DEFAULT_BASE_URL, DEFAULT_MODEL, SETTINGS, frame_python
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -41,7 +36,7 @@ def _sample_frames(video: Path, count: int) -> list[Path]:
     ffprobe = "ffprobe"
     ffmpeg = "ffmpeg"
     if not (subprocess.run(["which", ffprobe], capture_output=True).returncode == 0 and subprocess.run(["which", ffmpeg], capture_output=True).returncode == 0):
-        frame_python = os.environ.get("SCENE_VALIDATOR_FRAME_PYTHON", "/root/miniconda3/bin/python")
+        frame_interpreter = frame_python()
         script = (
             "import cv2,sys\n"
             "video,out,count=sys.argv[1],sys.argv[2],int(sys.argv[3])\n"
@@ -56,7 +51,7 @@ def _sample_frames(video: Path, count: int) -> list[Path]:
             " cv2.imwrite(f'{out}/frame_{i:03d}.jpg',frame)\n"
             "cap.release()\n"
         )
-        subprocess.run([frame_python, "-c", script, str(video), str(directory), str(count)], check=True)
+        subprocess.run([frame_interpreter, "-c", script, str(video), str(directory), str(count)], check=True)
         return [directory / f"frame_{i:03d}.jpg" for i in range(max(1, count))]
     probe = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(video)], capture_output=True, text=True, check=True)
     duration = max(float(probe.stdout.strip()), 0.0)
@@ -130,7 +125,7 @@ def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) ->
             "只评估编辑是否满足最初场景需求：目标车辆是否清晰可见、位置和尺度是否合理、是否接地、"
             "跨帧是否连续，以及目标附近是否有编辑引入的伪影。以下是已知的 DGGT 基础重建缺陷，"
             "不属于本次编辑质量，不要因此判定失败，也不要放入 issues："
-            + "；".join(IGNORED_RECONSTRUCTION_ARTIFACTS) + "。"
+            + "；".join(input_data.get("ignored_reconstruction_artifacts", [])) + "。"
             "可将它们记入 ignored_reconstruction_artifacts。若缺陷遮住目标，导致无法确认编辑效果，仍应判定失败。"
             "逐张检查提供的关键帧，证据注明帧序号；对于前车切入，确认切入后不继续向右越过自车车道，"
             "并检查末帧车辆仍可辨认；只看到车辆接近画面中心不足以证明它在车道内。"
@@ -145,7 +140,7 @@ def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) ->
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         content.extend({"type": "image_url", "image_url": {"url": _image_data_url(frame)}} for frame in frames)
-        body = _dashscope_chat(os.environ.get("DASHSCOPE_BASE_URL") or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL, api_key, {"model": os.environ.get("SCENE_VALIDATOR_MODEL", DEFAULT_MODEL), "messages": [{"role": "user", "content": content}], "max_tokens": 8192}, int(os.environ.get("SCENE_VALIDATOR_TIMEOUT", "180")))
+        body = _dashscope_chat(os.environ.get("DASHSCOPE_BASE_URL") or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL, api_key, {"model": os.environ.get("SCENE_VALIDATOR_MODEL", DEFAULT_MODEL), "messages": [{"role": "user", "content": content}], "max_tokens": 8192}, int(os.environ.get("SCENE_VALIDATOR_TIMEOUT", str(SETTINGS["timeout"]))))
         result = _extract_json(body["choices"][0]["message"]["content"])
         if not isinstance(result, dict):
             raise ValueError("Qwen-VL scene evaluation must return a JSON object")

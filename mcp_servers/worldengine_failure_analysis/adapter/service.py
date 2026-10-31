@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
+from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
 
 from .config import WFA_ROOT, DEFAULT_CONFIG, DEFAULT_CONFIG_EXAMPLE, DEFAULT_RUN_NAME, _resolve_python, _check_secret
@@ -59,11 +60,10 @@ def analyze_scene(
     if resume:
         cmd.append("--resume")
 
-    proc = subprocess.run(
-        cmd, cwd=str(WFA_ROOT), capture_output=True, text=True, timeout=timeout, env={**task.child_env(), "WFA_SECRET_FILE": str(secret_file)},
+    proc = run_logged(
+        cmd, cwd=str(WFA_ROOT), log_path=task.logs / "analysis.log", timeout=timeout, env={**task.child_env(), "WFA_SECRET_FILE": str(secret_file)},
     )
 
-    (task.logs / "analysis.log").write_text(proc.stdout + "\n" + proc.stderr)
     if proc.returncode:
         raise WfaError(f"wfa exited with code {proc.returncode}; see {task.logs}")
 

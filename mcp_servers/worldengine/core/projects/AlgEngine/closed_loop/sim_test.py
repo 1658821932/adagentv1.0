@@ -112,7 +112,7 @@ async def run_inference_loop(model, cfg, logger):
         folder_path=MONITORED_FOLDER,
         check_interval=5,
         max_history=cfg.queue_length,
-        max_frame_per_scene=12,
+        max_frame_per_scene=getattr(cfg.sim, 'max_frame_per_scene', 12),
         wait_for_files=True,
         max_wait_time=99999,
         logger=logger,

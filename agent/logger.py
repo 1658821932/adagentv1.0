@@ -22,6 +22,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+from mcp_servers.runtime import write_json
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -78,8 +79,7 @@ class RunLogger:
     def _write_json(path: Path, data: Any) -> None:
         """Write UTF-8 JSON."""
 
-        with path.open("w", encoding="utf-8") as file:
-            json.dump(data, file, ensure_ascii=False, indent=2)
+        write_json(path, data)
 
     def _tool_dir(self, step: int, tool_name: str) -> Path:
         """Return the directory for one concrete tool invocation."""
@@ -112,6 +112,9 @@ class RunLogger:
         tool_dir.mkdir(parents=True, exist_ok=False)
 
         self._write_json(tool_dir / "input.json", arguments)
+        self._write_json(tool_dir / "call.json", {
+            "agent_run_id": self.run_id, "tool_call_id": f"{self.run_id}:step_{step:02d}:{tool_name}",
+            "tool": tool_name, "step": step})
 
         self._tool_start_times[step] = time.perf_counter()
         with (tool_dir / "execution.log").open("a", encoding="utf-8") as file:
@@ -155,6 +158,10 @@ class RunLogger:
                 f"[{self._now()}] tool failed "
                 f"error={type(error).__name__}: {error}\n"
             )
+
+    def save_state(self, state):
+        """A checkpoint for inspection/recovery after each completed tool."""
+        self._write_json(self.run_dir / "state.json", state)
 
     def finalize(self, state: Dict[str, Any]) -> None:
         """Save final Agent state and update run-level metadata."""

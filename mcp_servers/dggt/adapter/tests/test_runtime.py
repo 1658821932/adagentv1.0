@@ -47,7 +47,7 @@ def test_instance_discovery_keeps_explicit_export(tmp_path):
         output = Path(command[command.index("--output") + 1])
         output.write_text('{"instances":[]}')
         return subprocess.CompletedProcess(command, 0, "done", "")
-    with patch("mcp_servers.dggt.adapter.instances.subprocess.run", side_effect=backend):
+    with patch("mcp_servers.dggt.adapter.instances.run_logged", side_effect=backend):
         result = discover_instances({"image_dir": str(image_dir), "output_path": str(exported)})
     assert exported.read_text() == Path(result["instance_info_path"]).read_text()
     assert Path(result["instance_info_path"]).is_relative_to(Path(result["run_dir"]) / "output")
