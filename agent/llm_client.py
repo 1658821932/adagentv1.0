@@ -45,7 +45,7 @@ class LLMClient:
             raise ValueError("LLM overrides allow only model, timeout and max_tokens")
         self.last_usage = None
 
-        self.api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
+        self.api_key = os.getenv("OPENAI_API_KEY")
         self.base_url = (
             os.getenv("OPENAI_BASE_URL")
             or os.getenv("LLM_BASE_URL")
@@ -69,7 +69,7 @@ class LLMClient:
 
         missing = []
         if not self.api_key:
-            missing.append("OPENAI_API_KEY (or LLM_API_KEY)")
+            missing.append("OPENAI_API_KEY")
         if not self.base_url:
             missing.append("OPENAI_BASE_URL (or LLM_BASE_URL)")
         if not self.model:

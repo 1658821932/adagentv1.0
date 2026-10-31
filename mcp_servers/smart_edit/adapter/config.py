@@ -19,7 +19,7 @@ def llm_settings() -> dict:
     defaults = settings(COMPONENT_ROOT).get("llm", {})
     role = {}
     return {
-        "api_key": os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY"),
+        "api_key": os.getenv("OPENAI_API_KEY"),
         "base_url": os.getenv("OPENAI_BASE_URL") or os.getenv("LLM_BASE_URL") or defaults.get("base_url"),
         "model": role.get("model") or os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or defaults.get("model"),
         "max_tokens": int(role.get("max_tokens") or os.getenv("OPENAI_MAX_TOKENS") or defaults.get("max_tokens", 2048)),

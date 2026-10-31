@@ -21,7 +21,7 @@ def test_smartedit_llm_settings_do_not_read_agent_json(tmp_path,monkeypatch):
 
 def test_visual_exclusions_are_per_scene_not_global(tmp_path,monkeypatch):
     import tools.tool10_scene_validator.real as validator
-    monkeypatch.setenv("LLM_API_KEY","test")
+    monkeypatch.setenv("OPENAI_API_KEY","test")
     frame=tmp_path/"frame.jpg";frame.write_bytes(b"test")
     received=[]
     def chat(url,key,payload,timeout):

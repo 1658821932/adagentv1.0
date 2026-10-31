@@ -73,7 +73,7 @@ environments/agent/.venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-在 .env 只填写 OPENAI_API_KEY（兼容 LLM_API_KEY）；模型、端点等非敏感配置填写 configs/agent.json 的 llm 块，兼容已有环境变量覆盖。然后按需准备各组件的运行环境、权重、数据及服务密钥，设置 `SMART_EDIT_ROOT`、`WORLDENGINE_ROOT` 等路径；主环境的安装不包含全部 real 工具依赖。
+在 .env 只填写 OPENAI_API_KEY；模型、端点等非敏感配置填写 configs/agent.json 的 llm 块，兼容已有环境变量覆盖。然后按需准备各组件的运行环境、权重、数据及服务密钥，设置 `SMART_EDIT_ROOT`、`WORLDENGINE_ROOT` 等路径；主环境的安装不包含全部 real 工具依赖。
 
 ```bash
 environments/agent/.venv/bin/python -m agent.main \
@@ -89,8 +89,8 @@ mock/real 共用输入输出校验。目录规范、模型角色和逐工具测�
 
 ## 密钥与模型分工
 
-- Agent 主模型：`OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL`（或旧 `LLM_*`），例 `qwen3.5-plus`。
-- tool10 视觉验证：默认 `kimi-k3`，端点和模型默认值内嵌在工具实现中，可用 `SCENE_VALIDATOR_BASE_URL` / `SCENE_VALIDATOR_MODEL` 覆盖；密钥按 `SCENE_VALIDATOR_API_KEY` → `OPENAI_API_KEY` → `LLM_API_KEY` 顺序读取。
+- Agent 主模型：密钥统一读 `OPENAI_API_KEY`；端点/模型在 configs/agent.json 的 llm 块，可用 `OPENAI_BASE_URL`/`OPENAI_MODEL` 覆盖，例 `qwen3.5-plus`。
+- tool10 视觉验证：默认 `kimi-k3`，端点和模型默认值在 `tools/tool10_scene_validator/config.json`，可用 `SCENE_VALIDATOR_BASE_URL` / `SCENE_VALIDATOR_MODEL` 覆盖；密钥统一读 `OPENAI_API_KEY`。
 - tool04 视频检索：召回/重排用 DashScope `qwen3-vl-embedding`，需真实 `DASHSCOPE_API_KEY`（中转站不支持该端点）。
 - OSS（可选）：`OSS_*` 供重排产物上传；不入库。
 

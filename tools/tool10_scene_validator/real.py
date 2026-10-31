@@ -19,16 +19,12 @@ from tools.llm_runtime import validation_details
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Non-secret defaults, overridable via SCENE_VALIDATOR_* env vars. API keys stay in .env.
-_DEFAULT_BASE_URL = "https://apicz.boyuerichdata.com/v1"
-_DEFAULT_MODEL = "kimi-k3"
-_DEFAULT_TIMEOUT = 180
-_DEFAULT_FRAME_PYTHON = "environments/dggt/.conda/bin/python"
-_API_KEY_ENVS = ("OPENAI_API_KEY", "LLM_API_KEY")
+# Non-secret defaults live in config.json; overridable via SCENE_VALIDATOR_* env vars.
+_SETTINGS = json.loads(Path(__file__).with_name("config.json").read_text())
 
 
 def frame_python():
-    value = os.getenv("SCENE_VALIDATOR_FRAME_PYTHON") or _DEFAULT_FRAME_PYTHON
+    value = os.getenv("SCENE_VALIDATOR_FRAME_PYTHON") or _SETTINGS["frame_python"]
     path = Path(value).expanduser()
     return str(path if path.is_absolute() else ROOT / path)
 
@@ -47,23 +43,16 @@ def vlm_settings(environ=None):
         from dotenv import load_dotenv
         load_dotenv(ROOT / ".env", override=False)
         environ = os.environ
-    base_url = (environ.get("SCENE_VALIDATOR_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
-    model = (environ.get("SCENE_VALIDATOR_MODEL") or _DEFAULT_MODEL).strip()
-    timeout = int(environ.get("SCENE_VALIDATOR_TIMEOUT") or _DEFAULT_TIMEOUT)
+    base_url = (environ.get("SCENE_VALIDATOR_BASE_URL") or _SETTINGS["base_url"]).rstrip("/")
+    model = (environ.get("SCENE_VALIDATOR_MODEL") or _SETTINGS["model"]).strip()
+    timeout = int(environ.get("SCENE_VALIDATOR_TIMEOUT") or _SETTINGS["timeout"])
     if urlsplit(base_url).scheme not in {"http", "https"} or not urlsplit(base_url).netloc:
         raise ValueError("SCENE_VALIDATOR_BASE_URL must be an HTTP(S) URL")
     if not model or timeout <= 0:
         raise ValueError("Visual model and positive timeout are required")
-    selected = environ.get("SCENE_VALIDATOR_API_KEY_ENV")
-    names = [selected] if selected else list(_API_KEY_ENVS)
-    key = environ.get("SCENE_VALIDATOR_API_KEY", "").strip()
+    key = environ.get("OPENAI_API_KEY", "").strip()
     if not key:
-        for name in names:
-            key = environ.get(name, "").strip()
-            if key:
-                break
-    if not key:
-        raise RuntimeError("Visual evaluator credential missing; set SCENE_VALIDATOR_API_KEY or " + ", ".join(names))
+        raise RuntimeError("Visual evaluator credential missing; set OPENAI_API_KEY in .env")
     return VLMSettings(base_url=base_url, model=model, timeout=timeout, api_key=key)
 
 

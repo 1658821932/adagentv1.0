@@ -204,14 +204,10 @@ def _finish(
 
 
 def _ensure_dashscope_key() -> None:
-    """Reuse the root Agent key when it is also a DashScope key."""
+    """Video search uses the Alibaba DashScope key; nothing else does."""
     if os.environ.get("DASHSCOPE_API_KEY", "").strip():
         return
-    agent_key = os.environ.get("LLM_API_KEY", "").strip()
-    if agent_key:
-        os.environ["DASHSCOPE_API_KEY"] = agent_key
-        return
-    raise RuntimeError("DASHSCOPE_API_KEY or LLM_API_KEY is required")
+    raise RuntimeError("DASHSCOPE_API_KEY is required")
 
 
 @runtime_task("sentry_video_search", "index_local")
