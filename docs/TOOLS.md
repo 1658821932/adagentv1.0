@@ -22,7 +22,7 @@ Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索�
 | [tool10：scene_validator](../tools/tool10_scene_validator/real.py)，场景验证 | 检查编辑结果是否满足原始需求，发现悬空、破碎、位置异常等画面问题。 | rendered_video、原始 scene_requirement；可提供已有视觉评估结果或本地评估器。 | passed、各检查项、evidence、issues。 | 检查文件与配置，调用视觉模型或指定的本地评估器。 |
 | [tool13：policy_runner](../tools/tool13_policy_runner/real.py)，驾驶策略运行 | 将场景交给驾驶策略做闭环仿真，观察策略实际行为。 | 模型配置、checkpoint、场景类型和运行参数；也可提供 DGGT 编辑输出。 | 运行目录、场景报告、仿真产物等。 | WorldEngine adapter，按需转换场景后启动仿真。 |
 | [tool14：failure_case_filter](../tools/tool14_failure_case_filter/real.py)，失败案例筛选 | 根据场景和实际运行轨迹判断是否出现动态对象碰撞，返回失败案例。 | scenario_pkl；可选 policy_runner 的 result_dir。 | is_failure_case、collision、碰撞事件和 failure_cases。 | WorldEngine adapter 中的几何筛选实现。 |
-| [tool15：policy_trainer](../tools/tool15_policy_trainer/real.py)，IL/RL训练 | 按training_mode选择模仿学习或强化学习后训练。 | IL：ann_file、token_file；RL：rollout_dir、token_file、vocab_path、sample_filter；另需基础权重，可指定配置和epochs。 | checkpoint、日志、实际配置、数据准备统计和参数更新检查。 | WorldEngine adapter启动AlgEngine；支持ilft（默认）和rlft，RL奖励缺失时明确失败。 |
+| [tool15：policy_trainer](../tools/tool15_policy_trainer/real.py)，IL/RL训练 | 按training_mode选择模仿学习或强化学习后训练。 | IL：ann_file、token_file；RL：rollout_dir、token_file、vocab_path；另需基础权重，可指定配置和epochs。 | checkpoint、日志、实际配置、数据准备统计和参数更新检查。 | WorldEngine adapter启动AlgEngine；支持ilft（默认）和rlft，RL奖励缺失时明确失败。 |
 
 ## 容易混淆的几组工具
 

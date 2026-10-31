@@ -9,7 +9,6 @@ class TrainingData(InputModel):
     token_file: NonEmptyStr = Field(validation_alias=AliasChoices("token_file", "nav_filter_path"))
     rollout_dir: NonEmptyStr | None = None
     vocab_path: NonEmptyStr | None = None
-    sample_filter: Literal["v1", "v2"] = "v2"
 
 class Input(InputModel):
     training_mode: Literal["ilft", "rlft"] = "ilft"

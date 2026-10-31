@@ -9,7 +9,7 @@ about this tool here, not in the global system prompt.
 DESCRIPTION = {
     "name": 'failure_case_filter',
     "description": 'Filter new failure cases from simulation results and store useful training data.',
-    "when_to_use": 'Optional dynamic-object geometric diagnosis after execution. Not an RL reward calculator or road-compliance evaluator. For RL use policy_runner dense rewards and policy_trainer sample_filter.',
+    "when_to_use": 'Optional dynamic-object geometric diagnosis after execution. Not an RL reward calculator or road-compliance evaluator. For RL, policy_trainer keeps failure scenes by closed-loop PDM total score.',
     'inputs': {
         'scenario_pkl': 'WorldEngine custom scenario pickle containing ego and dynamic-object tracks.',
         'result_dir': 'Optional policy_runner result directory. Scene identities must match executed metadata; missing or ambiguous matches fail explicitly.',

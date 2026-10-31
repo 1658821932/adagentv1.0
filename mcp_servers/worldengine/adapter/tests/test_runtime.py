@@ -22,6 +22,11 @@ def test_simulation_directs_backend_into_distinct_output_dirs(tmp_path):
     script.write_text('mkdir -p "$WORLDENGINE_TEST_PATH"\nprintf \'[{"succeeded": true}]\' > "$WORLDENGINE_TEST_PATH/runner_report_0.json"\n')
     config_file, checkpoint = tmp_path / "cfg.py", tmp_path / "model.pth"
     config_file.touch(); checkpoint.touch()
+    scenes = tmp_path / "data/sim_engine/scenarios/original/same"
+    scenes.mkdir(parents=True)
+    import pickle
+    with (scenes / "all_scenarios.pkl").open("wb") as stream:
+        pickle.dump({"scene_0": {"token": "scene_0"}}, stream)
     config = WorldEngineConfig(project_root=tmp_path, script=script)
     results = [run_simulation(str(config_file), str(checkpoint), "same", "same", config=config) for _ in range(2)]
     assert results[0]["result_dir"] != results[1]["result_dir"]

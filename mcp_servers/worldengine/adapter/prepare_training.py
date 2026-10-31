@@ -4,12 +4,12 @@ import os
 import sys
 import json
 import pickle
-import shutil
 import hashlib
-import csv
 import numpy as np
 import yaml
 from mmcv import Config
+
+from pdm_filter import load_scene_scores, failed_scene_anchors
 
 REWARDS = ("score", "no_at_fault_collisions", "drivable_area_compliance",
            "ego_progress", "time_to_collision_within_bound", "comfort")
@@ -60,15 +60,17 @@ def prepare(args):
             if not isinstance(rows, list):
                 raise ValueError("WE rollout metadata must be a list of frames")
             infos.extend(rows)
-        plan_file = require_file(rollout / "pdms_pkl/plan_idx.csv")
-        with plan_file.open() as f:
-            plans = {(row["prefix"], int(row["step"]) - 1): int(row["plan_idx"])
-                     for row in csv.DictReader(f)}
+        require_file(rollout / "pdms_pkl/plan_idx.csv")
+        # Failure selection: keep scenes whose closed-loop PDM total score is 0.
+        allowed = set(tokens["tokens"])
+        scene_scores, scores_file = load_scene_scores(rollout)
+        failed = failed_scene_anchors(scene_scores, allowed)
+        if not failed:
+            raise ValueError("No scene with a closed-loop PDM score of 0 among the requested tokens")
         name = "agent_rollout"
         history = 3
         cache = {}
         reward_frames = selected = 0
-        allowed = set(tokens["tokens"])
         valid_by_log = {}
         for info in infos:
             info["syn_name"] = name
@@ -79,7 +81,8 @@ def prepare(args):
                 require_file(image)
             log_name = info["log_name"]
             step = int(info["frame_idx"])
-            if step < history:
+            anchor = log_name.split("-", 2)[-1]
+            if step < history or anchor not in failed or info.get("invalid", False):
                 continue
             reward_file = rollout / "pdms_pkl" / (log_name + "_step_" + str(step) + "_scores.pkl")
             with require_file(reward_file).open("rb") as f:
@@ -92,29 +95,17 @@ def prepare(args):
                 clean[key] = a
             cache[info["token"]] = clean
             reward_frames += 1
-            anchor = log_name.split("-", 2)[-1]
-            if anchor in allowed and not info.get("invalid", False):
-                valid_by_log.setdefault(log_name, []).append(step)
-                if data["sample_filter"] == "v2":
-                    selected += int(step == history)
-                else:
-                    plan_idx = plans.get((anchor, step))
-                    if plan_idx is None or not 0 <= plan_idx < 8192:
-                        raise ValueError("Missing or invalid executed plan index")
-                    low_ep = (clean["drivable_area_compliance"][plan_idx] == 1
-                        and clean["no_at_fault_collisions"][plan_idx] == 1
-                        and clean["ego_progress"][plan_idx] < 0.2)
-                    selected += int(clean["score"].max() >= 0.9
-                        and (clean["score"][plan_idx] <= 2/3 or low_ep))
+            valid_by_log.setdefault(log_name, []).append(step)
+            selected += 1
         future = 8
         if not valid_by_log or not cache:
-            raise ValueError("No matching rollout rewards for requested tokens")
+            raise ValueError("No matching rollout rewards for the failed scenes")
         for log_name in valid_by_log:
             all_steps = sorted(int(i["frame_idx"]) for i in infos if i["log_name"] == log_name)
             if all_steps != list(range(len(all_steps))) or len(all_steps) < history + 1 + future:
                 raise ValueError("Each rollout needs contiguous history and future frames (at least 12)")
         if not selected:
-            raise ValueError("No training samples remain after " + data["sample_filter"] + " filtering")
+            raise ValueError("No training samples remain in the PDM-zero failure scenes")
         for rel in ["projects", "data/raw/nuplan", "data/alg_engine/ckpts"]:
             p = source_root / rel
             if p.exists():
@@ -137,14 +128,16 @@ def prepare(args):
         with ann.open("wb") as f:
             pickle.dump([], f, protocol=4)
         target_tokens = work / "navtrain_tokens.yaml"
-        shutil.copy2(tokens_path, target_tokens)
+        target_tokens.write_text(yaml.safe_dump({"tokens": sorted(failed)}))
         cfg.data.train.update(ann_file=str(ann), nav_filter_path=str(target_tokens),
             finetune_yaml=[str(target_tokens)], folder_name=[name],
-            customized_filter=data["sample_filter"], include_real_failures=False, normal_ratio=0)
+            customized_filter=None, include_real_failures=False, normal_ratio=0)
         cfg.model.planning_head.update(rl_finetuning=True, reward_shaping=True,
             vocab_path=str(runtime / "data/alg_engine/test_8192_kmeans.npy"))
         report.update(metadata_frames=len(infos), reward_frames=reward_frames,
-            selected_samples=selected, sample_filter=data["sample_filter"],
+            selected_scenes=len(failed), selected_samples=selected,
+            failure_filter="closed-loop PDM total score == 0",
+            pdm_scores_file=str(scores_file),
             rollout_dir=str(rollout), reward_source="actual WE candidate scores",
             vocabulary_sha256=hashlib.sha256(Path(data["vocab_path"]).expanduser().read_bytes()).hexdigest())
     else:

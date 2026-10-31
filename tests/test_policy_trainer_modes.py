@@ -37,6 +37,13 @@ class TrainingModeTests(unittest.TestCase):
             self.assertEqual(Output.model_validate(result).training_mode, mode)
             self.assertTrue(result["mock"])
 
+    def test_removed_sample_filter_is_rejected(self):
+        payload = dict(training_mode="rlft", base_checkpoint="/base.pth",
+            training_data=dict(rollout_dir="/rollout", token_file="/tokens.yaml",
+                vocab_path="/vocab.npy", sample_filter="v2"))
+        with self.assertRaises(ValidationError):
+            Input.model_validate(payload)
+
     def test_valid_rl_and_unknown_mode(self):
         payload = dict(training_mode="rlft", base_checkpoint="/base.pth",
             training_data=dict(rollout_dir="/rollout", token_file="/tokens.yaml", vocab_path="/vocab.npy"))
