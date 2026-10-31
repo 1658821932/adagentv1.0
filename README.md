@@ -90,7 +90,7 @@ mock/real 共用输入输出校验。目录规范、模型角色和逐工具测�
 ## 密钥与模型分工
 
 - Agent 主模型：`OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL`（或旧 `LLM_*`），例 `qwen3.5-plus`。
-- tool10 视觉验证：默认 `kimi-k3`，端点和模型默认值在 `tools/tool10_scene_validator/config.json`，可用 `SCENE_VALIDATOR_BASE_URL` / `SCENE_VALIDATOR_MODEL` 覆盖；密钥按 `SCENE_VALIDATOR_API_KEY` → `OPENAI_API_KEY` → `LLM_API_KEY` 顺序读取。
+- tool10 视觉验证：默认 `kimi-k3`，端点和模型默认值内嵌在工具实现中，可用 `SCENE_VALIDATOR_BASE_URL` / `SCENE_VALIDATOR_MODEL` 覆盖；密钥按 `SCENE_VALIDATOR_API_KEY` → `OPENAI_API_KEY` → `LLM_API_KEY` 顺序读取。
 - tool04 视频检索：召回/重排用 DashScope `qwen3-vl-embedding`，需真实 `DASHSCOPE_API_KEY`（中转站不支持该端点）。
 - OSS（可选）：`OSS_*` 供重排产物上传；不入库。
 

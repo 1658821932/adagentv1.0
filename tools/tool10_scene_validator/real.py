@@ -2,19 +2,69 @@
 
 from __future__ import annotations
 
+import base64
+from dataclasses import dataclass, field
 import json
 import os
-import base64
 import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from .config import DEFAULT_BASE_URL, DEFAULT_MODEL, SETTINGS, frame_python, vlm_settings
 from .schemas import VisualEvaluation
 from pydantic import ValidationError
 from tools.llm_runtime import validation_details
+
+ROOT = Path(__file__).resolve().parents[2]
+
+# Non-secret defaults, overridable via SCENE_VALIDATOR_* env vars. API keys stay in .env.
+_DEFAULT_BASE_URL = "https://apicz.boyuerichdata.com/v1"
+_DEFAULT_MODEL = "kimi-k3"
+_DEFAULT_TIMEOUT = 180
+_DEFAULT_FRAME_PYTHON = "environments/dggt/.conda/bin/python"
+_API_KEY_ENVS = ("OPENAI_API_KEY", "LLM_API_KEY")
+
+
+def frame_python():
+    value = os.getenv("SCENE_VALIDATOR_FRAME_PYTHON") or _DEFAULT_FRAME_PYTHON
+    path = Path(value).expanduser()
+    return str(path if path.is_absolute() else ROOT / path)
+
+
+@dataclass(frozen=True)
+class VLMSettings:
+    base_url: str
+    model: str
+    timeout: int
+    api_key: str = field(repr=False)
+
+
+def vlm_settings(environ=None):
+    """Resolve one explicit endpoint/model/key profile; never borrow DashScope credentials."""
+    if environ is None:
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / ".env", override=False)
+        environ = os.environ
+    base_url = (environ.get("SCENE_VALIDATOR_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
+    model = (environ.get("SCENE_VALIDATOR_MODEL") or _DEFAULT_MODEL).strip()
+    timeout = int(environ.get("SCENE_VALIDATOR_TIMEOUT") or _DEFAULT_TIMEOUT)
+    if urlsplit(base_url).scheme not in {"http", "https"} or not urlsplit(base_url).netloc:
+        raise ValueError("SCENE_VALIDATOR_BASE_URL must be an HTTP(S) URL")
+    if not model or timeout <= 0:
+        raise ValueError("Visual model and positive timeout are required")
+    selected = environ.get("SCENE_VALIDATOR_API_KEY_ENV")
+    names = [selected] if selected else list(_API_KEY_ENVS)
+    key = environ.get("SCENE_VALIDATOR_API_KEY", "").strip()
+    if not key:
+        for name in names:
+            key = environ.get(name, "").strip()
+            if key:
+                break
+    if not key:
+        raise RuntimeError("Visual evaluator credential missing; set SCENE_VALIDATOR_API_KEY or " + ", ".join(names))
+    return VLMSettings(base_url=base_url, model=model, timeout=timeout, api_key=key)
 
 
 def _extract_json(text: str) -> dict[str, Any]:
