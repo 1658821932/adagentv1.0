@@ -149,6 +149,24 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         if key in options and options[key] is not None:
             value = options[key]
             env[env_key] = str(value).lower() if isinstance(value, bool) else str(value)
+    # Serialize the source using the simulator's NumPy version. Inputs remain untouched.
+    source_folder = Path(env.get("SCENARIO_DATA_FOLDER_PATH") or
+        runtime.project_root / "data/sim_engine/scenarios/original" / data_type)
+    source_scene = source_folder / (scenario_pkl_file_name or "all_scenarios.pkl")
+    stage_dir = current_run("worldengine").input / "compatible_scenarios"
+    staged_scene = stage_dir / "all_scenarios.pkl"
+    prepare_command = [env["SIMENGINE_PYTHON"],
+        str(Path(__file__).with_name("prepare_scenarios.py")),
+        str(source_scene), str(staged_scene)]
+    if num_scenarios is not None:
+        prepare_command.append(str(num_scenarios))
+    preparation = run_logged(prepare_command, cwd=runtime.project_root, env=env,
+        log_path=current_run("worldengine").logs / "scene_preparation.log",
+        timeout=int(options.get("timeout", runtime.timeout)))
+    if preparation.returncode:
+        raise RuntimeError("Scene preparation failed: " + preparation.stdout[-2000:])
+    env["SCENARIO_DATA_FOLDER_PATH"] = str(stage_dir)
+    env["SCENARIO_PKL_FILE_NAME"] = "all_scenarios.pkl"
     run_name = added_name or f"mcp-{datetime.now():%Y%m%d-%H%M%S}"
     command = ["bash", str(script), str(cfg), str(ckpt), model_name, data_type, react_type, asset_name or data_type, run_name]
     timeout = int(options.get("timeout", runtime.timeout))

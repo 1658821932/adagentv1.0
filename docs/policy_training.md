@@ -42,3 +42,12 @@ IL配置默认沿用既有Waymo适配配置，其他数据格式须显式传conf
 - policy_runner：IL沿用原有数据生成；RL调用时设置 with_dense_reward_manager=true，返回rollout_dir和reward_dir，并导出实际plan_idx.csv。
 - failure_case_filter：保留动态对象几何诊断，用于辅助分析，不作为RL奖励，也不能代替官方道路/碰撞评分。
 - policy_trainer：ilft读取标注；rlft按真实候选奖励执行v1/v2样本筛选后训练。RL可以直接由policy_runner接policy_trainer，无需通过旧几何筛选器。
+
+仿真入口会使用仿真解释器在运行目录重存科学数据，以兼容NumPy 1/2的pickle模块路径，不修改源场景包。
+
+## 本次验证
+- 19项相关接口、执行器和仿真导出测试通过；未运行完整测试套件。
+- IL：沿用已有Waymo转换标注，通过工具注册入口完成1次更新并保存权重，60个参数张量变化。
+- RL：navtrain单场景经policy_runner生成12帧仿真数据和9份候选奖励，直接交给policy_trainer完成1次更新并保存权重，100个参数张量变化。
+- 数据预检覆盖有效v2样本、v1空筛选、IL历史不足及RL奖励缺失。
+- 这是工具级串联验证，不包含LLM自主决策、编辑场景接入或训练后性能评测；不代表批量训练已验证。

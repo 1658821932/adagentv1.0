@@ -175,7 +175,7 @@ tool15/real.py → adapter/service.py → adapter/training.py → AlgEngine 监�
 
 核心仍在 `worldengine/core/`，也可以由 `WORLDENGINE_ROOT` 指定其他安装位置。场景准备代码已归入 WorldEngine adapter，后端不再反向导入 tools 根目录的旧脚本。
 
-当前训练入口仅支持 `training_mode="ilft"`，不提供 RL 训练。tool14 的筛选是项目自带的动态对象几何评估，不覆盖静态高斯、道路边界，也不等同于官方碰撞责任或道路合规指标。
+当前训练入口支持 `training_mode="ilft"` 和 `"rlft"`。IL读取标注；RL读取WE导出的图片、元数据和8192候选轨迹奖励，在独立运行目录中整理并训练。tool14 的筛选是项目自带的动态对象几何评估，不覆盖静态高斯、道路边界，也不等同于官方碰撞责任或道路合规指标。
 
 ## 这次归拢后的边界
 
@@ -208,3 +208,5 @@ PYTHONPATH=mcp_servers/smart_edit/core environments/smart-edit/.venv/bin/python 
 ```
 
 相关文档：[Agent 核心与运行目录说明](AGENT_FILES.md)、[项目架构](ARCHITECTURE.md)、[纯文本 LLM 工具规范](LLM_TOOLS.md)。
+
+IL/RL 调用参数及上游工具分工见 [训练工具说明](policy_training.md)。
