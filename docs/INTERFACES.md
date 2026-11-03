@@ -32,31 +32,28 @@ Analyze one WorldEngine scene token using official metrics, image evidence and n
 | `failure_analysis` | object | ✅ | — | One dominant cross-case failure_type, failure_reason, key_scene_factors and risk_factors, with supporting and uncovered case IDs. Use only case IDs actually present in the input; never invent supporting evidence. |
 
 
-## tool02_scene_requirement_generator: `scene_requirement_generator`
+## tool02_scene_instance_generator: `scene_instance_generator`
 
-Use an LLM to generate targeted scenario requirements from failure evidence.
+Expand one failure category into one new scene requirement, returned as four fields: scene_requirement, required_conditions, required_actors, target_effect.
 
-**何时使用**：Use after failure analysis, or when supplied analysis needs to become generation requirements. Proposed targets are not observed facts.
+**何时使用**：Pass saved failure_analysis; variation_hints and existing_instances are optional. Forward the successful output to tool03 as scene_requirement. Source analysis and hints remain in local run records referenced by meta.record_dir.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `failure_analysis` | object | ✅ | — | Non-empty failure analysis; accepts tool01 result or its successful envelope. |
+| `failure_analysis` | object | ✅ | — | Saved failure evidence or a successful tool01 envelope. Accepts failure_reason or a saved group with wrong_behavior and id. Keep original case IDs. |
+| `variation_hints` | object | — | — | Optional qualitative variation directions, e.g. traffic_density: sparse, target_actor: crossing bus. Legacy parameter_assignment is accepted. No distance/speed/timing values are required.（别名：`parameter_assignment`） |
+| `existing_instances` | array<string> | — | — | Previous requirement summaries or successful tool02 outputs. Exact normalized descriptions are rejected; semantic diversity remains a model suggestion. |
 
 ### 输出
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `scene_requirement` | string | ✅ | — | Target scenario to generate; a design goal, not an observed result. |
-| `failure_type` | string | — | `""` | Failure category supported by the source analysis. |
-| `failure_reason` | string | — | `""` | Source-supported failure reason, preserving uncertainty. |
-| `required_conditions` | array<string> | ✅ | — | Desired road, weather and traffic conditions. |
-| `required_actors` | array<string> | ✅ | — | Required participant roles. |
-| `risk_factors` | array<string> | ✅ | — | Risk factors supported by the analysis. |
-| `target_effect` | string | ✅ | — | Driving-policy behavior the generated scenario should test. |
-| `hazard_summary` | string | — | `""` | Concise hazard description. |
-| `source_analysis` | object | ✅ | — | Original analysis attached by code, never reconstructed by the LLM. |
+| `scene_requirement` | string | ✅ | — | One detailed new scene requirement: road context, ego intent, participants, initial relations, event progression and risky interaction in one coherent paragraph. No base scene or object IDs have been selected. |
+| `required_conditions` | array<string> | ✅ | — | Essential observable source-scene conditions for retrieval, e.g. urban multi-lane straight road. |
+| `required_actors` | array<string> | ✅ | — | Non-ego participants needed, e.g. stationary lead vehicle and adjacent-lane vehicle. |
+| `target_effect` | string | ✅ | — | The correct driving behavior this scenario should test. |
 
 
 ## tool03_scene_conceiver: `scene_conceiver`

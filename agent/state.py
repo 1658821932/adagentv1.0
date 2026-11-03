@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 TOOL_STAGE_MAP = {
     "failure_analyzer": "failure_analysis",
-    "scene_requirement_generator": "requirement_generation",
+    "scene_instance_generator": "requirement_generation",
     "scene_conceiver": "scenario_conception",
     "video_retriever": "retrieval",
     "instance_discovery": "instance_discovery",

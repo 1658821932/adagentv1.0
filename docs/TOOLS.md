@@ -11,7 +11,7 @@ Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索�
 | 编号与工具 | 主要做什么、什么时候用 | 主要输入 | 主要输出 | 调用的功能 |
 |---|---|---|---|---|
 | [tool01：failure_analyzer](../tools/tool01_failure_analyzer/real.py)，失败分析 | 分析一个已有驾驶场景为什么失败，为后续设计针对性场景提供证据。 | 场景 token、WFA 评测配置路径。 | failure_analysis、证据详情、报告路径。 | WFA adapter 启动失败取证，结合官方结果、图像和数值分析。 |
-| [tool02：scene_requirement_generator](../tools/tool02_scene_requirement_generator/real.py)，场景需求生成 | 将失败分析转换为“需要生成什么场景”，明确条件、参与者和目标效果。 | failure_analysis。 | scene_requirement、required_conditions、required_actors、target_effect。 | 公共 LLM 运行器，根据本工具 prompt.md 生成需求。 |
+| [tool02：scene_instance_generator](../tools/tool02_scene_instance_generator/real.py)，场景需求生成 | 将失败分析转换为“需要生成什么场景”，明确条件、参与者和目标效果。 | failure_analysis；可选 variation_hints、existing_instances。 | scene_requirement、required_conditions、required_actors、target_effect。 | 公共 LLM 运行器，根据本工具 prompt.md 生成需求。 |
 | [tool03：scene_conceiver](../tools/tool03_scene_conceiver/real.py)，场景构思 | 将需求展开成场景方案，决定找什么基础视频、可以做哪些编辑。 | scene_requirement，可为需求对象或文字。 | scene_plan、base_video_requirement、retrieval_query、edit_ideas。 | 公共 LLM 运行器，生成方案和检索需求。 |
 | [tool04：video_retriever](../tools/tool04_video_retriever/real.py)，视频检索 | 在已有本地索引中寻找适合重建和编辑的驾驶视频。 | requirement；可选 library。 | 视频路径、匹配分数和候选记录。 | Sentry adapter 调用召回、重排和片段导出。 |
 | [tool05：instance_discovery](../tools/tool05_instance_discovery/real.py)，实例发现 | 从重建预处理后的图像中识别并跟踪车辆，确定后续编辑哪个实例。 | image_dir、scene_name、output_path；40 帧。 | 实例 ID、逐帧检测框、instance_info_path。 | DGGT adapter 调用 YOLO/跟踪脚本。 |

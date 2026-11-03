@@ -22,8 +22,13 @@ OUTPUT = ROOT / "docs" / "INTERFACES.md"
 
 
 def tool_dirs():
+    # Document only tools exposed to the main Agent.
+    from agent.tool_descriptions import get_tool_descriptions
+    active = {tool["name"] for tool in get_tool_descriptions()}
     for path in sorted((ROOT / "tools").glob("tool*/description.py")):
-        yield path.parent.name
+        description = importlib.import_module("tools." + path.parent.name + ".description").DESCRIPTION
+        if description["name"] in active:
+            yield path.parent.name
 
 
 def type_of(prop: dict, refs: list | None = None) -> str:

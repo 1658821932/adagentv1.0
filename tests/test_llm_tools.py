@@ -12,7 +12,7 @@ from tools.registry import call_tool, REAL_TOOL_REGISTRY
 from tools.scripts.smoke_llm_tools import ANALYSIS, EDIT_INPUT
 
 CASES=[
-    ("tool02_scene_requirement_generator","scene_requirement_generator",{"failure_analysis":ANALYSIS}),
+    ("tool02_scene_instance_generator","scene_instance_generator",{"failure_analysis":ANALYSIS}),
     ("tool03_scene_conceiver","scene_conceiver",{"scene_requirement":{"scene_requirement":"Test response to lead vehicle slowing.","required_conditions":["straight road"],"required_actors":["lead vehicle"]}}),
     ("tool07_edit_plan_builder","edit_plan_builder",EDIT_INPUT),
 ]
@@ -124,16 +124,17 @@ def test_fenced_json_is_supported_without_accepting_surrounding_prose():
 
 
 def test_source_context_is_attached_by_code_and_upstream_errors_are_not_evidence():
-    requirement=call_tool("scene_requirement_generator",{"failure_analysis":{
+    requirement=call_tool("scene_instance_generator",{"failure_analysis":{
         "status":"success","tool":"failure_analyzer","result":{"failure_analysis":ANALYSIS}
     }},mode="mock")
-    assert requirement["result"]["source_analysis"]==ANALYSIS
+    assert json.loads((Path(requirement["meta"]["record_dir"])/"input.json").read_text())["failure_analysis"]==ANALYSIS
+    assert set(requirement["result"])=={"scene_requirement","required_conditions","required_actors","target_effect"}
     conception=call_tool("scene_conceiver",{"scene_requirement":requirement},mode="mock")
     assert conception["result"]["source_requirement"]==requirement["result"]
     assert conception["result"]["edit_ideas"]
     assert "simple_edits" not in conception["result"]
     bad={"status":"error","tool":"failure_analyzer","error":{"message":"failed"}}
-    result=call_tool("scene_requirement_generator",{"failure_analysis":bad},mode="mock")
+    result=call_tool("scene_instance_generator",{"failure_analysis":bad},mode="mock")
     assert result["error"]["type"]=="input_validation_error"
 
 
@@ -172,7 +173,7 @@ def test_description_fields_come_from_schemas_and_do_not_advertise_test_client(f
 
 def test_invalid_tool_configuration_fails_without_network(tmp_path):
     from dataclasses import replace
-    from tools.tool02_scene_requirement_generator.real import TOOL
+    from tools.tool02_scene_instance_generator.real import TOOL
     (tmp_path/"config.json").write_text('{"model_role":"planner","prompt_version":"v1","validation_retries":99}')
     (tmp_path/"prompt.md").write_text("prompt")
     client=ScriptedClient()
@@ -183,7 +184,7 @@ def test_invalid_tool_configuration_fails_without_network(tmp_path):
 
 def test_llm_role_and_per_tool_limits_reach_actual_client():
     from agent.llm_client import LLMClient
-    from tools.tool02_scene_requirement_generator.real import run
+    from tools.tool02_scene_instance_generator.real import run
     valid=json.loads(response_for(CASES[0][0],CASES[0][2]))
     client=ScriptedClient(json.dumps(valid))
     with patch.object(LLMClient,"_load_llm_config",return_value={"roles":{"planner":{"model":"role-model"}}}):
@@ -191,7 +192,7 @@ def test_llm_role_and_per_tool_limits_reach_actual_client():
             factory._load_llm_config.return_value={"roles":{"planner":{"model":"role-model"}}}
             result=run({"failure_analysis":ANALYSIS})
     assert result["status"]=="success"
-    assert factory.call_args.kwargs["overrides"]=={"model":"role-model","timeout":600,"max_tokens":4096}
+    assert factory.call_args.kwargs["overrides"]=={"model":"role-model","timeout":600,"max_tokens":8192}
 
 
 def test_llm_client_overrides_do_not_replace_global_config(monkeypatch):
@@ -223,7 +224,7 @@ def test_frame_ids_are_not_accepted_as_instance_ids():
 
 def test_omitted_tool_limits_inherit_role_settings(tmp_path):
     from dataclasses import replace
-    from tools.tool02_scene_requirement_generator.real import TOOL
+    from tools.tool02_scene_instance_generator.real import TOOL
     config={"model_role":"planner","prompt_version":"v1"}
     (tmp_path/"config.json").write_text(json.dumps(config))
     (tmp_path/"prompt.md").write_text("Use source evidence and return JSON.")
@@ -239,7 +240,7 @@ def test_omitted_tool_limits_inherit_role_settings(tmp_path):
 
 def test_empty_prompt_is_a_configuration_error_without_model_call(tmp_path):
     from dataclasses import replace
-    from tools.tool02_scene_requirement_generator.real import TOOL
+    from tools.tool02_scene_instance_generator.real import TOOL
     (tmp_path/"config.json").write_text('{"model_role":"planner","prompt_version":"v1"}')
     (tmp_path/"prompt.md").write_text(" ")
     client=ScriptedClient()

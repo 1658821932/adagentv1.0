@@ -34,7 +34,7 @@ Agent 工具的说明仍位于各工具的 `description.py`；适配层不负责
 
 | 工具 | 实现方式 |
 |---|---|
-| tool02 `scene_requirement_generator` | 通过 `tools/llm_runtime.py` 调用模型生成需求。 |
+| tool02 `scene_instance_generator` | 通过 `tools/llm_runtime.py` 调用模型生成需求。 |
 | tool03 `scene_conceiver` | 通过同一运行器生成场景构思。 |
 | tool07 `edit_plan_builder` | 通过同一运行器生成编辑计划，不直接调用 SmartEdit 服务。 |
 | tool10 `scene_validator` | 在自己的 real 实现中检查文件，调用视觉模型或指定的本地评估器。 |

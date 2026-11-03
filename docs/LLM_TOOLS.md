@@ -25,7 +25,7 @@ inputs、outputs、input_schema 和 output_schema；不再手写第二份参数�
 from tools.registry import call_tool
 
 result = call_tool(
-    "scene_requirement_generator",
+    "scene_instance_generator",
     {"failure_analysis": {"failure_reason": "Delayed response to a slowing lead vehicle."}},
     mode="real",
 )
@@ -50,7 +50,8 @@ SDK 自身的传输重试策略独立于此计数。
 ## 标准输入与业务约束
 
 - tool02：接受非空 failure_analysis、tool01.result 或成功的 tool01 完整 envelope；
-  原始 source_analysis 由代码附加，模型不得重写。
+  可选 variation_hints、existing_instances；输出仅 scene_requirement、required_conditions、required_actors、target_effect。
+  原始分析及调用输入保存在运行记录，路径见 meta.record_dir。
 - tool03：接受需求对象、成功的上游 envelope 或直接的自然语言需求；
   source_requirement 由代码附加；编辑建议统一使用 edit_ideas，不再返回 simple_edits。
 - tool07：必须通过 edit_request 提交编辑请求，不接受 edit_ideas 参数别名。支持实际实例列表及发现工具的成功返回。

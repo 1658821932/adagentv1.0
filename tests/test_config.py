@@ -9,7 +9,7 @@ from agent.executor import ToolExecutor
 
 DEFAULT_MODES = {
     "failure_analyzer": "real",
-    "scene_requirement_generator": "real",
+    "scene_instance_generator": "real",
     "scene_conceiver": "real",
     "video_retriever": "real",
     "instance_discovery": "real",

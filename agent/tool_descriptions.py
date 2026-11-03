@@ -7,7 +7,7 @@ combines them into the single TOOLS list consumed by the orchestrator.
 """
 
 from tools.tool01_failure_analyzer.description import DESCRIPTION as TOOL01
-from tools.tool02_scene_requirement_generator.description import DESCRIPTION as TOOL02
+from tools.tool02_scene_instance_generator.description import DESCRIPTION as TOOL02
 from tools.tool03_scene_conceiver.description import DESCRIPTION as TOOL03
 from tools.tool04_video_retriever.description import DESCRIPTION as TOOL04
 from tools.tool05_instance_discovery.description import DESCRIPTION as TOOL05

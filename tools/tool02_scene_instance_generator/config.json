@@ -1,7 +1,7 @@
 {
   "model_role": "planner",
-  "prompt_version": "v1",
+  "prompt_version": "v7",
   "timeout": 600,
-  "max_tokens": 4096,
+  "max_tokens": 8192,
   "validation_retries": 1
 }

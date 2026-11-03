@@ -123,7 +123,7 @@ tools/registry.py 是总调度：维护 MOCK_TOOL_REGISTRY 和 REAL_TOOL_REGISTR
 | # | 名称 | 干什么 | 属于阶段 |
 |---|---|---|---|
 | 01 | failure_analyzer | 以 WorldEngine 场景 token 调用 WFA，保留指标、图像证据、归因和不确定性 | 失败分析 |
-| 02 | scene_requirement_generator | 由失败分析生成"要造什么场景"的需求 | 需求生成 |
+| 02 | scene_instance_generator | 由失败分析生成"要造什么场景"的需求 | 需求生成 |
 | 03 | scene_conceiver | 设计高层场景方案：需要什么样的基础视频、怎么编辑 | 场景构思 |
 | 04 | video_retriever | 按自然语言需求检索本地视频库，重排并导出片段 | 数据检索 |
 | 05 | instance_discovery | 对视频做车辆检测跟踪，生成逐帧实例框和实例编号 | 实例发现 |

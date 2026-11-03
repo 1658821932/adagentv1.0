@@ -39,7 +39,7 @@ def run_smoke(mode: str) -> dict:
         print(label,result["status"],flush=True)
         return result
 
-    requirement=check("requirements","scene_requirement_generator",{"failure_analysis":ANALYSIS})
+    requirement=check("requirements","scene_instance_generator",{"failure_analysis":ANALYSIS})
     if requirement["status"]=="success":
         check("conception","scene_conceiver",{"scene_requirement":requirement})
     else:
