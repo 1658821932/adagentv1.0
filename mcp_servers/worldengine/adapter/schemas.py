@@ -27,11 +27,6 @@ class EvaluationResult(TypedDict, total=False):
     run_dir: str
     is_failure_case: bool
     failure_cases: List[Any]
-    collision: bool
-    collision_events: List[Any]
-    frames_evaluated: int
-    trajectory_source: str
+    pdm_scores_file: str
     scene_count: int
     scene_results: List[Any]
-    evaluated_scene_ids: List[str]
-    skipped_scene_ids: List[str]

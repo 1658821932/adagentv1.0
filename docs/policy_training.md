@@ -40,7 +40,7 @@ IL配置默认沿用既有Waymo适配配置，其他数据格式须显式传conf
 ## 上游工具的分工
 - policy_runner：IL沿用原有数据生成；RL调用时设置 with_dense_reward_manager=true，返回rollout_dir和reward_dir，并导出实际plan_idx.csv。
 - failure_case_filter：保留动态对象几何诊断，用于辅助分析，不作为RL奖励，也不能代替官方道路/碰撞评分。
-- policy_trainer：ilft读取标注；rlft按整段场景闭环PDM总分==0筛选失败场景后，用真实候选轨迹奖励训练。RL可以直接由policy_runner接policy_trainer，无需通过旧几何筛选器。
+- policy_trainer：ilft读取标注；rlft按整段场景闭环PDM总分==0筛选失败场景后，用真实候选轨迹奖励训练。RL可以直接由policy_runner接policy_trainer；tool14 同样只读取官方 PDM 结果进行筛选。
 
 仿真入口会使用仿真解释器在运行目录重存科学数据，以兼容NumPy 1/2的pickle模块路径，不修改源场景包。
 

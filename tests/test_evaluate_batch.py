@@ -5,6 +5,7 @@ identity handling.
 """
 from __future__ import annotations
 
+import csv
 import pickle
 import sys
 from pathlib import Path
@@ -59,6 +60,14 @@ def _write_metadata(meta_dir, name, frames):
 
 
 def _write_report(result_dir, names):
+    folder = Path(result_dir) / "WE_output/openscene_format"
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / "all_scenes_pdm_averages_NR.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, ["token", "score", "no_at_fault_collisions"])
+        writer.writeheader()
+        for index, name in enumerate(names):
+            failed = name.endswith("aaaaaaaaaaaaaaaa")
+            writer.writerow({"token": name, "score": 0 if failed else 0.8, "no_at_fault_collisions": 0 if failed else 1})
     import json
     with (Path(result_dir) / "runner_report_0.json").open("w") as fh:
         json.dump([{"scenario_name": n} for n in names], fh)
@@ -67,7 +76,7 @@ def _write_report(result_dir, names):
 def test_multi_scene_matched_by_identity_despite_order(tmp_path):
     """Two scenes whose metadata/report order is reversed relative to the pkl.
 
-    Only scene A has an obstacle on its path, so only A must be flagged,
+    Only scene A has zero official PDM score, so only A must be flagged,
     regardless of file ordering.
     """
     token_a = "log-a-aaaaaaaaaaaaaaaa"
@@ -90,12 +99,10 @@ def test_multi_scene_matched_by_identity_despite_order(tmp_path):
     out = evaluate_batch(scenario, result_dir)
     assert out["scene_count"] == 2
     by_id = {row["scene_id"]: row for row in out["scene_results"]}
-    assert by_id[token_a]["collision"] is True
-    assert by_id[token_b]["collision"] is False
-    assert by_id[token_a]["trajectory_source"] == "worldengine_openscene_metadata"
+    assert by_id[token_a]["pdm_score"] == 0
+    assert by_id[token_b]["pdm_score"] == .8
     assert out["is_failure_case"] is True
     assert [f["scene_id"] for f in out["failure_cases"]] == [token_a]
-    assert out["skipped_scene_ids"] == []
 
 
 def test_combined_metadata_file_split_by_content(tmp_path):
@@ -116,8 +123,8 @@ def test_combined_metadata_file_split_by_content(tmp_path):
 
     out = evaluate_batch(scenario, result_dir)
     by_id = {row["scene_id"]: row for row in out["scene_results"]}
-    assert by_id[token_a]["collision"] is True
-    assert by_id[token_b]["collision"] is False
+    assert by_id[token_a]["pdm_score"] == 0
+    assert by_id[token_b]["pdm_score"] == .8
 
 
 def test_conflicting_filename_and_content_rejected(tmp_path):
@@ -131,6 +138,7 @@ def test_conflicting_filename_and_content_rejected(tmp_path):
     result_dir = tmp_path / "result"
     meta_dir = result_dir / "WE_output/openscene_format/meta_datas"
     _write_metadata(meta_dir, f"{token_a}.pkl", _frames(token_b, "log-b", [[0, 0, 0]]))
+    _write_report(result_dir, [token_a, token_b])
     with pytest.raises(ValueError, match="Ambiguous or conflicting"):
         evaluate_batch(scenario, result_dir)
 
@@ -144,10 +152,14 @@ def test_scene_token_suffix_selects_single_scene(tmp_path):
             token_a: _scene(token_a, [[0, 0, 0]], other_positions=[[0, 0, 0]]),
             token_b: _scene(token_b, [[0, 0, 0]]),
         }, fh)
-    out = evaluate_batch(scenario, scene_token="aaaaaaaaaaaaaaaa")
-    assert out["evaluated_scene_ids"] == [token_a]
-    assert out["skipped_scene_ids"] == [token_b]
-    assert out["collision"] is True
+    result_dir = tmp_path / "result"
+    meta_dir = result_dir / "WE_output/openscene_format/meta_datas"
+    _write_metadata(meta_dir, f"{token_a}.pkl", _frames(token_a, "log-a", [[0,0,0]]))
+    _write_metadata(meta_dir, f"{token_b}.pkl", _frames(token_b, "log-b", [[0,0,0]]))
+    _write_report(result_dir, [token_a, token_b])
+    out = evaluate_batch(scenario, result_dir, scene_token="aaaaaaaaaaaaaaaa")
+    assert [row["scene_id"] for row in out["scene_results"]] == [token_a]
+    assert out["is_failure_case"] is True
 
 
 def test_missing_metadata_fails_explicitly(tmp_path):
@@ -173,6 +185,7 @@ def test_unmatchable_metadata_fails(tmp_path):
     result_dir = tmp_path / "result"
     meta_dir = result_dir / "WE_output/openscene_format/meta_datas"
     _write_metadata(meta_dir, "mystery.pkl", _frames("unknown-token", "unknown-log", [[0, 0, 0]]))
+    _write_report(result_dir, [token_a])
     with pytest.raises(ValueError, match="Cannot match"):
         evaluate_batch(scenario, result_dir)
 

@@ -333,16 +333,16 @@ Run a driving policy in WorldEngine closed loop for evaluation or IL/RL data col
 
 ## tool14_failure_case_filter: `failure_case_filter`
 
-Filter new failure cases from simulation results and store useful training data.
+Select failure scenes exclusively using saved official closed-loop PDM total scores.
 
-**何时使用**：Optional dynamic-object geometric diagnosis after execution. Not an RL reward calculator or road-compliance evaluator. For RL, policy_trainer keeps failure scenes by closed-loop PDM total score.
+**何时使用**：Use after policy_runner. Official PDM CSV and matching execution metadata are required. score == 0 selects failures. Missing scores raise an error.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `scenario_pkl` | string | ✅ | — | WorldEngine custom scenario pickle containing ego and dynamic-object tracks.（别名：`scenario_path`） |
-| `result_dir` | string \| null | — | null | Optional policy_runner result directory. Scene identities must match executed metadata; missing or ambiguous matches fail explicitly. |
+| `result_dir` | string | ✅ | — | Required policy_runner result directory containing official PDM scores. Scene identities must match executed metadata; missing or ambiguous matches fail explicitly. |
 | `scene_token` | string \| null | — | null | Optional full scene ID or unambiguous 16-character suffix to evaluate only one scene. |
 | `timeout` | integer >0 | — | `120` | Timeout |
 | `python` | string \| null | — | null | Python |
@@ -351,9 +351,9 @@ Filter new failure cases from simulation results and store useful training data.
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `is_failure_case` | boolean | ✅ | — | Whether a dynamic-vehicle collision failure was found. |
-| `failure_cases` | array<object> | ✅ | — | Decision failures found by geometric collision evaluation. |
-| `collision` | boolean | ✅ | — | Dynamic-vehicle collision result. |
+| `is_failure_case` | boolean | ✅ | — | Whether any selected scene has official PDM total score == 0. |
+| `failure_cases` | array<object> | ✅ | — | Selected zero-score scenes with scene_id, scenario_pkl and pdm_score. |
+| `pdm_scores_file` | string | ✅ | — | Pdm Scores File |
 | `scene_count` | integer >0 | — | `1` | Scene Count |
 | `scene_results` | array<object> | — | — | Scene Results |
 

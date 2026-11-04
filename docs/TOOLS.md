@@ -20,7 +20,7 @@ Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索�
 | [tool09：scene_editor](../tools/tool09_scene_editor/real.py)，场景编辑执行 | 实际应用编辑配置，生成修改后的场景和渲染视频。 | video_path、edit_config_path 或 ego_trajectory_offsets_path；轨迹编辑可能需要相机参数和坐标比例。 | 编辑后视频、场景产物、配置路径和坐标转换信息。 | DGGT adapter 进行必要的坐标转换并执行编辑渲染。 |
 | [tool10：scene_validator](../tools/tool10_scene_validator/real.py)，场景验证 | 检查编辑结果是否满足原始需求，发现悬空、破碎、位置异常等画面问题。 | rendered_video、原始 scene_requirement；可提供已有视觉评估结果或本地评估器。 | passed、各检查项、evidence、issues。 | 检查文件与配置，调用视觉模型或指定的本地评估器。 |
 | [tool13：policy_runner](../tools/tool13_policy_runner/real.py)，驾驶策略运行 | 将场景交给驾驶策略做闭环仿真，观察策略实际行为。 | 模型配置、checkpoint、场景类型和运行参数；也可提供 DGGT 编辑输出。 | 运行目录、场景报告、仿真产物等。 | WorldEngine adapter，按需转换场景后启动仿真。 |
-| [tool14：failure_case_filter](../tools/tool14_failure_case_filter/real.py)，失败案例筛选 | 根据场景和实际运行轨迹判断是否出现动态对象碰撞，返回失败案例。 | scenario_pkl；可选 policy_runner 的 result_dir。 | is_failure_case、collision、碰撞事件和 failure_cases。 | WorldEngine adapter 中的几何筛选实现。 |
+| [tool14：failure_case_filter](../tools/tool14_failure_case_filter/real.py)，失败案例筛选 | 根据官方 PDM 总分为 0 筛选失败场景。 | scenario_pkl、policy_runner 的 result_dir 必填。 | is_failure_case、failure_cases、scene_results、评分来源。 | 读取官方 PDM CSV 并匹配执行元数据。 |
 | [tool15：policy_trainer](../tools/tool15_policy_trainer/real.py)，IL/RL训练 | 按training_mode选择模仿学习或强化学习后训练。 | IL：ann_file、token_file；RL：rollout_dir、token_file、vocab_path；另需基础权重，可指定配置和epochs。 | checkpoint、日志、实际配置、数据准备统计和参数更新检查。 | WorldEngine adapter启动AlgEngine；支持ilft（默认）和rlft，RL奖励缺失时明确失败。 |
 
 ## 容易混淆的几组工具
@@ -29,7 +29,7 @@ Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索�
 
 **tool07、tool08 与 tool09**：07 生成编辑计划，08 将计划变成配置文件，09 执行配置并渲染。生成配置文件并不表示场景已经编辑完成。
 
-**tool10 与 tool14**：10 检查生成画面和需求是否一致；14 检查仿真轨迹中的动态对象碰撞。视觉验证不能代替驾驶策略闭环评测，当前几何筛选也不等同于官方道路合规和碰撞责任指标。
+**tool10 与 tool14**：10 检查生成画面和需求是否一致；14 读取官方 PDM 评分筛选零分场景。视觉验证不能代替驾驶策略闭环评测。
 
 **tool13 与 tool15**：13 运行策略并收集结果；15 更新模型权重。13 的结果不会自动成为可训练的标注文件，进入 15 前需要准备对应训练数据。
 

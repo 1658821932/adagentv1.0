@@ -14,7 +14,7 @@ CASES = {
  "scene_editor": {"video_path":"/video.mp4","edit_config_path":"/edit.json"},
  "scene_validator": {"rendered_video":"/render.mp4","scene_requirement":"lead car"},
  "policy_runner": {"config_path":"/cfg.py","checkpoint_path":"/model.pth","model_name":"test","data_type":"test"},
- "failure_case_filter": {"scenario_pkl":"/scenario.pkl"},
+ "failure_case_filter": {"scenario_pkl":"/scenario.pkl","result_dir":"/result"},
  "policy_trainer": {"training_data":{"ann_file":"/ann.pkl","token_file":"/tokens.yaml"},"base_checkpoint":"/base.pth"},
 }
 

@@ -8,17 +8,16 @@ about this tool here, not in the global system prompt.
 
 DESCRIPTION = {
     "name": 'failure_case_filter',
-    "description": 'Filter new failure cases from simulation results and store useful training data.',
-    "when_to_use": 'Optional dynamic-object geometric diagnosis after execution. Not an RL reward calculator or road-compliance evaluator. For RL, policy_trainer keeps failure scenes by closed-loop PDM total score.',
+    "description": 'Select failure scenes exclusively using saved official closed-loop PDM total scores.',
+    "when_to_use": 'Use after policy_runner. Official PDM CSV and matching execution metadata are required. score == 0 selects failures. Missing scores raise an error.',
     'inputs': {
         'scenario_pkl': 'WorldEngine custom scenario pickle containing ego and dynamic-object tracks.',
-        'result_dir': 'Optional policy_runner result directory. Scene identities must match executed metadata; missing or ambiguous matches fail explicitly.',
+        'result_dir': 'Required policy_runner result directory containing official PDM scores. Scene identities must match executed metadata; missing or ambiguous matches fail explicitly.',
         'scene_token': 'Optional full scene ID or unambiguous 16-character suffix to evaluate only one scene.',
     },
     'outputs': {
-        'is_failure_case': 'Whether a dynamic-vehicle collision failure was found.',
-        'collision': 'Dynamic-vehicle collision result.',
-        'failure_cases': 'Decision failures found by geometric collision evaluation.',
+        'is_failure_case': 'Whether any selected scene has official PDM total score == 0.',
+        'failure_cases': 'Selected zero-score scenes with scene_id, scenario_pkl and pdm_score.',
     },
 }
 

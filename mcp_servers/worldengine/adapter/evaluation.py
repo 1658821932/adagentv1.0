@@ -1,7 +1,4 @@
-"""Batch failure filtering with explicit scene/trajectory identity matching.
-
-The collision metric remains a dynamic-object axis-aligned approximation.
-"""
+"""Failure filtering exclusively from official PDM scores and matched scene identities."""
 from __future__ import annotations
 import json
 import os
@@ -15,6 +12,9 @@ from .schemas import EvaluationResult
 
 @runtime_task("worldengine", "evaluation")
 def filter_failure_cases(input_data: dict[str, Any]) -> EvaluationResult:
+    result_dir = input_data.get("result_dir")
+    if not isinstance(result_dir, str) or not result_dir.strip():
+        raise ValueError("failure_case_filter requires result_dir containing official PDM scores")
     source = input_data.get("scenario_pkl") or input_data.get("scenario_path")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("failure_case_filter requires scenario_pkl")
@@ -27,8 +27,7 @@ def filter_failure_cases(input_data: dict[str, Any]) -> EvaluationResult:
     if not python.is_file():
         raise FileNotFoundError(f"SimEngine Python does not exist: {python}")
     command = [str(python), str(Path(__file__).with_name("evaluate_batch.py")), str(scenario)]
-    if input_data.get("result_dir"):
-        command += ["--result-dir", str(Path(input_data["result_dir"]).expanduser().resolve())]
+    command += ["--result-dir", str(Path(result_dir).expanduser().resolve())]
     if input_data.get("scene_token"):
         command += ["--scene-token", input_data["scene_token"]]
     task = current_run("worldengine")

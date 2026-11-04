@@ -101,3 +101,6 @@ mcp_servers/worldengine/core/logs/
 
 # Native simulator debug artifacts
 /mcp_servers/worldengine/core/projects/SimEngine/dbg/
+
+# Generated WorldEngine debug outputs
+/mcp_servers/worldengine/core/dbg/

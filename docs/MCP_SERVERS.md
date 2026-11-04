@@ -26,7 +26,7 @@ Agent 工具的说明仍位于各工具的 `description.py`；适配层不负责
 | `sentry_video_search/` | 视频建库、召回、重排、片段导出。当前 Agent 工具使用本地库。 | tool04 `video_retriever` | 适配客户端启动检索环境，通过 JSON 调用 runner。 |
 | `dggt/` | 实例发现、三维重建、应用编辑配置并渲染。 | tool05 `instance_discovery`；tool06 `reconstruction`；tool09 `scene_editor` | 实例发现由 adapter 启动核心脚本；重建和编辑共用 JSON runner 与推理 service。 |
 | `smart_edit/` | 将编辑计划转成可保存的配置。 | tool08 `edit_config_generator` | adapter 客户端连接模型与 SmartEdit MCP 服务，调用内部子工具。 |
-| `worldengine/` | 闭环仿真、动态对象碰撞筛选、模仿学习监督微调。 | tool13 `policy_runner`；tool14 `failure_case_filter`；tool15 `policy_trainer` | 仿真经 JSON runner/service；筛选、训练分别调用 adapter 中的评估和训练入口。 |
+| `worldengine/` | 闭环仿真、官方 PDM 零分场景筛选、模仿学习监督微调。 | tool13 `policy_runner`；tool14 `failure_case_filter`；tool15 `policy_trainer` | 仿真经 JSON runner/service；筛选、训练分别调用 adapter 中的评估和训练入口。 |
 
 `mcp_servers/` 是后端组件的统一存放目录。本项目当前只有 SmartEdit 链路使用 MCP stdio 协议；其余链路通过 Python 接口或 JSON 子进程调用。归拢 adapter 没有改变通信协议。
 
@@ -174,7 +174,7 @@ tool15/real.py → adapter/service.py → adapter/training.py → AlgEngine 监�
 
 核心仍在 `worldengine/core/`，也可以由 `WORLDENGINE_ROOT` 指定其他安装位置。场景准备代码已归入 WorldEngine adapter，后端不再反向导入 tools 根目录的旧脚本。
 
-当前训练入口支持 `training_mode="ilft"` 和 `"rlft"`。IL读取标注；RL读取WE导出的图片、元数据和8192候选轨迹奖励，在独立运行目录中整理并训练。tool14 的筛选是项目自带的动态对象几何评估，不覆盖静态高斯、道路边界，也不等同于官方碰撞责任或道路合规指标。
+当前训练入口支持 `training_mode="ilft"` 和 `"rlft"`。IL读取标注；RL读取WE导出的图片、元数据和8192候选轨迹奖励，在独立运行目录中整理并训练。tool14 仅按保存的官方 PDM 总分为 0 筛选，缺少评分文件或执行元数据会报错。
 
 ## 这次归拢后的边界
 
