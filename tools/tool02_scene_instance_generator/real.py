@@ -12,6 +12,9 @@ RECORDS_ROOT = Path(__file__).resolve().parents[2] / "logs" / "tool02_scene_inst
 def _validate_result(data, output):
     if normalized(output.scene_requirement) in {normalized(item) for item in data.existing_instances}:
         raise ValueError("Scene requirement duplicates an existing description; propose a different interaction or context")
+    pairs = {(normalized(item.base_video_requirement), normalized(item.edit_strategy)) for item in output.candidates}
+    if len(pairs) != 3:
+        raise ValueError("Provide three distinct base-video and editing-strategy alternatives")
 
 
 TOOL = LLMTool(
@@ -23,7 +26,7 @@ TOOL = LLMTool(
 
 
 def execute(input_data, *, mock_result=None):
-    # Source analysis/hints belong in records, not in the four-field result.
+    # Source analysis/hints belong in records, not in the scenario result.
     try:
         data = Input.model_validate({k: v for k, v in input_data.items() if k != "_llm_client"})
     except (AttributeError, ValueError, TypeError):

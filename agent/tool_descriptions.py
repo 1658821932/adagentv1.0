@@ -8,7 +8,6 @@ combines them into the single TOOLS list consumed by the orchestrator.
 
 from tools.tool01_failure_analyzer.description import DESCRIPTION as TOOL01
 from tools.tool02_scene_instance_generator.description import DESCRIPTION as TOOL02
-from tools.tool03_scene_conceiver.description import DESCRIPTION as TOOL03
 from tools.tool04_video_retriever.description import DESCRIPTION as TOOL04
 from tools.tool05_instance_discovery.description import DESCRIPTION as TOOL05
 from tools.tool06_reconstruction.description import DESCRIPTION as TOOL06
@@ -23,7 +22,6 @@ from tools.tool15_policy_trainer.description import DESCRIPTION as TOOL15
 TOOLS = [
     TOOL01,
     TOOL02,
-    TOOL03,
     TOOL04,
     TOOL05,
     TOOL06,

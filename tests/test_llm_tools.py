@@ -13,7 +13,6 @@ from tools.scripts.smoke_llm_tools import ANALYSIS, EDIT_INPUT
 
 CASES=[
     ("tool02_scene_instance_generator","scene_instance_generator",{"failure_analysis":ANALYSIS}),
-    ("tool03_scene_conceiver","scene_conceiver",{"scene_requirement":{"scene_requirement":"Test response to lead vehicle slowing.","required_conditions":["straight road"],"required_actors":["lead vehicle"]}}),
     ("tool07_edit_plan_builder","edit_plan_builder",EDIT_INPUT),
 ]
 
@@ -92,7 +91,7 @@ def test_invalid_output_cannot_escape_retry_limit(folder,name,arguments):
 def test_type_errors_are_not_silently_coerced():
     folder,name,arguments=CASES[0]
     content=json.loads(response_for(folder,arguments))
-    content["required_conditions"]="straight road"
+    content["candidates"]="straight road"
     invalid=json.dumps(content)
     result=call_tool(name,{**arguments,"_llm_client":ScriptedClient(invalid,invalid)},mode="real")
     assert result["error"]["type"]=="output_validation_error"
@@ -128,25 +127,23 @@ def test_source_context_is_attached_by_code_and_upstream_errors_are_not_evidence
         "status":"success","tool":"failure_analyzer","result":{"failure_analysis":ANALYSIS}
     }},mode="mock")
     assert json.loads((Path(requirement["meta"]["record_dir"])/"input.json").read_text())["failure_analysis"]==ANALYSIS
-    assert set(requirement["result"])=={"scene_requirement","required_conditions","required_actors","target_effect"}
-    conception=call_tool("scene_conceiver",{"scene_requirement":requirement},mode="mock")
-    assert conception["result"]["source_requirement"]==requirement["result"]
-    assert conception["result"]["edit_ideas"]
-    assert "simple_edits" not in conception["result"]
+    assert set(requirement["result"])=={"scene_requirement","target_effect","candidates"}
+    from tools.tool04_video_retriever.schemas import Input
+    for candidate in requirement["result"]["candidates"]:
+        Input.model_validate({"requirement":candidate["base_video_requirement"]})
     bad={"status":"error","tool":"failure_analyzer","error":{"message":"failed"}}
     result=call_tool("scene_instance_generator",{"failure_analysis":bad},mode="mock")
     assert result["error"]["type"]=="input_validation_error"
 
 
 def test_conception_accepts_direct_text_and_editing_accepts_canonical_request():
-    assert call_tool("scene_conceiver",{"scene_requirement":"Test a lead-car slowdown."},mode="mock")["status"]=="success"
     result=call_tool("edit_plan_builder",{"edit_request":[{"operation":"modify_trajectory"}]},mode="mock")
     assert result["status"]=="success"
     assert result["result"]["target_instances"]==[]
 
 
 def test_edit_plan_rejects_hallucinated_ids_and_repairs_from_actual_context():
-    folder,name,arguments=CASES[2]
+    folder,name,arguments=CASES[1]
     valid=response_for(folder,arguments)
     content=json.loads(valid)
     content["operations"][0]["target"]="invented_999"
@@ -213,7 +210,7 @@ def test_llm_client_overrides_do_not_replace_global_config(monkeypatch):
 def test_frame_ids_are_not_accepted_as_instance_ids():
     arguments=deepcopy(EDIT_INPUT)
     arguments["instances"]=[{"instance_id":0,"frames":[{"id":999,"frame":0}]}]
-    content=json.loads(response_for(CASES[2][0],arguments))
+    content=json.loads(response_for(CASES[1][0],arguments))
     content["target_instances"]=[999]
     invalid=json.dumps(content)
     result=call_tool("edit_plan_builder",{

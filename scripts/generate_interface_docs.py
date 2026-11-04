@@ -123,7 +123,7 @@ def main():
         "> ",
         ">     environments/video_retriever/.venv/bin/python scripts/generate_interface_docs.py",
         "",
-        "每个工具的用途和调用时机见 [tools 目录与 13 个 Tool 说明](TOOLS.md)；",
+        "每个工具的用途和调用时机见 [tools 目录与 12 个 Tool 说明](TOOLS.md)；",
         "调用方式、mock/real 边界和错误类型见 [工具接口与运行管理](EXECUTION_CONTRACTS.md)。",
         "本文档只列字段级契约。",
         "",

@@ -1,6 +1,6 @@
 # 纯文本 LLM 工具开发规范
 
-当前统一覆盖三个工具：tool02 需求生成、tool03 场景构思、tool07 编辑计划。
+当前统一覆盖两个工具：tool02 场景与候选方案生成、tool07 编辑计划。
 它们通过公共运行器执行一次受约束的文本转换；WFA、SmartEdit、视觉验证和 GPU 后端保留各自实现。
 
 ## 文件职责
@@ -50,10 +50,9 @@ SDK 自身的传输重试策略独立于此计数。
 ## 标准输入与业务约束
 
 - tool02：接受非空 failure_analysis、tool01.result 或成功的 tool01 完整 envelope；
-  可选 variation_hints、existing_instances；输出仅 scene_requirement、required_conditions、required_actors、target_effect。
+  可选 variation_hints、existing_instances；输出仅 scene_requirement、target_effect、candidates（三个候选，各含 base_video_requirement、edit_strategy）。
   原始分析及调用输入保存在运行记录，路径见 meta.record_dir。
-- tool03：接受需求对象、成功的上游 envelope 或直接的自然语言需求；
-  source_requirement 由代码附加；编辑建议统一使用 edit_ideas，不再返回 simple_edits。
+- 原 tool03 已合并到 tool02，不再独立调用；将 candidates[i].base_video_requirement 直接传给 tool04.requirement。
 - tool07：必须通过 edit_request 提交编辑请求，不接受 edit_ideas 参数别名。支持实际实例列表及发现工具的成功返回。
   target_instances 和 operations.target 必须引用输入提供的实例 ID；无 ID 时只能使用空列表/null，
   角色放在 parameters.target_role。帧编号不能当实例 ID。
@@ -93,7 +92,7 @@ python3 -m venv .venv-test
 .venv-test/bin/python -m pip install -r requirements-test.txt
 .venv-test/bin/python -m pytest tests/ -q
 ```
-smoke 通过公开注册表调用三个工具，其中 tool02 输出直接传给 tool03。恢复决策由主 Agent 提示词负责，使用 tools.scripts.smoke_agent_recovery 单独测试。报告默认写入被 Git 忽略的 logs/llm_tools_smoke/。
+smoke 通过公开注册表调用三个工具，其中 tool02 候选检索描述直接传给 tool04（mock）。恢复决策由主 Agent 提示词负责，使用 tools.scripts.smoke_agent_recovery 单独测试。报告默认写入被 Git 忽略的 logs/llm_tools_smoke/。
 真实 smoke 不启动 DGGT/WorldEngine，不读取视频，不证明完整场景生成链路或模仿学习收益。
 
 ## 新增同类工具

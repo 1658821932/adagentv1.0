@@ -88,7 +88,7 @@ class ToolExecutorTests(unittest.TestCase):
     def setUp(self):
         self.executor = ToolExecutor(
             tool_modes={
-                "scene_conceiver": "mock",
+                "scene_instance_generator": "mock",
                 "reconstruction": "mock",
             }
         )
@@ -97,20 +97,20 @@ class ToolExecutorTests(unittest.TestCase):
     def test_executor_passes_through_valid_result(self, mock_call_tool):
         mock_call_tool.return_value = {
             "status": "success",
-            "tool": "scene_conceiver",
+            "tool": "scene_instance_generator",
             "result": {"scene_plan": "ok"},
         }
 
         result = self.executor.execute(
-            "scene_conceiver",
+            "scene_instance_generator",
             {"scene_requirement": {}},
         )
 
         self.assertEqual(result["status"], "success")
-        self.assertEqual(result["tool"], "scene_conceiver")
+        self.assertEqual(result["tool"], "scene_instance_generator")
         self.assertEqual(result["result"], {"scene_plan": "ok"})
         mock_call_tool.assert_called_once_with(
-            "scene_conceiver",
+            "scene_instance_generator",
             {"scene_requirement": {}},
             mode="mock",
         )

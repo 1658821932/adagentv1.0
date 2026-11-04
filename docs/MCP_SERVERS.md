@@ -14,9 +14,9 @@ agent/                         根据任务和历史结果选择工具
 
 Agent 工具的说明仍位于各工具的 `description.py`；适配层不负责替主 Agent 选择任务步骤。核心算法与模型实现也没有因为这次归拢而搬入 adapter。
 
-当前共有 13 个 Agent 工具。其中 SmartEdit 后端另外注册了 15 个 MCP 子工具，供 tool08 的内部客户端按需调用，两者分开统计。
+当前共有 12 个 Agent 工具。其中 SmartEdit 后端另外注册了 15 个 MCP 子工具，供 tool08 的内部客户端按需调用，两者分开统计。
 
-各 Tool 的中文用途、主要输入输出和 tools 目录文件职责见 [13 个 Tool 说明](TOOLS.md)。
+各 Tool 的中文用途、主要输入输出和 tools 目录文件职责见 [12 个 Tool 说明](TOOLS.md)。
 
 ## 每个组件支持哪些 Agent 工具
 
@@ -35,7 +35,6 @@ Agent 工具的说明仍位于各工具的 `description.py`；适配层不负责
 | 工具 | 实现方式 |
 |---|---|
 | tool02 `scene_instance_generator` | 通过 `tools/llm_runtime.py` 调用模型生成需求。 |
-| tool03 `scene_conceiver` | 通过同一运行器生成场景构思。 |
 | tool07 `edit_plan_builder` | 通过同一运行器生成编辑计划，不直接调用 SmartEdit 服务。 |
 | tool10 `scene_validator` | 在自己的 real 实现中检查文件，调用视觉模型或指定的本地评估器。 |
 

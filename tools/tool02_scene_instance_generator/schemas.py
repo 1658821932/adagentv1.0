@@ -40,11 +40,15 @@ class Input(ToolModel):
         return [(unwrap_result(item).get("scene_requirement") or unwrap_result(item).get("scene_instance", "")) if isinstance(item, dict) else item for item in value]
 
 
+class Candidate(ToolModel):
+    base_video_requirement: NonEmptyStr = Field(description="Natural-language description of the BASE video to retrieve. Pass this string verbatim to video_retriever.requirement. Describe visible road context and actors needed for THIS strategy; an empty road/intersection is valid when adding a vehicle. Do not require the final hazard to already exist.")
+    edit_strategy: NonEmptyStr = Field(description="Qualitative strategy for this base video: add, delete or modify a vehicle and/or its trajectory; optionally adjust ego trajectory. Prefer changing at most one non-ego vehicle. No fixed object IDs or numeric trajectories are needed.")
+
+
 class Response(ToolModel):
-    scene_requirement: NonEmptyStr = Field(description="One detailed new scene requirement: road context, ego intent, participants, initial relations, event progression and risky interaction in one coherent paragraph. No base scene or object IDs have been selected.")
-    required_conditions: list[NonEmptyStr] = Field(min_length=1, description="Essential observable source-scene conditions for retrieval, e.g. urban multi-lane straight road.")
-    required_actors: list[NonEmptyStr] = Field(min_length=1, description="Non-ego participants needed, e.g. stationary lead vehicle and adjacent-lane vehicle.")
-    target_effect: NonEmptyStr = Field(description="The correct driving behavior this scenario should test.")
+    scene_requirement: NonEmptyStr = Field(description="ONE target scene with context, participant interaction and event progression. All three candidates construct this same target.")
+    target_effect: NonEmptyStr = Field(description="What ego should do in the target scene.")
+    candidates: list[Candidate] = Field(min_length=3, max_length=3, description="Exactly three alternative base-video retrieval descriptions paired with corresponding editing strategies.")
 
 
 class Output(Response):

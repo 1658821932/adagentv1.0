@@ -14,7 +14,7 @@
 | [`schemas.py`](../agent/schemas.py) | 检查决策和工具返回的公共格式，例如工具名是否有效、参数是否为对象、错误信息是否齐全。 | 提供 `validate_decision()` 和 `validate_tool_result()`，分别供决策器和执行器使用。工具的具体业务参数由工具层处理。 |
 | [`llm_client.py`](../agent/llm_client.py) | 统一连接大模型接口，发送消息并取回回复，同时记录最近一次请求的用量信息。 | 读取本地密钥及模型配置，通过 OpenAI SDK 调用兼容的 Chat Completions 接口。主决策器和纯文本 LLM 工具可使用它。 |
 | [`config.py`](../agent/config.py) | 读取并检查 Agent 的运行设置，包括最大步数、决策格式纠错次数、各工具模式和日志目录。 | 读取 `configs/agent.json`，获取工具清单，检查是否漏配工具、配置未知工具或使用非法模式。 |
-| [`tool_descriptions.py`](../agent/tool_descriptions.py) | 汇总主 Agent 能看到的工具说明。每个工具的详细说明放在它自己的目录里，这里只负责集中提供清单。 | 导入各工具的 `description.py`，通过 `get_tool_descriptions()` 返回当前 13 个工具的说明。 |
+| [`tool_descriptions.py`](../agent/tool_descriptions.py) | 汇总主 Agent 能看到的工具说明。每个工具的详细说明放在它自己的目录里，这里只负责集中提供清单。 | 导入各工具的 `description.py`，通过 `get_tool_descriptions()` 返回当前 12 个工具的说明。 |
 | [`logger.py`](../agent/logger.py) | 将每次运行和每次工具调用保存到日志文件，便于查看输入、输出、耗时和最终结果。 | 由主循环调用，在配置的日志目录下写入 `run.json`、`agent.jsonl`、`final_state.json`，以及各工具的输入、输出和执行记录。 |
 
 ## 整体调用关系
@@ -55,7 +55,7 @@ flowchart TD
 | `agent.max_steps` | 设置一次任务的最大决策步数，当前为 20。 | `agent/config.py` 加载，`agent/main.py` 控制循环。 |
 | `llm` | 设置模型接口、模型名称、请求超时、回复长度，以及纯文本 LLM 工具可选的模型角色。 | `agent/llm_client.py`；角色设置由 `tools/llm_runtime.py` 使用。 |
 | `orchestrator.decision_correction_attempts` | 设置模型决策格式不合法时允许纠正几次，当前为 1；不是工具失败后的重试次数。 | `agent/config.py` 加载，传给 `agent/orchestrator.py`。 |
-| `tools.modes` | 为每个工具选择 `mock`（模拟结果）或 `real`（实际执行），当前 13 个工具均配置为 `real`。 | `agent/config.py` 加载，传给 `agent/executor.py`。 |
+| `tools.modes` | 为每个工具选择 `mock`（模拟结果）或 `real`（实际执行），当前 12 个工具均配置为 `real`。 | `agent/config.py` 加载，传给 `agent/executor.py`。 |
 | `logging.root_dir` | 设置日志目录，当前为项目根目录下的 `logs/`。 | `agent/config.py` 解析路径，传给 `agent/logger.py`。 |
 
 密钥保存在本地 `.env`。各 MCP 组件自己的设置放在对应的 `mcp_servers/` 子目录；三个纯文本 LLM 工具也各有自己的 `config.json`。

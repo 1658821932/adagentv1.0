@@ -42,9 +42,9 @@ def make_agent(tmp_path,decisions):
     return agent,client
 
 
-def test_registry_descriptions_and_configuration_expose_only_13_tools():
+def test_registry_descriptions_and_configuration_expose_only_12_tools():
     names={item["name"] for item in get_tool_descriptions()}
-    assert len(names)==13
+    assert len(names)==12
     assert names==set(MOCK_TOOL_REGISTRY)==set(REAL_TOOL_REGISTRY)==set(AgentConfig.load().tool_modes)
     assert "recovery_decider" not in names
     assert "scene_instance_generator" in names
@@ -148,7 +148,7 @@ def test_invalid_stop_is_corrected_in_the_main_orchestrator():
     assert "stop format" in client.messages[-1][-1]["content"]
 
 
-def test_main_agent_runs_new_tool02_then_passes_compact_requirement_to_tool03(tmp_path, monkeypatch):
+def test_main_agent_passes_merged_candidate_directly_to_tool04(tmp_path, monkeypatch):
     from tools.tool02_scene_instance_generator import real as tool02
     monkeypatch.setattr(tool02, 'RECORDS_ROOT', tmp_path / 'tool02_records')
     analysis={'name':'Cross traffic', 'wrong_behavior':'Late yielding to cross traffic.'}
@@ -160,24 +160,25 @@ def test_main_agent_runs_new_tool02_then_passes_compact_requirement_to_tool03(tm
                 return json.dumps(call('scene_instance_generator', {'failure_analysis':analysis}))
             if len(self.messages)==2:
                 previous=payload['current_state']['history'][-1]['result']
-                return json.dumps(call('scene_conceiver', {'scene_requirement':previous}))
+                return json.dumps(call('video_retriever', {'requirement':previous['result']['candidates'][0]['base_video_requirement']}))
             return json.dumps({'action':'finish','reason':'The requested scenario requirement and conception are available.'})
     client=RequirementFlowClient([])
     orchestrator=Orchestrator(llm_client=client)
     config=replace(AgentConfig.load(),tool_modes={name:'mock' for name in AgentConfig.load().tool_modes},logs_root=tmp_path/'agent')
     with patch('agent.main.Orchestrator',return_value=orchestrator):
         agent=Agent(config)
-    state=agent.run('Use the supplied analysis to generate a scenario requirement and conceive it; stop before retrieval.')
+    state=agent.run('Use the supplied analysis to generate candidates and retrieve the first base video; no editing.')
     results=[entry for entry in state['history'] if 'tool' in entry]
     assert state['status']=='finished'
-    assert [entry['tool'] for entry in results]==['scene_instance_generator','scene_conceiver']
+    assert [entry['tool'] for entry in results]==['scene_instance_generator','video_retriever']
     first=results[0]['result']['result']
-    assert set(first)=={'scene_requirement','required_conditions','required_actors','target_effect'}
-    assert results[1]['result']['result']['source_requirement']==first
+    assert set(first)=={'scene_requirement','target_effect','candidates'}
+    assert results[1]['result']['result']['requirement']==first['candidates'][0]['base_video_requirement']
     next_context=json.loads(client.messages[1][1]['content'])
     assert next_context['current_state']['current_stage']=='requirement_generation'
     names={tool['name'] for tool in next_context['available_tools']}
     assert 'scene_instance_generator' in names
+    assert 'scene_conceiver' not in names
     assert 'scene_requirement_generator' not in names
 
 
@@ -185,9 +186,8 @@ def test_new_tool02_default_real_dispatch_and_old_name_is_unavailable(tmp_path, 
     from types import SimpleNamespace
     from tools.tool02_scene_instance_generator import real as tool02
     monkeypatch.setattr(tool02,'RECORDS_ROOT',tmp_path/'tool02_records')
-    response={'scene_requirement':'At an intersection, ego approaches while a bus crosses its intended path.',
-              'required_conditions':['Urban intersection'], 'required_actors':['Crossing bus'],
-              'target_effect':'Yield safely before entering the conflict area.'}
+    from tools.tool02_scene_instance_generator.mock import run as mock_scene
+    response=mock_scene({'failure_analysis':{'failure_reason':'Delayed yielding'}})['result']
     client=SimpleNamespace(model='offline-injected',chat=lambda messages:json.dumps(response))
     out=call_tool('scene_instance_generator',{'failure_analysis':{'failure_reason':'Delayed yielding'},'_llm_client':client})
     assert out['status']=='success'

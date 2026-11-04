@@ -4,7 +4,7 @@ from agent.schemas import validate_decision
 
 
 AVAILABLE_TOOLS = {
-    "scene_conceiver",
+    "scene_instance_generator",
     "video_retriever",
 }
 
@@ -13,7 +13,7 @@ class DecisionSchemaTests(unittest.TestCase):
     def test_valid_call_tool(self):
         decision = {
             "action": "call_tool",
-            "tool_name": "scene_conceiver",
+            "tool_name": "scene_instance_generator",
             "arguments": {"scene_requirement": {}},
             "reason": "Create a high-level scenario plan.",
         }
@@ -49,7 +49,7 @@ class DecisionSchemaTests(unittest.TestCase):
     def test_arguments_must_be_object(self):
         decision = {
             "action": "call_tool",
-            "tool_name": "scene_conceiver",
+            "tool_name": "scene_instance_generator",
             "arguments": "invalid",
             "reason": "Need a scenario plan.",
         }
@@ -75,7 +75,7 @@ class DecisionSchemaTests(unittest.TestCase):
     def test_invalid_action(self):
         decision = {
             "action": "run_tool",
-            "tool_name": "scene_conceiver",
+            "tool_name": "scene_instance_generator",
             "arguments": {},
             "reason": "Need a scenario plan.",
         }

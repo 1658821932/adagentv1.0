@@ -20,7 +20,7 @@ adagent 是一个**面向自动驾驶数据生成与评测的 Agent 系统**。�
     ┌─────────────────────────────────────────────┐
     │  agent/        编排层   LLM 决定下一步调哪个工具    │
     ├─────────────────────────────────────────────┤
-    │  tools/        工具层   13 个标准 Tool，各有        │
+    │  tools/        工具层   12 个标准 Tool，各有        │
     │                         mock / real 两种实现      │
     ├─────────────────────────────────────────────┤
     │  mcp_servers/  能力层   视频检索/三维重建/编辑/      │
@@ -38,7 +38,7 @@ LLM 只做"选哪个工具、传什么参数"，不直接操作文件或模型�
 | 目录 / 文件 | 职责 | 你需要改它吗 |
 |---|---|---|
 | agent/ | Agent 编排核心（LLM 决策、工具执行、状态、日志） | 改编排逻辑时 |
-| tools/ | 13 个标准工具，每个有 mock/real 两实现 | 新增/修改工具时 |
+| tools/ | 12 个标准工具，每个有 mock/real 两实现 | 新增/修改工具时 |
 | mcp_servers/ | 外部能力组件（检索、重建、编辑、仿真、训练） | 接入新组件时 |
 | configs/agent.json | 运行配置：工具 mock/real 模式、LLM、步数上限 | 改运行行为时 |
 | environments/ | 各组件独立的 Python 环境（不随源码分发） | 仅本地配置 |
@@ -97,7 +97,7 @@ stop 由主循环记录为 error，而非成功完成；全局最大步数仍限
 首次视觉验证被注入失败，要求修正并重渲染、重验后才能通过测试。
 这些测试验证控制流，不证明真实 DGGT 编辑质量或模仿学习收益。
 
-## tools/ — 工具层（13 个 Tool）
+## tools/ — 工具层（12 个 Tool）
 
 每个 Tool 的用途、输入输出和调用功能见 [tools 目录与工具说明](TOOLS.md)。
 
@@ -118,13 +118,12 @@ stop 由主循环记录为 error，而非成功完成；全局最大步数仍限
 
 tools/registry.py 是总调度：维护 MOCK_TOOL_REGISTRY 和 REAL_TOOL_REGISTRY 两张表，call_tool(name, args, mode) 按模式分发。**新增工具要在这里登记。**
 
-### 13 个工具按链路顺序
+### 12 个工具按链路顺序
 
 | # | 名称 | 干什么 | 属于阶段 |
 |---|---|---|---|
 | 01 | failure_analyzer | 以 WorldEngine 场景 token 调用 WFA，保留指标、图像证据、归因和不确定性 | 失败分析 |
 | 02 | scene_instance_generator | 由失败分析生成"要造什么场景"的需求 | 需求生成 |
-| 03 | scene_conceiver | 设计高层场景方案：需要什么样的基础视频、怎么编辑 | 场景构思 |
 | 04 | video_retriever | 按自然语言需求检索本地视频库，重排并导出片段 | 数据检索 |
 | 05 | instance_discovery | 对视频做车辆检测跟踪，生成逐帧实例框和实例编号 | 实例发现 |
 | 06 | reconstruction | 用 DGGT 把单目前视视频重建成动态三维高斯场景 | 三维重建 |
@@ -217,7 +216,7 @@ pytest，148 项。覆盖配置加载、决策校验、工具结果信封、坐�
     失败案例/需求
       └─tool01→ failure_analysis (失败类型/原因/风险)
       └─tool02→ scene_requirement (要造什么场景)
-      └─tool03→ scene_plan (用什么基础视频+怎么编辑)
+      └─candidates[3] → base_video_requirement + edit_strategy (底视频检索+编辑策略)
       └─tool04→ 检索到的基础视频
       └─tool06→ 三维高斯场景 (点云+相机参数)
       └─tool05→ 逐帧实例框 (instance_info)

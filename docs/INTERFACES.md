@@ -5,7 +5,7 @@
 > 
 >     environments/video_retriever/.venv/bin/python scripts/generate_interface_docs.py
 
-每个工具的用途和调用时机见 [tools 目录与 13 个 Tool 说明](TOOLS.md)；
+每个工具的用途和调用时机见 [tools 目录与 12 个 Tool 说明](TOOLS.md)；
 调用方式、mock/real 边界和错误类型见 [工具接口与运行管理](EXECUTION_CONTRACTS.md)。
 本文档只列字段级契约。
 
@@ -34,9 +34,9 @@ Analyze one WorldEngine scene token using official metrics, image evidence and n
 
 ## tool02_scene_instance_generator: `scene_instance_generator`
 
-Expand one failure category into one new scene requirement, returned as four fields: scene_requirement, required_conditions, required_actors, target_effect.
+Expand a failure category into one target scene, ego's expected behavior, and three alternative base-video/edit-strategy pairs. Includes the former tool03 conception responsibility.
 
-**何时使用**：Pass saved failure_analysis; variation_hints and existing_instances are optional. Forward the successful output to tool03 as scene_requirement. Source analysis and hints remain in local run records referenced by meta.record_dir.
+**何时使用**：Use saved failure_analysis. Select one candidate and pass candidates[i].base_video_requirement unchanged as video_retriever.requirement. Retain that candidate's edit_strategy for downstream editing. Empty base scenes are valid for adding a vehicle. Prefer editing one other vehicle and optionally ego trajectory.
 
 ### 输入
 
@@ -50,44 +50,16 @@ Expand one failure category into one new scene requirement, returned as four fie
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `scene_requirement` | string | ✅ | — | One detailed new scene requirement: road context, ego intent, participants, initial relations, event progression and risky interaction in one coherent paragraph. No base scene or object IDs have been selected. |
-| `required_conditions` | array<string> | ✅ | — | Essential observable source-scene conditions for retrieval, e.g. urban multi-lane straight road. |
-| `required_actors` | array<string> | ✅ | — | Non-ego participants needed, e.g. stationary lead vehicle and adjacent-lane vehicle. |
-| `target_effect` | string | ✅ | — | The correct driving behavior this scenario should test. |
+| `scene_requirement` | string | ✅ | — | ONE target scene with context, participant interaction and event progression. All three candidates construct this same target. |
+| `target_effect` | string | ✅ | — | What ego should do in the target scene. |
+| `candidates` | array<Candidate> | ✅ | — | Exactly three alternative base-video retrieval descriptions paired with corresponding editing strategies. |
 
-
-## tool03_scene_conceiver: `scene_conceiver`
-
-Use an LLM to plan a scenario, source-video requirements and feasible editing ideas.
-
-**何时使用**：Use after requirements are available and before video retrieval. Pass retrieval_query or base_video_requirement to video_retriever.requirement.
-
-### 输入
+**`Candidate` 对象字段：**
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `scene_requirement` | object \| string | ✅ | — | Requirements from tool02, a successful envelope, or a direct natural-language requirement. |
-
-### 输出
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `scene_plan` | string | ✅ | — | High-level scenario generation plan. |
-| `base_video_requirement` | string | ✅ | — | Description of source video that should be retrieved. |
-| `required_conditions` | array<string> | — | — | Requested road, weather and traffic conditions. |
-| `required_actors` | array<string> | — | — | Participant roles required in the source video. |
-| `edit_ideas` | array<EditIdea> | ✅ | — | Proposed edits, with roles and parameters. |
-| `expected_effect` | string | ✅ | — | Intended scenario effect; actual policy response requires evaluation. |
-| `retrieval_query` | string | ✅ | — | Natural-language query for video_retriever.requirement. |
-| `source_requirement` | object \| string | ✅ | — | Original requirement attached by code. |
-
-**`EditIdea` 对象字段：**
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `operation` | string | ✅ | — | Proposed editing operation. |
-| `target_role` | string | ✅ | — | Participant role; do not invent an instance ID. |
-| `parameters` | object | — | — | Proposed design parameters, not measurements. |
+| `base_video_requirement` | string | ✅ | — | Natural-language description of the BASE video to retrieve. Pass this string verbatim to video_retriever.requirement. Describe visible road context and actors needed for THIS strategy; an empty road/intersection is valid when adding a vehicle. Do not require the final hazard to already exist. |
+| `edit_strategy` | string | ✅ | — | Qualitative strategy for this base video: add, delete or modify a vehicle and/or its trajectory; optionally adjust ego trajectory. Prefer changing at most one non-ego vehicle. No fixed object IDs or numeric trajectories are needed. |
 
 
 ## tool04_video_retriever: `video_retriever`

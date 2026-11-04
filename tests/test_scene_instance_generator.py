@@ -5,12 +5,13 @@ from pathlib import Path
 import pytest
 from tools.tool02_scene_instance_generator import real, mock
 from tools.tool02_scene_instance_generator.schemas import Input
-from tools.tool03_scene_conceiver.mock import run as conceive
+from tools.registry import call_tool
+from tools.tool04_video_retriever.schemas import Input as RetrievalInput
 
 GROUP={'id':'G-cross','name':'Cross traffic','base_scene':'Urban intersection',
        'wrong_behavior':'Delayed yielding to cross traffic.',
        'cases':[{'case':'C-test','token':'source-token'}]}
-FIELDS={'scene_requirement','required_conditions','required_actors','target_effect'}
+FIELDS={'scene_requirement','target_effect','candidates'}
 
 @pytest.fixture(autouse=True)
 def records_in_tmp(monkeypatch,tmp_path):
@@ -63,8 +64,8 @@ def test_failed_upstream_is_rejected():
 
 def test_optional_hints_are_reflected_in_mock():
     out=mock.run({'failure_analysis':GROUP,'variation_hints':{'target_actor':'crossing_bus','lighting':'dusk'}})
-    assert out['result']['required_actors']==['crossing_bus']
-    assert 'dusk' in out['result']['required_conditions']
+    assert all('dusk' in item['base_video_requirement'] for item in out['result']['candidates'])
+    assert 'crossing_bus' in out['result']['scene_requirement']
     assert 'dusk' in out['result']['scene_requirement']
 
 def test_legacy_qualitative_alias():
@@ -98,13 +99,25 @@ def test_removed_fields_are_rejected_instead_of_leaking():
     item=response();item['source_analysis']={'unwanted':'payload'}
     assert call(Client(item,item))['error']['type']=='output_validation_error'
 
-def test_downstream_conception_consumes_compact_result():
+def test_each_candidate_passes_directly_to_tool04():
     out=mock.run({'failure_analysis':GROUP})
-    next_out=conceive({'scene_requirement':out})
-    assert next_out['status']=='success',next_out
-    assert out['result']['scene_requirement'] in next_out['result']['scene_plan']
-    assert next_out['result']['required_conditions']==out['result']['required_conditions']
-    assert next_out['result']['required_actors']==out['result']['required_actors']
+    assert len(out['result']['candidates'])==3
+    for candidate in out['result']['candidates']:
+        args={'requirement':candidate['base_video_requirement']}
+        RetrievalInput.model_validate(args)
+        received=call_tool('video_retriever',args,mode='mock')
+        assert received['status']=='success'
+        assert received['result']['requirement']==candidate['base_video_requirement']
+
+@pytest.mark.parametrize('count',[0,2,4])
+def test_candidate_count_must_be_three(count):
+    item=response();item['candidates']=(item['candidates']*2)[:count]
+    assert call(Client(item,item))['error']['type']=='output_validation_error'
+
+def test_repeated_candidate_pairs_are_rejected():
+    item=response();item['candidates']=[item['candidates'][0]]*3
+    assert call(Client(item,item))['error']['type']=='output_validation_error'
+
 
 def test_transport_error_is_not_retried_as_json_error():
     client=Client(RuntimeError('Network unavailable'));out=call(client)

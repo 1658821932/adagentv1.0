@@ -1,8 +1,8 @@
-# tools 目录与 13 个 Tool 说明
+# tools 目录与 12 个 Tool 说明
 
 Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索视频”或“重建场景”。每个入口接收参数，执行功能，再返回统一格式的结果。一个后端可以支持多个 Tool；一个 Tool 内部也可以调用多个后端步骤。
 
-本项目当前注册 13 个 Agent Tool，编号沿用已有目录，因此不连续。SmartEdit 服务内部的 15 个 MCP 子工具属于另一层，见 [MCP 组件说明](MCP_SERVERS.md)。
+本项目当前注册 12 个 Agent Tool，编号沿用已有目录，因此不连续。SmartEdit 服务内部的 15 个 MCP 子工具属于另一层，见 [MCP 组件说明](MCP_SERVERS.md)。
 
 ## 每个 Tool 是干什么的
 
@@ -12,7 +12,6 @@ Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索�
 |---|---|---|---|---|
 | [tool01：failure_analyzer](../tools/tool01_failure_analyzer/real.py)，失败分析 | 分析一个已有驾驶场景为什么失败，为后续设计针对性场景提供证据。 | 场景 token、WFA 评测配置路径。 | failure_analysis、证据详情、报告路径。 | WFA adapter 启动失败取证，结合官方结果、图像和数值分析。 |
 | [tool02：scene_instance_generator](../tools/tool02_scene_instance_generator/real.py)，场景需求生成 | 将失败分析转换为“需要生成什么场景”，明确条件、参与者和目标效果。 | failure_analysis；可选 variation_hints、existing_instances。 | scene_requirement、required_conditions、required_actors、target_effect。 | 公共 LLM 运行器，根据本工具 prompt.md 生成需求。 |
-| [tool03：scene_conceiver](../tools/tool03_scene_conceiver/real.py)，场景构思 | 将需求展开成场景方案，决定找什么基础视频、可以做哪些编辑。 | scene_requirement，可为需求对象或文字。 | scene_plan、base_video_requirement、retrieval_query、edit_ideas。 | 公共 LLM 运行器，生成方案和检索需求。 |
 | [tool04：video_retriever](../tools/tool04_video_retriever/real.py)，视频检索 | 在已有本地索引中寻找适合重建和编辑的驾驶视频。 | requirement；可选 library。 | 视频路径、匹配分数和候选记录。 | Sentry adapter 调用召回、重排和片段导出。 |
 | [tool05：instance_discovery](../tools/tool05_instance_discovery/real.py)，实例发现 | 从重建预处理后的图像中识别并跟踪车辆，确定后续编辑哪个实例。 | image_dir、scene_name、output_path；40 帧。 | 实例 ID、逐帧检测框、instance_info_path。 | DGGT adapter 调用 YOLO/跟踪脚本。 |
 | [tool06：reconstruction](../tools/tool06_reconstruction/real.py)，三维重建 | 将单目前视驾驶视频重建为可用于后续编辑的三维高斯场景。 | video_path；num_frames=40。 | 点云、相机参数、渲染视频、预处理图像目录和输出目录。 | DGGT adapter 组织预处理及 mode 2 推理。 |
@@ -26,7 +25,7 @@ Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索�
 
 ## 容易混淆的几组工具
 
-**tool02 与 tool03**：02 明确需要什么条件和目标；03 将需求展开为具体场景构思、基础视频要求和编辑思路。
+**合并后的 tool02**：输出目标场景、自车应有行为，以及三个候选底视频检索描述和对应编辑策略。各候选的 base_video_requirement 可直接作为 tool04 的 requirement。
 
 **tool07、tool08 与 tool09**：07 生成编辑计划，08 将计划变成配置文件，09 执行配置并渲染。生成配置文件并不表示场景已经编辑完成。
 

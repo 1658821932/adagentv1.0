@@ -1,4 +1,4 @@
-"""Exercise the three typed text-LLM tools via the public registry.
+"""Exercise the merged text-LLM tool and retrieval handoff via the public registry.
 
 Use --mode mock for an offline contract test, or --mode real to call the
 configured external text model. Inputs are synthetic; no GPU backend runs.
@@ -41,9 +41,12 @@ def run_smoke(mode: str) -> dict:
 
     requirement=check("requirements","scene_instance_generator",{"failure_analysis":ANALYSIS})
     if requirement["status"]=="success":
-        check("conception","scene_conceiver",{"scene_requirement":requirement})
-    else:
-        checks.append({"check":"conception","tool":"scene_conceiver","output":{"status":"skipped","reason":"requirements failed"}})
+        for index,candidate in enumerate(requirement["result"]["candidates"]):
+            # Validate the exact string against tool04 without a real index/API call.
+            from tools.tool04_video_retriever.schemas import Input
+            Input.model_validate({"requirement":candidate["base_video_requirement"]})
+            if mode=="mock":
+                check(f"retrieval_candidate_{index+1}","video_retriever",{"requirement":candidate["base_video_requirement"]})
     check("edit_plan","edit_plan_builder",EDIT_INPUT)
     passed=all(item["output"].get("status")=="success" for item in checks)
     return {
