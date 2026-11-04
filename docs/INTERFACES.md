@@ -242,7 +242,7 @@ Evaluate whether an edited scene satisfies requirements and remains physically a
 |---|---|---|---|---|
 | `rendered_video` | string | ✅ | — | Rendered video from the previous edit step. |
 | `scene_requirement` | string \| object | ✅ | — | Original requirement generated before editing. |
-| `frame_count` | integer >=8 | — | `8` | Optional uniformly sampled frame count for Qwen-VL; defaults to 8. |
+| `frame_count` | integer >=8 | — | `8` | Optional uniformly sampled frame count for the visual model; defaults to 8. |
 | `frame_paths` | array<string> \| null | — | null | Optional locally extracted keyframe paths. |
 | `edited_scene` | object \| null | — | null | Optional scene metadata with scene_config and scene_ply. |
 | `visual_evaluation` | VisualEvaluation \| null | — | null | Optional result from a local visual evaluator. |

@@ -79,9 +79,10 @@ def main():
     snapshot_path=out/'input.json'
     if snapshot_path.exists() and json.loads(snapshot_path.read_text())!=snapshot:raise ValueError('Inputs changed; use a new output-name')
     save(snapshot_path,snapshot)
-    secret_path=Path(os.environ.get('WFA_SECRET_FILE',str(PROJECT.parent/'.secrets/vlm.json')))
-    if secret_path.stat().st_mode & 0o077:raise ValueError('Secret file must have mode 0600')
-    client=Client(json.loads(secret_path.read_text()),out)
+    import sys
+    sys.path.insert(0, str(PROJECT.parents[2]))
+    from api_config import wfa_settings
+    client=Client(wfa_settings(),out)
     if existing is not None:
         by_token={c['token']:c for c in cases}
         def rewrite(g):

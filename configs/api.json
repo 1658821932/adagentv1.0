@@ -1,0 +1,20 @@
+{
+  "kimi": {
+    "base_url": "https://apicz.boyuerichdata.com/v1",
+    "model": "kimi-k3",
+    "api_key_env": "OPENAI_API_KEY",
+    "timeout": 600,
+    "max_tokens": 8192
+  },
+  "retrieval": {
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "embedding_url": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding",
+    "embedding_model": "qwen3-vl-embedding",
+    "embedding_dimensions": 768,
+    "embedding_fps": 1.0,
+    "embedding_timeout": 120,
+    "rerank_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+    "rerank_model": "qwen3-vl-rerank",
+    "rerank_timeout": 240
+  }
+}

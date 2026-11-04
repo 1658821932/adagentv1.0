@@ -50,7 +50,7 @@ tool08 `edit_config_generator` 将编辑计划交给适配层，适配客户端�
 
 - 核心目录默认使用项目内 `mcp_servers/smart_edit/core`；可用 `SMART_EDIT_ROOT` 指定其他安装目录。
 - 解释器为项目内 `environments/smart-edit/.venv/bin/python`，需要安装 SmartEdit、`mcp`、`openai`、`python-dotenv` 及服务依赖。
-- 模型与端点读取根目录 `configs/agent.json` 的 llm 设置，支持 editor 角色及现有环境变量覆盖；密钥读取本地 `.env` 中的 `OPENAI_API_KEY` 或 `LLM_API_KEY`。客户端也会加载核心目录的 `.env.local`，已经存在的环境变量优先。
+- 模型与端点读取根目录 `configs/api.json` 的 kimi profile，支持显式环境变量覆盖；密钥读取本地 `.env` 中的 `OPENAI_API_KEY` 或 `LLM_API_KEY`。客户端也会加载核心目录的 `.env.local`，已经存在的环境变量优先。
 - 客户端以包模块 `mcp_servers.smart_edit.adapter.client` 启动，服务仍在 SmartEdit 核心目录内运行。
 
 ## 输入与输出

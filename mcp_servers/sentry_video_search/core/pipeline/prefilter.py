@@ -10,11 +10,9 @@ from typing import Any
 
 import requests
 
-from .common import common_headers, dashscope_chat_completion, extract_json, image_data_url, real_user_home_env, run, safe_name, yt_dlp_cmd
-from .search_query import DEFAULT_BASE_URL
+from .common import model_settings, common_headers, chat_completion, extract_json, image_data_url, real_user_home_env, run, safe_name, yt_dlp_cmd
 
 
-DEFAULT_MODEL = "qwen3-vl-plus"
 HARD_NEGATIVE_KEYWORDS = {
     "游戏", "模拟器", "摩托", "骑行", "步行", "航拍", "车评", "开箱", "教学", "事故合集", "停车", "倒车", "vlog",
     "game", "simulator", "motorcycle", "bike", "bicycle", "walking", "drone", "review",
@@ -37,8 +35,8 @@ class PrecheckConfig:
     max_height: int = 640
     download_timeout: int = 180
     ffmpeg_timeout: int = 60
-    model: str = DEFAULT_MODEL
-    base_url: str = DEFAULT_BASE_URL
+    model: str | None = None
+    base_url: str | None = None
 
 
 def load_candidates(path: Path, *, platform: str) -> tuple[str, dict[str, Any], list[dict[str, Any]]]:
@@ -131,9 +129,7 @@ def extract_frames(clip: Path, *, config: PrecheckConfig) -> list[Path]:
 
 
 def visual_precheck(*, frames: list[Path], requirement: str, search_plan: dict[str, Any], item: dict[str, Any], config: PrecheckConfig) -> tuple[bool, float, str]:
-    api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing DASHSCOPE_API_KEY or OPENAI_API_KEY.")
+    model, base_url, api_key = model_settings(config.model, config.base_url)
     if not frames:
         return False, 0.0, "no preview frames"
 
@@ -152,10 +148,10 @@ accepted=true 应同时满足：汽车第一视角/行车记录仪视角；包�
 """
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
     content += [{"type": "image_url", "image_url": {"url": image_data_url(frame)}} for frame in frames]
-    body = dashscope_chat_completion(
-        base_url=config.base_url,
+    body = chat_completion(
+        base_url=base_url,
         api_key=api_key,
-        payload={"model": config.model, "messages": [{"role": "user", "content": content}], "temperature": 0},
+        payload={"model": model, "messages": [{"role": "user", "content": content}], "temperature": 0},
     )
     parsed = extract_json(body["choices"][0]["message"]["content"])
     return bool(parsed.get("accepted")), float(parsed.get("confidence", 0.0)), str(parsed.get("reason", ""))

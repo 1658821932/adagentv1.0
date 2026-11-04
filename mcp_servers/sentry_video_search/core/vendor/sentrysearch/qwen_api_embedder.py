@@ -21,9 +21,6 @@ import requests
 from .base_embedder import BaseEmbedder
 
 
-API_URL = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"
-MODEL = "qwen3-vl-embedding"
-DIMENSIONS = 768
 DEFAULT_RPM = 55
 MIN_VIDEO_BYTES = 24 * 1024
 MAX_VIDEO_BYTES = 50_700 * 1024
@@ -101,10 +98,12 @@ class QwenAPIEmbedder(BaseEmbedder):
 
     def __init__(
         self,
-        dimensions: int = DIMENSIONS,
-        fps: float = 1.0,
+        dimensions: int | None = None,
+        fps: float | None = None,
     ):
-        api_key = os.environ.get("DASHSCOPE_API_KEY")
+        from api_config import get_profile
+        profile = get_profile("retrieval", require_key=True)
+        api_key = profile["api_key"]
         if not api_key:
             raise QwenAPIKeyError(
                 "DASHSCOPE_API_KEY is not set.\n\n"
@@ -112,13 +111,16 @@ class QwenAPIEmbedder(BaseEmbedder):
                 "  export DASHSCOPE_API_KEY=your-key\n"
             )
         self._api_key = api_key
-        self._dimensions = int(os.environ.get("DASHSCOPE_EMBEDDING_DIM", dimensions))
-        self._fps = float(os.environ.get("DASHSCOPE_EMBEDDING_FPS", fps))
+        self._api_url = profile["embedding_url"]
+        self._model = profile["embedding_model"]
+        self._timeout = profile["embedding_timeout"]
+        self._dimensions = int(os.environ.get("DASHSCOPE_EMBEDDING_DIM", dimensions if dimensions is not None else profile["embedding_dimensions"]))
+        self._fps = float(os.environ.get("DASHSCOPE_EMBEDDING_FPS", fps if fps is not None else profile["embedding_fps"]))
         self._limiter = _RateLimiter()
 
     def _call(self, contents: list[dict], *, enable_fusion: bool, verbose: bool = False) -> list[float]:
         payload = {
-            "model": MODEL,
+            "model": self._model,
             "input": {"contents": contents},
             "parameters": {
                 "dimension": self._dimensions,
@@ -138,7 +140,7 @@ class QwenAPIEmbedder(BaseEmbedder):
         t0 = time.monotonic()
 
         def send():
-            response = requests.post(API_URL, headers=headers, data=json.dumps(payload), timeout=120)
+            response = requests.post(self._api_url, headers=headers, data=json.dumps(payload), timeout=self._timeout)
             try:
                 body = response.json()
             except Exception:

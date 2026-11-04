@@ -27,9 +27,9 @@ def test_visual_exclusions_are_per_scene_not_global(tmp_path,monkeypatch):
     def chat(url,key,payload,timeout):
         received.append(payload["messages"][0]["content"][0]["text"])
         return {"choices":[{"message":{"content":json.dumps({"issues":[]})}}]}
-    with patch.object(validator,"_dashscope_chat",side_effect=chat),patch.object(validator,"_image_data_url",return_value="data:image/jpeg;base64,dGVzdA=="):
-        validator._evaluate_qwen({"frame_paths":[str(frame)]},Path("/video"),"lead car")
-        validator._evaluate_qwen({"frame_paths":[str(frame)],"ignored_reconstruction_artifacts":["known source-only artifact"]},Path("/video"),"lead car")
+    with patch.object(validator,"_chat_completion",side_effect=chat),patch.object(validator,"_image_data_url",return_value="data:image/jpeg;base64,dGVzdA=="):
+        validator._evaluate_visual({"frame_paths":[str(frame)]},Path("/video"),"lead car")
+        validator._evaluate_visual({"frame_paths":[str(frame)],"ignored_reconstruction_artifacts":["known source-only artifact"]},Path("/video"),"lead car")
     assert "右侧山体" not in received[0] and "黑色横向空洞" not in received[0]
     assert "known source-only artifact" not in received[0]
     assert "known source-only artifact" in received[1]

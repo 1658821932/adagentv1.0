@@ -84,15 +84,17 @@ environments/agent/.venv/bin/python -m agent.main \
 
 ## 纯文本 LLM 工具
 
-需求生成、场景构思、编辑计划这 3 个工具采用统一的 Schema、独立提示词、非敏感配置和执行器；
+场景与候选方案生成、编辑计划这 2 个工具采用统一的 Schema、独立提示词、非敏感配置和执行器；
 mock/real 共用输入输出校验。目录规范、模型角色和逐工具测试命令见 [LLM 工具开发规范](docs/LLM_TOOLS.md)。
 
-## 密钥与模型分工
+## API 统一配置
 
-- Agent 主模型：密钥统一读 `OPENAI_API_KEY`；端点/模型在 configs/agent.json 的 llm 块，可用 `OPENAI_BASE_URL`/`OPENAI_MODEL` 覆盖，例 `qwen3.5-plus`。
-- tool10 视觉验证：默认 `kimi-k3`，端点和模型默认值在 `tools/tool10_scene_validator/config.json`，可用 `SCENE_VALIDATOR_BASE_URL` / `SCENE_VALIDATOR_MODEL` 覆盖；密钥统一读 `OPENAI_API_KEY`。
-- tool04 视频检索：召回/重排用 DashScope `qwen3-vl-embedding`，需真实 `DASHSCOPE_API_KEY`（中转站不支持该端点）。
-- OSS（可选）：`OSS_*` 供重排产物上传；不入库。
+只需修改项目根目录这两个文件：
+
+- `.env`：只放密钥。`OPENAI_API_KEY` 用于 Kimi，`DASHSCOPE_API_KEY` 用于检索；`OSS_*` 用于重排序视频临时上传。
+- `configs/api.json`：统一管理地址、模型、超时和密钥变量名。`kimi` profile 供 Agent、tool02/07、SmartEdit、视觉验证、视频辅助理解和 WFA 使用；`retrieval` profile 供阿里视频嵌入/召回与重排序使用。
+
+`configs/agent.json` 仍管理 Agent 步数、工具模式和模型角色；各服务配置只保留 profile 引用及运行参数，不再重复填写 API 地址或模型。可用显式环境变量覆盖 Kimi 设置；普通使用直接修改上述两个文件即可。修改 API 配置或密钥后重启已运行的进程。更换嵌入模型或维度时需重建对应检索索引。
 
 Agent 日志保存在 `logs/`，组件产物写入各自的 output、outputs 或 runs 目录。模型接口可能接收场景文本、图片或视频，具体范围见组件说明。密钥、模型权重、运行环境、检索索引和大体积数据不随源码分发。
 

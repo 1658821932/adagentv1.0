@@ -1,7 +1,7 @@
-"""Fast first-person video classifier using Qwen-VL API.
+"""Fast first-person video classifier using the Kimi visual API.
 
 The module samples a few frames from a local video and asks a multimodal
-Qwen model for a strict JSON classification. It is intended as a fast
+visual model for a strict JSON classification. It is intended as a fast
 pre-index filter, not as a replacement for full video retrieval.
 """
 
@@ -17,11 +17,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .pipeline.common import dashscope_chat_completion
+from .pipeline.common import chat_completion, model_settings
 
 
-DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_MODEL = "qwen3-vl-plus"
+
+
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 
 
@@ -122,12 +122,10 @@ def classify_frames(
     frame_paths: Iterable[Path],
     *,
     video_path: Path,
-    model: str,
-    base_url: str,
+    model: str | None,
+    base_url: str | None,
 ) -> FirstPersonResult:
-    api_key = os.environ.get("DASHSCOPE_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing DASHSCOPE_API_KEY.")
+    model, base_url, api_key = model_settings(model, base_url)
 
     content: list[dict] = []
     frame_count = 0
@@ -157,7 +155,7 @@ def classify_frames(
         "messages": [{"role": "user", "content": content}],
         "temperature": 0,
     }
-    body = dashscope_chat_completion(
+    body = chat_completion(
         base_url=base_url,
         api_key=api_key,
         payload=payload,
@@ -196,8 +194,8 @@ def classify_video(
         return classify_frames(
             frames,
             video_path=video,
-            model=model or os.environ.get("DASHSCOPE_MODEL", DEFAULT_MODEL),
-            base_url=base_url or os.environ.get("DASHSCOPE_BASE_URL", DEFAULT_BASE_URL),
+            model=model,
+            base_url=base_url,
         )
     finally:
         parent = frames[0].parent
@@ -228,8 +226,8 @@ def main() -> None:
     parser.add_argument("path", help="Video file or directory.")
     parser.add_argument("--frames", type=int, default=4, help="Number of frames to sample per video.")
     parser.add_argument("--max-height", type=int, default=640, help="Max sampled frame height.")
-    parser.add_argument("--model", default=None, help="DashScope model, default qwen3-vl-plus.")
-    parser.add_argument("--base-url", default=None, help="OpenAI-compatible DashScope base URL.")
+    parser.add_argument("--model", default=None, help="Visual model, default kimi-k3.")
+    parser.add_argument("--base-url", default=None, help="OpenAI-compatible model base URL.")
     parser.add_argument("--output", default=None, help="Optional JSONL output path.")
     parser.add_argument("--min-confidence", type=float, default=0.75, help="Minimum confidence for accepted=true.")
     args = parser.parse_args()

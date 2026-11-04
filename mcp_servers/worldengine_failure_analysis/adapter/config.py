@@ -19,16 +19,3 @@ def _resolve_python() -> str:
     if not python.is_file():
         raise FileNotFoundError(f"WFA interpreter not found: {python}; set WFA_PYTHON or adapter/settings.json")
     return str(python)
-
-
-
-def _check_secret() -> Path:
-    secret = Path(os.environ.get("WFA_SECRET_FILE", str(COMPONENT_ROOT / ".secrets" / "vlm.json")))
-    if not secret.is_file():
-        raise RuntimeError(
-            f"VLM secret not found: {secret}. "
-            "Create it with keys endpoint/model/api_key and chmod 0600. See README."
-        )
-    if secret.stat().st_mode & 0o077:
-        raise RuntimeError(f"VLM secret must have mode 0600: {secret}")
-    return secret

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from dotenv import load_dotenv
+from api_config import get_profile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +33,7 @@ class LLMClient:
         except (OSError, json.JSONDecodeError):
             return {}
         llm = data.get("llm", {})
-        return llm if isinstance(llm, dict) else {}
+        return {**get_profile(llm.get("api_profile", "kimi")), **llm} if isinstance(llm, dict) else {}
 
     def __init__(self, *, overrides: Dict[str, object] = None):
         # Non-sensitive connection settings come from configs/agent.json;
@@ -45,7 +46,7 @@ class LLMClient:
             raise ValueError("LLM overrides allow only model, timeout and max_tokens")
         self.last_usage = None
 
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = (os.getenv(file_config.get("api_key_env", "OPENAI_API_KEY")) or os.getenv("LLM_API_KEY"))
         self.base_url = (
             os.getenv("OPENAI_BASE_URL")
             or os.getenv("LLM_BASE_URL")

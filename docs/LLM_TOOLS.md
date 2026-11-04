@@ -65,7 +65,7 @@ mock 同样要求合法输入。它只验证接口与执行路径，不证明场
 ## 配置与密钥
 
 根 .env 只存密钥，沿用已有 OPENAI_API_KEY / LLM_API_KEY。
-默认模型与端点来自 configs/agent.json 的 llm 块，兼容原环境变量覆盖规则。
+默认模型与端点统一来自 configs/api.json 的 kimi profile；configs/agent.json 的 llm.api_profile 引用它，兼容原环境变量覆盖规则。
 llm.roles 定义 planner、editor 等角色；空对象表示沿用默认模型。
 角色只允许 model、timeout、max_tokens，不接受密钥或端点字段。
 各工具 config.json 选择 model_role，指定 timeout/max_tokens，并管理 prompt_version 和 validation_retries。

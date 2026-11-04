@@ -54,7 +54,7 @@ tools/tool01_failure_analyzer/real.py
 | [run.py](../mcp_servers/worldengine_failure_analysis/core/run.py) | WFA 自身的命令行工作流入口。 |
 | `scripts/` | WFA 本身的证据分析实现。 |
 
-输入需要 WorldEngine 场景 token 和对应评测数据。原生配置模板在 `core/configs/`，接入配置在 `adapter/config.py`；凭据通过 WFA_SECRET_FILE 或组件根目录的本地 .secrets/vlm.json 提供。
+输入需要 WorldEngine 场景 token 和对应评测数据。原生配置模板在 `core/configs/`，接入配置在 `adapter/config.py`；API 统一读取根 configs/api.json 的 kimi profile，密钥读取根 .env 的 OPENAI_API_KEY。
 
 ## Sentry：视频检索
 

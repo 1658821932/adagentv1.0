@@ -6,11 +6,11 @@ import json
 import os
 from typing import Any
 
-from .common import dashscope_chat_completion, extract_json
+from .common import chat_completion, extract_json, model_settings
 
 
-DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_MODEL = "qwen3-vl-flash"
+
+
 
 SYSTEM_PROMPT = """你是自动驾驶视频数据集检索专家。
 用户会描述想找的视频内容。请把需求解析为结构化检索计划，并分别生成适合 YouTube 和 Bilibili 的搜索串。
@@ -43,14 +43,12 @@ JSON 格式：
 def generate_search_plan(
     requirement: str,
     *,
-    model: str = DEFAULT_MODEL,
-    base_url: str = DEFAULT_BASE_URL,
+    model: str | None = None,
+    base_url: str | None = None,
 ) -> dict[str, Any]:
-    api_key = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing DASHSCOPE_API_KEY or OPENAI_API_KEY.")
+    model, base_url, api_key = model_settings(model, base_url)
 
-    body = dashscope_chat_completion(
+    body = chat_completion(
         base_url=base_url,
         api_key=api_key,
         payload={

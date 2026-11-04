@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .schemas import VisualEvaluation
+from api_config import get_profile
 from pydantic import ValidationError
 from tools.llm_runtime import validation_details
 
@@ -48,14 +49,15 @@ def vlm_settings(environ=None):
         from dotenv import load_dotenv
         load_dotenv(ROOT / ".env", override=False)
         environ = os.environ
-    base_url = (environ.get("SCENE_VALIDATOR_BASE_URL") or _SETTINGS["base_url"]).rstrip("/")
-    model = (environ.get("SCENE_VALIDATOR_MODEL") or _SETTINGS["model"]).strip()
+    profile = get_profile(_SETTINGS.get("api_profile", "kimi"), require_key=True, environ=environ)
+    base_url = profile["base_url"].rstrip("/")
+    model = profile["model"].strip()
     timeout = int(environ.get("SCENE_VALIDATOR_TIMEOUT") or _SETTINGS["timeout"])
     if urlsplit(base_url).scheme not in {"http", "https"} or not urlsplit(base_url).netloc:
         raise ValueError("SCENE_VALIDATOR_BASE_URL must be an HTTP(S) URL")
     if not model or timeout <= 0:
         raise ValueError("Visual model and positive timeout are required")
-    key = environ.get("OPENAI_API_KEY", "").strip()
+    key = profile["api_key"].strip()
     if not key:
         raise RuntimeError("Visual evaluator credential missing; set OPENAI_API_KEY in .env")
     return VLMSettings(base_url=base_url, model=model, timeout=timeout, api_key=key)
@@ -74,7 +76,7 @@ def _extract_json(text: str) -> dict[str, Any]:
             raise
         value = json.loads(text[start : end + 1])
     if not isinstance(value, dict):
-        raise ValueError("Qwen-VL response must be a JSON object")
+        raise ValueError("Visual model response must be a JSON object")
     return value
 
 
@@ -119,12 +121,12 @@ def _image_data_url(path: Path) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def _dashscope_chat(base_url: str, api_key: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+def _chat_completion(base_url: str, api_key: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
     request = urllib.request.Request(f"{base_url.rstrip('/')}/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         body = json.loads(response.read().decode("utf-8"))
     if body.get("error"):
-        raise RuntimeError(f"DashScope API error: {body['error']}")
+        raise RuntimeError(f"Visual model API error: {body['error']}")
     return body
 
 
@@ -151,7 +153,7 @@ def _evaluate_locally(input_data: dict[str, Any], video: Path, requirement: Any)
     return result
 
 
-def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) -> dict[str, Any]:
+def _evaluate_visual(input_data: dict[str, Any], video: Path, requirement: Any) -> dict[str, Any]:
     settings = vlm_settings()
     supplied_frames = input_data.get("frame_paths")
     if isinstance(supplied_frames, list) and supplied_frames:
@@ -174,10 +176,10 @@ def _evaluate_qwen(input_data: dict[str, Any], video: Path, requirement: Any) ->
         )
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         content.extend({"type": "image_url", "image_url": {"url": _image_data_url(frame)}} for frame in frames)
-        body = _dashscope_chat(settings.base_url, settings.api_key, {"model": settings.model, "messages": [{"role": "user", "content": content}], "max_tokens": 8192}, settings.timeout)
+        body = _chat_completion(settings.base_url, settings.api_key, {"model": settings.model, "messages": [{"role": "user", "content": content}], "max_tokens": 8192}, settings.timeout)
         result = _extract_json(body["choices"][0]["message"]["content"])
         if not isinstance(result, dict):
-            raise ValueError("Qwen-VL scene evaluation must return a JSON object")
+            raise ValueError("Visual model scene evaluation must return a JSON object")
         result["model"] = settings.model
         result["sampled_frames"] = len(frames)
         return result
@@ -221,7 +223,7 @@ def run(input_data: dict[str, Any]) -> dict[str, Any]:
         issues.append(f"scene PLY does not exist: {scene_path}")
     visual = _evaluate_locally(input_data, video, requirement) if video.is_file() else None
     if visual is None and video.is_file() and not input_data.get("visual_evaluation") and not (input_data.get("local_evaluator") or os.environ.get("SCENE_VALIDATOR_LOCAL_COMMAND")):
-        visual = _evaluate_qwen(input_data, video, requirement)
+        visual = _evaluate_visual(input_data, video, requirement)
     if visual is not None:
         try:
             visual = VisualEvaluation.model_validate(visual).model_dump()

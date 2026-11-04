@@ -13,7 +13,7 @@ DESCRIPTION = {
     'inputs': {
         'rendered_video': 'Rendered video from the previous edit step.',
         'scene_requirement': 'Original requirement generated before editing.',
-        'frame_count': 'Optional uniformly sampled frame count for Qwen-VL; defaults to 8.',
+        'frame_count': 'Optional uniformly sampled frame count for the visual model; defaults to 8.',
         'frame_paths': 'Optional locally extracted keyframe paths.',
         'edited_scene': 'Optional scene metadata with scene_config and scene_ply.',
         'visual_evaluation': 'Optional result from a local visual evaluator.',

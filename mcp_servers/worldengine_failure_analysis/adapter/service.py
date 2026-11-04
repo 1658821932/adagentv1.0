@@ -1,8 +1,7 @@
 """Service layer: invoke worldengine_failure_analysis (wfa) scene analysis.
 
 Wraps wfa's run.py CLI for a single scene token and returns the parsed
-VLM forensic result. VLM credentials live in wfa/.secrets/vlm.json (0600),
-which is intentionally NOT vendored into the open-source repo.
+VLM forensic result. API settings come from root configs/api.json; credentials from root .env.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from typing import Any
 from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
 
-from .config import WFA_ROOT, DEFAULT_CONFIG, DEFAULT_CONFIG_EXAMPLE, DEFAULT_RUN_NAME, _resolve_python, _check_secret
+from .config import WFA_ROOT, DEFAULT_CONFIG, DEFAULT_CONFIG_EXAMPLE, DEFAULT_RUN_NAME, _resolve_python
 from .schemas import WfaSceneResult
 
 class WfaError(RuntimeError):
@@ -37,7 +36,6 @@ def analyze_scene(
     """Run wfa forensic analysis for one scene token and return the parsed result."""
     if not token or not token.strip():
         raise ValueError("failure_analyzer (wfa) requires a non-empty scene 'token'")
-    secret_file = _check_secret()
 
     config = Path(config_path).expanduser().resolve() if config_path else DEFAULT_CONFIG
     if not config.is_file():
@@ -61,7 +59,7 @@ def analyze_scene(
         cmd.append("--resume")
 
     proc = run_logged(
-        cmd, cwd=str(WFA_ROOT), log_path=task.logs / "analysis.log", timeout=timeout, env={**task.child_env(), "WFA_SECRET_FILE": str(secret_file)},
+        cmd, cwd=str(WFA_ROOT), log_path=task.logs / "analysis.log", timeout=timeout, env=task.child_env(),
     )
 
     if proc.returncode:

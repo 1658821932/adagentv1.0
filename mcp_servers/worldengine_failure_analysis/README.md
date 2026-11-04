@@ -4,7 +4,7 @@
 
 | 目录 | 内容 |
 |---|---|
-| core/ | 独立算法、原生入口和说明；不依赖 AdAgent |
+| core/ | 原生算法、入口和说明；API 使用项目根配置 |
 | adapter/ | service.py 对外入口、config.py 接入配置、schemas.py 返回约定 |
 | adapter/tests/ | 服务接口、路径隔离和导出兼容性测试 |
 | runtime/<run_id>/ | manifest.json、input/、logs/、output/，不进入 Git |
@@ -13,7 +13,7 @@
 
 从 `mcp_servers.worldengine_failure_analysis.adapter.service` 导入：analyze_scene(token, config_path=...)。
 
-环境：`WFA_PYTHON 或已配置的仿真环境`。WFA_ROOT 默认 core/；配置模板在 core/configs/；WFA_SECRET_FILE 可指定凭证文件。
+环境：`WFA_PYTHON 或已配置的仿真环境`。WFA_ROOT 默认 core/；配置模板在 core/configs/；API 读取根 configs/api.json，密钥读取根 .env。
 
 输入输出沿用原工具格式；结果中的 run_dir 指向任务根目录，具体产物通过原有路径字段返回。显式导出路径继续支持，旧运行目录已清理。
 

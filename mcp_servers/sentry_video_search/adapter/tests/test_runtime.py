@@ -29,3 +29,15 @@ def test_retrieval_exports_into_task_and_preserves_index(tmp_path):
     assert Path(result.video_path).is_relative_to(Path(result.run_dir) / "output")
     assert (Path(result.run_dir) / "logs/local_search.json").is_file()
     assert config.runtime_home == tmp_path / "shared-index"
+
+
+def test_long_chinese_retrieval_description_exports_valid_filename(tmp_path):
+    from mcp_servers.sentry_video_search.core.config import SearchConfig
+    from mcp_servers.sentry_video_search.core.service import _trim_hit
+    requirement = "城市多车道直道，同车道前方有正常行驶车辆，邻道有少量社会车辆。" * 20
+    def trim(**kwargs):
+        Path(kwargs["output_path"]).write_bytes(b"video")
+    with patch("mcp_servers.sentry_video_search.core.vendor.sentrysearch.chunker._get_video_duration", return_value=12), patch("mcp_servers.sentry_video_search.core.vendor.sentrysearch.trimmer.trim_clip", side_effect=trim):
+        output = _trim_hit({"source_file":"/source.mp4", "start_time":0}, requirement, SearchConfig(output_dir=tmp_path), label="rank01_score0.900000_compressed")
+    assert output.is_file()
+    assert len(output.name.encode("utf-8")) <= 255

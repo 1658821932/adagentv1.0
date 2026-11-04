@@ -85,15 +85,18 @@ def image_data_url(path: Path) -> str:
     return f"data:image/jpeg;base64,{encoded}"
 
 
-def dashscope_chat_completion(
+def chat_completion(
     *,
     base_url: str,
     api_key: str,
     payload: dict[str, Any],
-    timeout: int = 120,
+    timeout: int | None = None,
     retries: int = 2,
     retry_delays: tuple[float, ...] = (2.0, 2.0),
 ) -> dict[str, Any]:
+    if timeout is None:
+        from api_config import get_profile
+        timeout = get_profile("kimi")["timeout"]
     url = f"{base_url.rstrip('/')}/chat/completions"
     last_error: Exception | None = None
     for attempt in range(retries + 1):
@@ -106,13 +109,20 @@ def dashscope_chat_completion(
             )
             body = response.json()
             if response.status_code != 200 or body.get("error"):
-                raise RuntimeError(f"DashScope API error: status={response.status_code}, body={body}")
+                raise RuntimeError(f"Model API error: status={response.status_code}, body={body}")
             return body
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as exc:
             last_error = exc
             if attempt >= retries:
                 break
             delay = retry_delays[min(attempt, len(retry_delays) - 1)]
-            print(f"DashScope 请求失败（{exc.__class__.__name__}），{delay:g}s 后重试...", file=sys.stderr)
+            print(f"模型请求失败（{exc.__class__.__name__}），{delay:g}s 后重试...", file=sys.stderr)
             time.sleep(delay)
-    raise RuntimeError(f"DashScope request failed after {retries + 1} attempts: {last_error}") from last_error
+    raise RuntimeError(f"Model request failed after {retries + 1} attempts: {last_error}") from last_error
+
+
+def model_settings(model=None, base_url=None):
+    """Non-retrieval text/visual tasks use the component Kimi profile, never DashScope credentials."""
+    from api_config import get_profile
+    profile = get_profile("kimi", require_key=True)
+    return (model or profile["model"], base_url or profile["base_url"], profile["api_key"])

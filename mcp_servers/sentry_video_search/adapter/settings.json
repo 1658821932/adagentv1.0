@@ -1,5 +1,8 @@
 {
   "paths": {
     "python": "environments/video_retriever/.venv/bin/python"
+  },
+  "llm": {
+    "api_profile": "kimi"
   }
 }

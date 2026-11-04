@@ -23,20 +23,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args() -> argparse.Namespace:
     load_dotenv(PROJECT_ROOT / ".env.local", override=False)
+    load_dotenv(Path(__file__).resolve().parents[4] / ".env", override=False)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    from api_config import get_profile
+    profile = get_profile("kimi")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("OPENAI_BASE_URL", "http://localhost:30000/v1"),
+        default=profile["base_url"],
         help="OpenAI-compatible API base URL.",
     )
     parser.add_argument(
         "--api-key",
-        default=os.environ.get("OPENAI_API_KEY", "EMPTY"),
+        default=os.environ.get(profile["api_key_env"]) or os.environ.get("LLM_API_KEY", ""),
         help="API key. SGLang local servers commonly accept any non-empty value.",
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("OPENAI_MODEL", "qwen3"),
+        default=profile["model"],
         help="Model name exposed by the OpenAI-compatible server.",
     )
     parser.add_argument(
@@ -363,7 +367,7 @@ class SmartEditTerminalClient:
         hint = (
             "模型返回了空回复:没有 content,也没有 OpenAI 标准 tool_calls。\n"
             "这通常表示 SGLang 的 tool-call parser 没有成功产出结构化工具调用,"
-            "或者 Qwen3 只生成了 reasoning/thinking 而没有最终回答。\n"
+            "或者 模型只生成了 reasoning/thinking 而没有最终回答。\n"
             f"finish_reason: {finish_reason}\n"
             f"message字段: {keys}\n"
             f"最近过程:\n{summary}"

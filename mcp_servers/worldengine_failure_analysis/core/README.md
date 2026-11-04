@@ -1,7 +1,7 @@
 # 独立项目入口
 
-在本目录运行 `python run.py --help`，无需导入 AdAgent。依赖见 requirements.txt。
-配置模板位于 configs/complete.json.example。凭证通过 WFA_SECRET_FILE 指定，默认读取本目录上一级的 .secrets/vlm.json。
+在本目录运行 `python run.py --help`，API 统一引用项目根配置。依赖见 requirements.txt。
+配置模板位于 configs/complete.json.example。API 地址和模型读取项目根 configs/api.json 的 kimi profile；凭证读取根 .env 的 OPENAI_API_KEY。
 使用 --run-dir 指定输出目录；未指定时在上一级 runtime/ 下分配新任务。
 旧运行产物已清理；watch_batch.py 和 summarize_edit_scenarios.py 使用 --run-dir 明确选择已有分析输出。
 
@@ -21,13 +21,7 @@
 
 独立分析环境需要 `requirements.txt` 中的依赖；通过 Agent 调用时可用 `WFA_PYTHON` 指定解释器，否则依次查找项目的 simengine、dggt、agent 环境。
 
-复制 `configs/complete.json` 为自己的配置，设置 `worldengine_root`、`result_root`、可选数值缓存和 `vlm_allowed_tokens`。示例中的本地数据路径须改为本机路径。配置 `.secrets/vlm.json`：
-
-```json
-{"endpoint":"https://your-provider/v1/chat/completions","model":"your-vlm-model","api_key":"your-key"}
-```
-
-密钥文件权限设为0600，不入库。分析会向该端点发送场景图片和相关证据。以下命令在本组件目录执行，使用已装依赖的 Python：
+复制 `configs/complete.json` 为自己的配置，设置 `worldengine_root`、`result_root`、可选数值缓存和 `vlm_allowed_tokens`。示例中的本地数据路径须改为本机路径。API 在项目根 `configs/api.json` 设置，密钥放根 `.env`。分析会向该端点发送场景图片和相关证据。以下命令在本组件目录执行，使用已装依赖的 Python：
 
 ```bash
 python run.py scene --token <scene-token> --config /path/to/config.json --run-name trial

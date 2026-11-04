@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from .common import common_headers, real_user_home_env, yt_dlp_cmd
-from .search_query import DEFAULT_BASE_URL, DEFAULT_MODEL, generate_search_plan
+from .search_query import generate_search_plan
 
 
 @dataclass
@@ -23,8 +23,8 @@ class RetrievalConfig:
     enrich_metadata: bool = True
     metadata_timeout: int = 45
     pinned_bv: str = ""
-    model: str = DEFAULT_MODEL
-    base_url: str = DEFAULT_BASE_URL
+    model: str | None = None
+    base_url: str | None = None
 
 
 def require_yt_dlp() -> None:

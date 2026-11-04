@@ -60,7 +60,7 @@ agent 逐文件的职责与调用关系，以及 configs、logs 的用途，见 
 | executor.py | 工具执行器 | 按 configs/agent.json 里该工具的 mock/real 模式调用对应实现，并校验结果信封 |
 | state.py | 运行时状态 | AgentState 记录任务、历史（决策+工具结果）、当前阶段、生命周期；to_orchestrator_dict() 会压缩逐帧检测结果以免撑爆 prompt |
 | schemas.py | 数据校验 | 校验 LLM 决策格式和工具结果信封是否合法 |
-| llm_client.py | LLM 客户端 | 封装 OpenAI 兼容 API；密钥从 .env 读，base_url/model 从 configs/agent.json 的 llm 块读（环境变量优先） |
+| llm_client.py | LLM 客户端 | 封装 OpenAI 兼容 API；密钥从 .env 读，base_url/model 从 configs/api.json 的 kimi profile 读（环境变量优先） |
 | config.py | 配置加载 | 加载并强校验 configs/agent.json（缺字段/未知工具/非法模式都会报错） |
 | tool_descriptions.py | 工具清单 | 只汇总各工具目录的 description.py；三个纯文本 LLM 工具的参数说明由各自 schemas.py 自动生成 |
 | logger.py | 结构化日志 | 每次 run 建一个目录，记录决策、工具调用、错误、最终状态 |
@@ -168,17 +168,17 @@ SmartEdit 内部配置生成指令已独立放在 smart_edit/adapter/prompts/。
 
 ## configs/ — 运行配置
 
-目前只有 configs/agent.json，控制 **Agent 层的非敏感运行配置**；各后端自己的配置仍放在对应组件中：
+configs/api.json 统一管理 API 地址、模型与密钥变量名；configs/agent.json 控制 **Agent 层的非敏感运行配置**；各后端保留自身运行参数：
 
     {
       "agent": { "max_steps": 20 },
-      "llm": { "base_url": "...", "model": "..." },
+      "llm": { "api_profile": "kimi" },
       "orchestrator": { "decision_correction_attempts": 1 },
       "tools": { "modes": { "failure_analyzer": "real" } },
       "logging": { "root_dir": "logs" }
     }
 
-**密钥和配置分离原则**：.env 只放密钥（OPENAI_API_KEY、DASHSCOPE_API_KEY、OSS_*），其余配置都在 configs/agent.json 或各组件自己的配置里。
+**密钥和配置分离原则**：.env 只放密钥（OPENAI_API_KEY、DASHSCOPE_API_KEY、OSS_*），API 配置在 configs/api.json，运行参数在 configs/agent.json 或各组件配置里。
 
 ## environments/ — Python 环境
 

@@ -79,9 +79,9 @@ def main():
         if matches[0] not in selected:selected.append(matches[0])
     if not requested:selected=[r for r in rows if float(r['no_at_fault_collisions'])<1 or float(r['drivable_area_compliance'])<1]
     if any(r['token'] not in cfg['vlm_allowed_tokens'] for r in selected):p.error('Selected token is outside configured external-image authorization')
-    secret_file=Path(os.environ.get('WFA_SECRET_FILE',str(PROJECT.parent/'.secrets/vlm.json')))
-    if secret_file.stat().st_mode & 0o077:raise ValueError('Secret file must have mode 0600')
-    secret=json.loads(secret_file.read_text())
+    sys.path.insert(0, str(PROJECT.parents[2]))
+    from api_config import wfa_settings
+    secret = wfa_settings()
     for row in selected:
         out=prepare_attempt(directory,row['token'],args.resume,args.attempts)
         if out is None:continue

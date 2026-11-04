@@ -144,7 +144,8 @@ def _trim_hit(
     config.output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     suffix = f"_{label}" if label else ""
-    output = config.output_dir / f"{safe_name(requirement, limit=80)}_{stamp}{suffix}.mp4"
+    prefix = safe_name(requirement, limit=80).encode("utf-8")[:96].decode("utf-8", errors="ignore")
+    output = config.output_dir / f"{prefix}_{stamp}{suffix}.mp4"
     trim_clip(
         source_file=str(hit["source_file"]),
         start_time=start,
@@ -204,10 +205,9 @@ def _finish(
 
 
 def _ensure_dashscope_key() -> None:
-    """Video search uses the Alibaba DashScope key; nothing else does."""
-    if os.environ.get("DASHSCOPE_API_KEY", "").strip():
-        return
-    raise RuntimeError("DASHSCOPE_API_KEY is required")
+    """Validate the root retrieval API profile before using the index."""
+    from api_config import get_profile
+    get_profile("retrieval", require_key=True)
 
 
 @runtime_task("sentry_video_search", "index_local")

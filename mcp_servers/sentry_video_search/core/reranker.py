@@ -21,7 +21,6 @@ from .vendor.sentrysearch.trimmer import trim_clip
 from .config import SearchConfig
 
 
-RERANK_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 MAX_VIDEO_CANDIDATES = 4
 MAX_RERANK_VIDEO_BYTES = 50_000 * 1024
 
@@ -111,12 +110,12 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
     candidates = hits[:MAX_VIDEO_CANDIDATES]
     if not candidates:
         raise ValueError("Cannot rerank an empty candidate list")
+    from api_config import get_profile
+    profile = get_profile("retrieval", require_key=True)
     settings = _settings()
-    if not os.environ.get("DASHSCOPE_API_KEY", "").strip():
-        raise RuntimeError("DASHSCOPE_API_KEY is required for video rerank")
 
     uploaded: list[str] = []
-    details: dict[str, Any] = {"model": "qwen3-vl-rerank", "candidate_count": len(candidates), "candidates": []}
+    details: dict[str, Any] = {"model": profile["rerank_model"], "candidate_count": len(candidates), "candidates": []}
     try:
         scratch = run_dir.parent / "input" if run_dir.name == "logs" else run_dir / "input"
         scratch.mkdir(parents=True, exist_ok=True)
@@ -136,7 +135,7 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                 details["candidates"].append({**hit, "candidate_index": index})
 
             payload = {
-                "model": "qwen3-vl-rerank",
+                "model": profile["rerank_model"],
                 "input": {"query": {"text": requirement}, "documents": documents},
                 "parameters": {
                     "top_n": len(documents),
@@ -146,10 +145,10 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                 },
             }
             response = requests.post(
-                RERANK_URL,
-                headers={"Authorization": f"Bearer {os.environ['DASHSCOPE_API_KEY']}", "Content-Type": "application/json"},
+                profile["rerank_url"],
+                headers={"Authorization": f"Bearer {profile['api_key']}", "Content-Type": "application/json"},
                 json=payload,
-                timeout=240,
+                timeout=profile["rerank_timeout"],
             )
             body = response.json()
             if response.status_code != 200 or body.get("code"):

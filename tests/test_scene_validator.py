@@ -20,7 +20,7 @@ class SceneValidatorTests(unittest.TestCase):
                 "issues": [],
                 "ignored_reconstruction_artifacts": ["画面中央的黑色横向空洞"],
             }
-            with patch("tools.tool10_scene_validator.real._evaluate_qwen", return_value=evaluation):
+            with patch("tools.tool10_scene_validator.real._evaluate_visual", return_value=evaluation):
                 result = run({"rendered_video": str(video), "scene_requirement": "前方有救护车"})["result"]
             self.assertTrue(result["passed"])
             self.assertEqual(result["ignored_reconstruction_artifacts"], evaluation["ignored_reconstruction_artifacts"])
@@ -38,7 +38,7 @@ class SceneValidatorTests(unittest.TestCase):
                 "issues": ["救护车未清晰出现"],
                 "ignored_reconstruction_artifacts": ["右侧山体破碎"],
             }
-            with patch("tools.tool10_scene_validator.real._evaluate_qwen", return_value=evaluation):
+            with patch("tools.tool10_scene_validator.real._evaluate_visual", return_value=evaluation):
                 result = run({"rendered_video": str(video), "scene_requirement": "前方有救护车"})["result"]
             self.assertFalse(result["passed"])
             self.assertEqual(result["issues"], ["救护车未清晰出现"])
@@ -55,7 +55,7 @@ class SceneValidatorTests(unittest.TestCase):
                 "traffic_logic_valid": True,
                 "issues": [],
             }
-            with patch("tools.tool10_scene_validator.real._evaluate_qwen", return_value=evaluation):
+            with patch("tools.tool10_scene_validator.real._evaluate_visual", return_value=evaluation):
                 result = run({"rendered_video": str(video), "scene_requirement": "前车切入"})["result"]
             self.assertFalse(result["passed"])
 
