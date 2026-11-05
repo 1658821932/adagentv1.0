@@ -9,7 +9,7 @@ about this tool here, not in the global system prompt.
 DESCRIPTION = {
     "name": 'video_retriever',
     "description": 'Retrieve a dataset camera video and its bound multi-camera scene from the existing local Sentry index. Unbound videos raise an error.',
-    "when_to_use": 'Use when a suitable indexed real driving scene is needed as the starting point for reconstruction or editing. This tool does not search the internet.',
+    "when_to_use": 'Use when a suitable indexed real driving scene is needed with annotations and Gaussian assets for downstream use. This tool does not search the internet.',
     'inputs': {
         'requirement': 'One natural-language description of the required base driving video.',
         'library': 'Optional: default or waymo. Use waymo to search the separate Waymo front-camera index; default searches the existing local index.',

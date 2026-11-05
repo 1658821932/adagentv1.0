@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES = ["dggt", "smart_edit", "sentry_video_search", "worldengine", "worldengine_failure_analysis"]
+SERVICES = ["scene_editing", "sentry_video_search", "worldengine", "worldengine_failure_analysis"]
 
 
 @pytest.mark.parametrize("service", SERVICES)
@@ -47,10 +47,8 @@ def test_agent_tools_use_only_canonical_adapter_service():
     expected = {
         "tool01_failure_analyzer": "worldengine_failure_analysis",
         "tool04_video_retriever": "sentry_video_search",
-        "tool05_instance_discovery": "dggt",
-        "tool06_reconstruction": "dggt",
-        "tool08_edit_config_generator": "smart_edit",
-        "tool09_scene_editor": "dggt",
+        "tool05_attack_vehicle_editor": "scene_editing",
+        "tool06_ego_trajectory_editor": "scene_editing",
         "tool13_policy_runner": "worldengine",
         "tool14_failure_case_filter": "worldengine",
         "tool15_policy_trainer": "worldengine",

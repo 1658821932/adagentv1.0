@@ -60,14 +60,7 @@ def test_training_ignores_stale_checkpoints_and_keeps_export(tmp_path, stub_trai
     assert (Path(result["export_dir"]) / "epoch_1.pth").read_bytes() == b"fresh"
     assert (export / "epoch_99.pth").read_bytes() == b"stale"
 
-def test_worldengine_evaluation_stores_result_with_executed_trajectory(tmp_path):
-    import pickle
+def test_failure_filter_rejects_missing_official_scores(tmp_path):
     from mcp_servers.worldengine.adapter.evaluation import filter_failure_cases
-    scene = tmp_path / "scene.pkl"
-    state = {"position": [[0, 0, 0]], "length": [4], "width": [2], "valid": [True]}
-    scene.write_bytes(pickle.dumps([{"object_track": {"ego": {"state": state}, "other": {"state": state}}}]))
-    result = filter_failure_cases({"scenario_pkl": str(scene), "python": sys.executable})
-    assert result["is_failure_case"] is True
-    root = Path(result["run_dir"])
-    assert (root / "output/result.json").is_file()
-    assert (root / "logs/evaluation.log").is_file()
+    with pytest.raises(ValueError, match="result_dir"):
+        filter_failure_cases({"scenario_pkl": str(tmp_path / "scene.pkl")})

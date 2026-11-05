@@ -24,11 +24,6 @@ ANALYSIS={
     "risk_factors":["short headway"],
     "supporting_case_ids":[],
 }
-EDIT_INPUT={
-    "edit_request":"Plan a trajectory edit for existing vehicle 0 to move toward the ego lane, then maintain its lane position. Use the task's 40 frames; do not invent calibrated distances or claim actual ego braking.",
-    "scene_info":{"num_frames":40,"coordinate_system":"smart_edit","note":"Synthetic contract-test context; no real reconstruction or calibrated trajectory is supplied."},
-    "instances":[{"instance_id":0,"category":"car","sample_frames":[{"frame":0},{"frame":20},{"frame":39}]}],
-}
 
 
 def run_smoke(mode: str) -> dict:
@@ -47,7 +42,6 @@ def run_smoke(mode: str) -> dict:
             Input.model_validate({"requirement":candidate["base_video_requirement"]})
             if mode=="mock":
                 check(f"retrieval_candidate_{index+1}","video_retriever",{"requirement":candidate["base_video_requirement"]})
-    check("edit_plan","edit_plan_builder",EDIT_INPUT)
     passed=all(item["output"].get("status")=="success" for item in checks)
     return {
         "mode":mode,"synthetic_inputs":True,"passed":passed,

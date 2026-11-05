@@ -42,9 +42,9 @@ def make_agent(tmp_path,decisions):
     return agent,client
 
 
-def test_registry_descriptions_and_configuration_expose_only_12_tools():
+def test_registry_descriptions_and_configuration_expose_only_9_tools():
     names={item["name"] for item in get_tool_descriptions()}
-    assert len(names)==12
+    assert len(names)==9
     assert names==set(MOCK_TOOL_REGISTRY)==set(REAL_TOOL_REGISTRY)==set(AgentConfig.load().tool_modes)
     assert "recovery_decider" not in names
     assert "scene_instance_generator" in names
@@ -64,39 +64,29 @@ def test_removed_tool_mode_is_not_silently_accepted(tmp_path):
         AgentConfig.load(path)
 
 
-def test_main_agent_receives_failed_validation_and_runs_repair_then_revalidation(tmp_path):
-    decisions=[
-        call("scene_validator",{"rendered_video":"/synthetic/old.mp4","scene_requirement":"A grounded vehicle.","mock_force_fail":True}),
-        call("edit_plan_builder",{"edit_request":"Correct the floating vehicle using the supplied road-contact evidence.","instances":[{"instance_id":0}]}),
-        call("scene_editor",{"video_path":"/synthetic/source.mp4","edit_config_path":"/synthetic/revised.json"}),
-        call("scene_validator",{"rendered_video":"/synthetic/revised.mp4","scene_requirement":"A grounded vehicle."}),
-        {"action":"finish","reason":"The revised scene passed validation."},
-    ]
-    agent,client=make_agent(tmp_path,decisions)
-    state=agent.run("Generate and validate a scene; revise failed edits.")
-    results=[entry for entry in state["history"] if "tool" in entry]
-    assert state["status"]=="finished"
-    assert results[0]["result"]["result"]["passed"] is False
-    assert results[-1]["result"]["result"]["passed"] is True
-    assert [entry["tool"] for entry in results]==[
-        "scene_validator","edit_plan_builder","scene_editor","scene_validator"]
-    repair_context=json.loads(client.messages[1][1]["content"])
-    assert repair_context["current_state"]["history"][-1]["result"]["result"]["passed"] is False
-    assert "recovery_decider" not in {tool["name"] for tool in repair_context["available_tools"]}
-    assert len(client.messages)==5
+def test_failed_validation_can_stop_when_editor_backend_is_unavailable(tmp_path):
+    agent, client = make_agent(tmp_path, [
+        call("scene_validator", {"rendered_video": "/synthetic/old.mp4", "scene_requirement": "A grounded vehicle.", "mock_force_fail": True}),
+        {"action": "stop", "reason": "Validation failed; the new editor backend is not configured to repair it."},
+    ])
+    state = agent.run("Validate the supplied scene and repair it if possible.")
+    assert state["status"] == "error"
+    feedback = json.loads(client.messages[1][1]["content"])
+    assert feedback["current_state"]["history"][-1]["result"]["result"]["passed"] is False
+    assert "scene_editor" not in {t["name"] for t in feedback["available_tools"]}
 
 
 def test_repeated_transient_failure_stops_as_error_instead_of_success(tmp_path):
-    arguments={"video_path":"/synthetic/source.mp4","edit_config_path":"/synthetic/edit.json"}
+    arguments={"requirement":"a dataset scene"}
     decisions=[
-        call("scene_editor",arguments),
-        call("scene_editor",arguments),
-        {"action":"stop","reason":"Rendering timed out again after one retry; no supported alternative is available."},
+        call("video_retriever",arguments),
+        call("video_retriever",arguments),
+        {"action":"stop","reason":"Retrieval timed out again after one retry; no supported alternative is available."},
     ]
     agent,client=make_agent(tmp_path,decisions)
-    error={"status":"error","tool":"scene_editor","error":{"type":"timeout","message":"Transient rendering timeout"}}
+    error={"status":"error","tool":"video_retriever","error":{"type":"timeout","message":"Transient retrieval timeout"}}
     with patch.object(agent.executor,"execute",return_value=error) as execute:
-        state=agent.run("Generate a valid edited scene.")
+        state=agent.run("Retrieve a bound dataset scene.")
     assert execute.call_count==2
     assert state["status"]=="error"
     assert "timed out" in state["error"]
@@ -120,11 +110,11 @@ def test_explicit_pass_finishes_without_recovery_or_unrequested_simulation(tmp_p
 def test_removed_recovery_tool_call_is_corrected_to_a_direct_action():
     client=DecisionClient([
         call("recovery_decider",{"evaluation":{"passed":False}}),
-        call("edit_plan_builder",{"edit_request":"Correct road contact."}),
+        call("video_retriever",{"requirement":"a suitable dataset scene"}),
     ])
     planner=Orchestrator(llm_client=client)
     result=planner.decide("Repair the failed edit.",{"history":[]})
-    assert result["tool_name"]=="edit_plan_builder"
+    assert result["tool_name"]=="video_retriever"
     assert len(client.messages)==2
     assert "unknown tool_name" in client.messages[-1][-1]["content"]
 
@@ -142,7 +132,7 @@ def test_invalid_stop_is_corrected_in_the_main_orchestrator():
         {"action":"stop","reason":""},
         {"action":"stop","reason":"The required checkpoint is missing and no tool can install it."},
     ])
-    result=Orchestrator(llm_client=client).decide("Reconstruct the scene.",{"history":[]})
+    result=Orchestrator(llm_client=client).decide("Simulate the scene.",{"history":[]})
     assert result["action"]=="stop"
     assert "checkpoint" in result["reason"]
     assert "stop format" in client.messages[-1][-1]["content"]

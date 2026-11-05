@@ -6,8 +6,7 @@
     "timeout": 600,
     "max_tokens": 1024,
     "roles": {
-      "planner": {},
-      "editor": {}
+      "planner": {}
     },
     "api_profile": "kimi"
   },
@@ -19,15 +18,12 @@
       "failure_analyzer": "real",
       "scene_instance_generator": "real",
       "video_retriever": "real",
-      "instance_discovery": "real",
-      "reconstruction": "real",
-      "edit_plan_builder": "real",
-      "edit_config_generator": "real",
-      "scene_editor": "real",
       "scene_validator": "real",
       "policy_runner": "real",
       "failure_case_filter": "real",
-      "policy_trainer": "real"
+      "policy_trainer": "real",
+      "attack_vehicle_editor": "real",
+      "ego_trajectory_editor": "real"
     }
   },
   "logging": {

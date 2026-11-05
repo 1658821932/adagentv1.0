@@ -10,16 +10,10 @@ from tools.tool02_scene_instance_generator.mock import run as mock_scene_instanc
 from tools.tool02_scene_instance_generator.real import run as real_scene_instance_generator
 from tools.tool04_video_retriever.mock import run as mock_video_retriever
 from tools.tool04_video_retriever.real import run as real_video_retriever
-from tools.tool05_instance_discovery.mock import run as mock_instance_discovery
-from tools.tool05_instance_discovery.real import run as real_instance_discovery
-from tools.tool06_reconstruction.mock import run as mock_reconstruction
-from tools.tool06_reconstruction.real import run as real_reconstruction
-from tools.tool07_edit_plan_builder.mock import run as mock_edit_plan_builder
-from tools.tool07_edit_plan_builder.real import run as real_edit_plan_builder
-from tools.tool08_edit_config_generator.mock import run as mock_edit_config_generator
-from tools.tool08_edit_config_generator.real import run as real_edit_config_generator
-from tools.tool09_scene_editor.mock import run as mock_scene_editor
-from tools.tool09_scene_editor.real import run as real_scene_editor
+from tools.tool05_attack_vehicle_editor.mock import run as mock_attack_vehicle_editor
+from tools.tool05_attack_vehicle_editor.real import run as real_attack_vehicle_editor
+from tools.tool06_ego_trajectory_editor.mock import run as mock_ego_trajectory_editor
+from tools.tool06_ego_trajectory_editor.real import run as real_ego_trajectory_editor
 from tools.tool10_scene_validator.mock import run as mock_scene_validator
 from tools.tool10_scene_validator.real import run as real_scene_validator
 from tools.tool13_policy_runner.mock import run as mock_policy_runner
@@ -33,14 +27,12 @@ from tools.tool15_policy_trainer.real import run as real_policy_trainer
 ToolCallable = Callable[[dict], dict]
 
 MOCK_TOOL_REGISTRY: dict[str, ToolCallable] = {
+    "attack_vehicle_editor": mock_attack_vehicle_editor,
+    "ego_trajectory_editor": mock_ego_trajectory_editor,
+
     "failure_analyzer": mock_failure_analyzer,
     "scene_instance_generator": mock_scene_instance_generator,
     "video_retriever": mock_video_retriever,
-    "instance_discovery": mock_instance_discovery,
-    "reconstruction": mock_reconstruction,
-    "edit_plan_builder": mock_edit_plan_builder,
-    "edit_config_generator": mock_edit_config_generator,
-    "scene_editor": mock_scene_editor,
     "scene_validator": mock_scene_validator,
     "policy_runner": mock_policy_runner,
     "failure_case_filter": mock_failure_case_filter,
@@ -48,14 +40,12 @@ MOCK_TOOL_REGISTRY: dict[str, ToolCallable] = {
 }
 
 REAL_TOOL_REGISTRY: dict[str, ToolCallable] = {
+    "attack_vehicle_editor": real_attack_vehicle_editor,
+    "ego_trajectory_editor": real_ego_trajectory_editor,
+
     "failure_analyzer": real_failure_analyzer,
     "scene_instance_generator": real_scene_instance_generator,
     "video_retriever": real_video_retriever,
-    "reconstruction": real_reconstruction,
-    "instance_discovery": real_instance_discovery,
-    "edit_plan_builder": real_edit_plan_builder,
-    "edit_config_generator": real_edit_config_generator,
-    "scene_editor": real_scene_editor,
     "scene_validator": real_scene_validator,
     "policy_runner": real_policy_runner,
     "policy_trainer": real_policy_trainer,
@@ -65,12 +55,11 @@ REAL_TOOL_REGISTRY: dict[str, ToolCallable] = {
 
 from tools.contracts import validated
 _BACKEND_MODULES = {
+    "attack_vehicle_editor": "tools.tool05_attack_vehicle_editor",
+    "ego_trajectory_editor": "tools.tool06_ego_trajectory_editor",
+
     "failure_analyzer": "tools.tool01_failure_analyzer",
     "video_retriever": "tools.tool04_video_retriever",
-    "instance_discovery": "tools.tool05_instance_discovery",
-    "reconstruction": "tools.tool06_reconstruction",
-    "edit_config_generator": "tools.tool08_edit_config_generator",
-    "scene_editor": "tools.tool09_scene_editor",
     "scene_validator": "tools.tool10_scene_validator",
     "policy_runner": "tools.tool13_policy_runner",
     "failure_case_filter": "tools.tool14_failure_case_filter",

@@ -10,14 +10,11 @@ from typing import Any, Dict, Optional
 
 
 TOOL_STAGE_MAP = {
+    "attack_vehicle_editor": "attack_editing",
+    "ego_trajectory_editor": "ego_editing",
     "failure_analyzer": "failure_analysis",
     "scene_instance_generator": "requirement_generation",
     "video_retriever": "retrieval",
-    "instance_discovery": "instance_discovery",
-    "reconstruction": "reconstruction",
-    "edit_plan_builder": "editing",
-    "edit_config_generator": "editing",
-    "scene_editor": "editing",
     "scene_validator": "validation",
     "policy_runner": "simulation",
     "failure_case_filter": "failure_filtering",
@@ -93,30 +90,5 @@ class AgentState:
         }
 
     def to_orchestrator_dict(self) -> Dict[str, Any]:
-        """Keep large per-frame detections in logs, not in every LLM prompt."""
-
-        state = self.to_dict()
-        history = []
-        for entry in self.history:
-            if entry.get("tool") != "instance_discovery":
-                history.append(entry)
-                continue
-            tool_result = entry.get("result", {})
-            result = tool_result.get("result", {})
-            instances = []
-            for instance in result.get("instances", []):
-                frames = instance.get("frames", [])
-                sample_indices = sorted({0, len(frames) // 2, len(frames) - 1}) if frames else []
-                instances.append({
-                    "instance_id": instance.get("instance_id"),
-                    "frame_count": len(frames),
-                    "sample_frames": [frames[index] for index in sample_indices],
-                })
-            history.append({
-                **entry,
-                "result": {
-                    **tool_result,
-                    "result": {**result, "instances": instances},
-                },
-            })
-        return {**state, "history": history}
+        """Return the current task and available tool history to the planner."""
+        return self.to_dict()

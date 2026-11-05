@@ -8,14 +8,11 @@ from agent.executor import ToolExecutor
 
 
 DEFAULT_MODES = {
+    "attack_vehicle_editor": "real",
+    "ego_trajectory_editor": "real",
     "failure_analyzer": "real",
     "scene_instance_generator": "real",
     "video_retriever": "real",
-    "instance_discovery": "real",
-    "reconstruction": "real",
-    "edit_plan_builder": "real",
-    "edit_config_generator": "real",
-    "scene_editor": "real",
     "scene_validator": "real",
     "policy_runner": "real",
     "failure_case_filter": "real",
@@ -42,7 +39,7 @@ class AgentConfigTests(unittest.TestCase):
     def test_custom_config_loads(self):
         custom_modes = dict(DEFAULT_MODES)
         custom_modes["video_retriever"] = "mock"
-        custom_modes["reconstruction"] = "mock"
+        custom_modes["policy_runner"] = "mock"
 
         temp_dir, path = self._write_config(
             {
@@ -94,7 +91,7 @@ class AgentConfigTests(unittest.TestCase):
 
     def test_invalid_tool_mode_fails(self):
         modes = dict(DEFAULT_MODES)
-        modes["reconstruction"] = "remote"
+        modes["policy_runner"] = "remote"
 
         temp_dir, path = self._write_config(
             {
@@ -108,13 +105,13 @@ class AgentConfigTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "tools.modes.reconstruction must be one of: mock, real",
+            "tools.modes.policy_runner must be one of: mock, real",
         ):
             AgentConfig.load(path)
 
     def test_missing_tool_mode_fails(self):
         modes = dict(DEFAULT_MODES)
-        modes.pop("reconstruction")
+        modes.pop("policy_runner")
 
         temp_dir, path = self._write_config(
             {

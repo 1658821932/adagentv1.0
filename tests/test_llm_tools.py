@@ -9,11 +9,10 @@ from unittest.mock import Mock, patch
 import pytest
 
 from tools.registry import call_tool, REAL_TOOL_REGISTRY
-from tools.scripts.smoke_llm_tools import ANALYSIS, EDIT_INPUT
+from tools.scripts.smoke_llm_tools import ANALYSIS
 
 CASES=[
     ("tool02_scene_instance_generator","scene_instance_generator",{"failure_analysis":ANALYSIS}),
-    ("tool07_edit_plan_builder","edit_plan_builder",EDIT_INPUT),
 ]
 
 
@@ -136,22 +135,8 @@ def test_source_context_is_attached_by_code_and_upstream_errors_are_not_evidence
     assert result["error"]["type"]=="input_validation_error"
 
 
-def test_conception_accepts_direct_text_and_editing_accepts_canonical_request():
-    result=call_tool("edit_plan_builder",{"edit_request":[{"operation":"modify_trajectory"}]},mode="mock")
-    assert result["status"]=="success"
-    assert result["result"]["target_instances"]==[]
 
 
-def test_edit_plan_rejects_hallucinated_ids_and_repairs_from_actual_context():
-    folder,name,arguments=CASES[1]
-    valid=response_for(folder,arguments)
-    content=json.loads(valid)
-    content["operations"][0]["target"]="invented_999"
-    client=ScriptedClient(json.dumps(content),valid)
-    result=call_tool(name,{**arguments,"_llm_client":client},mode="real")
-    assert result["status"]=="success"
-    assert result["meta"]["attempts"]==2
-    assert result["result"]["target_instances"]==[0]
 
 
 
@@ -207,16 +192,6 @@ def test_llm_client_overrides_do_not_replace_global_config(monkeypatch):
     assert LLMClient._load_llm_config()["model"]!="editor-model"
 
 
-def test_frame_ids_are_not_accepted_as_instance_ids():
-    arguments=deepcopy(EDIT_INPUT)
-    arguments["instances"]=[{"instance_id":0,"frames":[{"id":999,"frame":0}]}]
-    content=json.loads(response_for(CASES[1][0],arguments))
-    content["target_instances"]=[999]
-    invalid=json.dumps(content)
-    result=call_tool("edit_plan_builder",{
-        **arguments,"_llm_client":ScriptedClient(invalid,invalid)
-    },mode="real")
-    assert result["error"]["type"]=="output_validation_error"
 
 
 def test_omitted_tool_limits_inherit_role_settings(tmp_path):
@@ -244,14 +219,4 @@ def test_empty_prompt_is_a_configuration_error_without_model_call(tmp_path):
     result=replace(TOOL,directory=tmp_path).execute({
         "failure_analysis":ANALYSIS,"_llm_client":client})
     assert result["error"]["type"]=="configuration_error"
-    assert not client.messages
-
-
-@pytest.mark.parametrize("tool,arguments", [
-    ("edit_plan_builder", {"edit_ideas": [{"operation": "modify_trajectory"}]}),
-])
-def test_noncanonical_inputs_are_rejected_without_model_calls(tool, arguments):
-    client = ScriptedClient()
-    result = call_tool(tool, {**arguments, "_llm_client": client}, mode="real")
-    assert result["error"]["type"] == "input_validation_error"
     assert not client.messages

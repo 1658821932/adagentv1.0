@@ -1,1 +1,0 @@
-"""Adapter integration tests."""

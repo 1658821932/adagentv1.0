@@ -8,7 +8,6 @@ class SimulationResult(TypedDict, total=False):
     log_path: str
     reports: List[Any]
     command: List[str]
-    scene_conversion: Any
 
 class TrainingResult(TypedDict, total=False):
     run_dir: str

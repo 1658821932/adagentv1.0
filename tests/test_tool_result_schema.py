@@ -9,13 +9,13 @@ class ToolResultSchemaTests(unittest.TestCase):
     def test_valid_success_result(self):
         result = {
             "status": "success",
-            "tool": "reconstruction",
+            "tool": "policy_runner",
             "result": {
-                "scene_ply": "outputs/mock/scene.ply",
+                "result_dir": "/outputs/mock/simulation",
             },
         }
 
-        valid, errors = validate_tool_result(result, "reconstruction")
+        valid, errors = validate_tool_result(result, "policy_runner")
 
         self.assertTrue(valid)
         self.assertEqual(errors, [])
@@ -23,25 +23,25 @@ class ToolResultSchemaTests(unittest.TestCase):
     def test_valid_error_result(self):
         result = {
             "status": "error",
-            "tool": "reconstruction",
+            "tool": "policy_runner",
             "error": {
                 "type": "execution_error",
                 "message": "checkpoint not found",
             },
         }
 
-        valid, errors = validate_tool_result(result, "reconstruction")
+        valid, errors = validate_tool_result(result, "policy_runner")
 
         self.assertTrue(valid)
         self.assertEqual(errors, [])
 
     def test_missing_status(self):
         result = {
-            "tool": "reconstruction",
+            "tool": "policy_runner",
             "result": {},
         }
 
-        valid, errors = validate_tool_result(result, "reconstruction")
+        valid, errors = validate_tool_result(result, "policy_runner")
 
         self.assertFalse(valid)
         self.assertIn("status must be one of: success, error", errors)
@@ -53,21 +53,21 @@ class ToolResultSchemaTests(unittest.TestCase):
             "result": {},
         }
 
-        valid, errors = validate_tool_result(result, "reconstruction")
+        valid, errors = validate_tool_result(result, "policy_runner")
 
         self.assertFalse(valid)
         self.assertIn(
-            "tool mismatch: expected reconstruction, got video_retriever",
+            "tool mismatch: expected policy_runner, got video_retriever",
             errors,
         )
 
     def test_success_requires_result(self):
         result = {
             "status": "success",
-            "tool": "reconstruction",
+            "tool": "policy_runner",
         }
 
-        valid, errors = validate_tool_result(result, "reconstruction")
+        valid, errors = validate_tool_result(result, "policy_runner")
 
         self.assertFalse(valid)
         self.assertIn("success result must contain result", errors)
@@ -75,10 +75,10 @@ class ToolResultSchemaTests(unittest.TestCase):
     def test_error_requires_error_object(self):
         result = {
             "status": "error",
-            "tool": "reconstruction",
+            "tool": "policy_runner",
         }
 
-        valid, errors = validate_tool_result(result, "reconstruction")
+        valid, errors = validate_tool_result(result, "policy_runner")
 
         self.assertFalse(valid)
         self.assertIn("error result must contain an error object", errors)
@@ -89,7 +89,7 @@ class ToolExecutorTests(unittest.TestCase):
         self.executor = ToolExecutor(
             tool_modes={
                 "scene_instance_generator": "mock",
-                "reconstruction": "mock",
+                "policy_runner": "mock",
             }
         )
 
@@ -123,12 +123,12 @@ class ToolExecutorTests(unittest.TestCase):
         }
 
         result = self.executor.execute(
-            "reconstruction",
+            "policy_runner",
             {},
         )
 
         self.assertEqual(result["status"], "error")
-        self.assertEqual(result["tool"], "reconstruction")
+        self.assertEqual(result["tool"], "policy_runner")
         self.assertEqual(
             result["error"]["type"],
             "invalid_tool_result",
@@ -140,12 +140,12 @@ class ToolExecutorTests(unittest.TestCase):
         mock_call_tool.side_effect = RuntimeError("backend failed")
 
         result = self.executor.execute(
-            "reconstruction",
+            "policy_runner",
             {},
         )
 
         self.assertEqual(result["status"], "error")
-        self.assertEqual(result["tool"], "reconstruction")
+        self.assertEqual(result["tool"], "policy_runner")
         self.assertEqual(
             result["error"]["type"],
             "execution_error",

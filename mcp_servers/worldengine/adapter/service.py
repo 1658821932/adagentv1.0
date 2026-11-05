@@ -16,48 +16,6 @@ from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
 
 
-def _prepare_dggt_scene(
-    dggt_output_dir: str, data_type: str, runtime: WorldEngineConfig,
-    instance_id: int, translation_scale: float,
-) -> tuple[str, str, dict[str, Any]]:
-    """Convert one edited DGGT instance into the WorldEngine custom-data layout."""
-    from mcp_servers.worldengine.adapter.scene_conversion import prepare
-
-    agent_root = Path(__file__).resolve().parents[3]
-    source = Path(dggt_output_dir).expanduser().resolve()
-    if not source.is_dir():
-        raise FileNotFoundError(f"DGGT output directory not found: {source}")
-    staged = current_run("worldengine").input / "dggt_staging"
-    staging_result = prepare(source, staged, instance_id)
-
-    builder = runtime.project_root / "scripts" / "build_highway_new_dynamic_input.py"
-    if not builder.is_file():
-        raise FileNotFoundError(f"WorldEngine scene builder not found: {builder}")
-    output_root = current_run("worldengine").input / "converted_scene"
-    python_candidates = (
-        agent_root / "environments" / "algengine" / ".conda" / "bin" / "python",
-        agent_root / "environments" / "dggt" / ".conda" / "bin" / "python",
-    )
-    builder_python = next((path for path in python_candidates if path.is_file()), None)
-    if builder_python is None:
-        raise FileNotFoundError("No compatible WorldEngine scene-builder Python environment found")
-    scene_id = f"{data_type}-000"
-    completed = run_logged(
-        [str(builder_python), str(builder), "--source", str(staged),
-         "--output-root", str(output_root), "--scene-id", scene_id,
-         "--translation-scale", str(translation_scale)],
-        cwd=runtime.project_root, log_path=current_run("worldengine").logs / "scene_conversion.log", timeout=runtime.timeout,
-    )
-    if completed.returncode:
-        raise RuntimeError((completed.stderr or completed.stdout).strip() or "WorldEngine scene conversion failed")
-    return (
-        str(output_root / "scenarios"),
-        str(output_root / "assets"),
-        {"staging": staging_result, "output_root": str(output_root),
-         "translation_scale": translation_scale, "builder_stdout": completed.stdout[-2000:]},
-    )
-
-
 @runtime_task("worldengine", "simulation")
 def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data_type: str,
                    react_type: str = "NR", asset_name: str | None = None,
@@ -80,14 +38,6 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         raise FileNotFoundError(f"WorldEngine checkpoint not found: {ckpt}")
     if react_type not in {"R", "NR"}:
         raise ValueError("react_type must be 'R' or 'NR'")
-    conversion = None
-    if options.get("dggt_output_dir"):
-        scenario_data_folder_path, asset_folder_path, conversion = _prepare_dggt_scene(
-            str(options["dggt_output_dir"]), data_type, runtime,
-            int(options.get("instance_id", 0)),
-            float(options.get("translation_scale", 10000.0)),
-        )
-        scenario_pkl_file_name = "all_scenarios.pkl"
     env = current_run("worldengine").child_env()
     env["WORLDENGINE_ROOT"] = str(runtime.project_root)
     env.setdefault("SIMENGINE_PYTHON", str(SIMENGINE_PYTHON))
@@ -200,7 +150,6 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         "log_path": str(log_path),
         "reports": reports,
         "stdout_tail": completed.stdout[-4000:],
-        "scene_conversion": conversion,
     }
 
 

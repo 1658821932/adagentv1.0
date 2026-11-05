@@ -1,6 +1,6 @@
 # 服务结构与运行目录
 
-五个项目统一使用：
+四个项目统一使用：
 
 ```text
 <service>/
@@ -22,9 +22,8 @@ core 不导入 mcp_servers、agent 或 Agent 工具；独立项目保留自身�
 
 | 项目 | core 中的主要内容 |
 |---|---|
-| dggt | 模型、重建、检测、编辑与预处理源码 |
-| smart_edit | 原生 MCP server、配置组装工具和资产 |
 | sentry_video_search | pipeline、vendor、检索、重排序和 CLI |
+| scene_editing | 编辑算法接入预留，尚未包含真实后端 |
 | worldengine | 仿真、训练、评测与原生配置 |
 | worldengine_failure_analysis | 取证脚本、数值核验、原生 CLI、模板和自身测试 |
 
@@ -57,9 +56,8 @@ mcp_servers/<service>/runtime/<run_id>/
 
 | 服务 | 单次运行文件 |
 |---|---|
-| dggt | 解帧、编辑坐标转换配置、实例检测、重建和编辑产物 |
-| smart_edit | 生成的配置、LLM/MCP 执行日志 |
 | sentry_video_search | 检索阶段记录、预览、下载暂存、召回视频片段 |
+| scene_editing | 阶段请求、检查、候选提交与冻结场景/专家轨迹 |
 | worldengine | 场景转换、仿真结果、评测记录、训练 checkpoint |
 | worldengine_failure_analysis | 场景证据、分析尝试、报告和汇总 |
 
@@ -67,7 +65,6 @@ mcp_servers/<service>/runtime/<run_id>/
 
 ## 兼容与重试
 
-实例检测的 output_path、SmartEdit 的 output_path 继续作为显式导出位置；返回路径指向本次任务内的正式产物。实例可视化在任务 output/visualizations 下；显式 vis_dir 也会导出一份。
 
 训练的 work_dir 如显式传入，作为导出父目录，训练完成后复制到 <work_dir>/<run_id>/；实际训练始终在本次任务 output/training 内进行，避免读取旧 checkpoint。
 
@@ -81,6 +78,6 @@ python mcp_servers/worldengine_failure_analysis/core/run.py scene --config <conf
 
 WorldEngine 默认使用 adapter/run_testing.sh 启动，算法源码仍从 WORLDENGINE_ROOT 读取；上游 core 的启动脚本保持原样。显式自定义启动脚本必须支持 WORLDENGINE_TEST_PATH 指定的独立输出路径。
 
-这些改动只规范文件布局，不改变训练算法；policy_trainer 当前仍为 IL。
+这些改动只规范文件布局，不改变训练算法；policy_trainer 支持 ILFT 与 RLFT。
 
 工具契约、服务配置、WorldEngine 参数与长任务管理见 [执行接口说明](../docs/EXECUTION_CONTRACTS.md)。

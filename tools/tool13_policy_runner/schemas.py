@@ -17,9 +17,6 @@ class Input(InputModel):
     scenario_data_folder_path: NonEmptyStr | None = None
     asset_folder_path: NonEmptyStr | None = None
     scenario_pkl_file_name: NonEmptyStr | None = None
-    dggt_output_dir: NonEmptyStr | None = None
-    instance_id: Annotated[int,Field(ge=0)] = 0
-    translation_scale: PositiveFloat = 10000.0
     num_history: PositiveInt = 4
     num_future: PositiveInt | None = None
     max_frame_per_scene: Annotated[int,Field(ge=5)] = 40

@@ -8,10 +8,6 @@ from agent.tool_descriptions import get_tool_descriptions
 CASES = {
  "failure_analyzer": {"token":"scene-token"},
  "video_retriever": {"requirement":"daytime highway"},
- "instance_discovery": {"image_dir":"/frames","output_path":"/instances.json"},
- "reconstruction": {"video_path":"/video.mp4"},
- "edit_config_generator": {"edit_plan":"move vehicle", "output_path":"/edit.json"},
- "scene_editor": {"video_path":"/video.mp4","edit_config_path":"/edit.json"},
  "scene_validator": {"rendered_video":"/render.mp4","scene_requirement":"lead car"},
  "policy_runner": {"config_path":"/cfg.py","checkpoint_path":"/model.pth","model_name":"test","data_type":"test"},
  "failure_case_filter": {"scenario_pkl":"/scenario.pkl","result_dir":"/result"},
@@ -39,15 +35,15 @@ def test_invalid_backend_success_is_not_forwarded():
     called=[]
     def malformed(data):
         called.append(data)
-        return {"status":"success","tool":"reconstruction","result":{"scene_ply":"/only.ply"}}
-    wrapped=validated("reconstruction",_BACKEND_MODULES["reconstruction"],malformed)
-    result=wrapped(CASES["reconstruction"])
+        return {"status":"success","tool":"policy_runner","result":{"result_dir":"/only"}}
+    wrapped=validated("policy_runner",_BACKEND_MODULES["policy_runner"],malformed)
+    result=wrapped(CASES["policy_runner"])
     assert called and result["error"]["type"]=="output_validation_error"
 
-def test_invalid_horizon_and_negative_scale():
+def test_invalid_horizon_and_epoch():
     result=call_tool("policy_runner",{**CASES["policy_runner"],"num_history":4,"num_future":8,"max_frame_per_scene":40},mode="mock")
     assert result["error"]["type"]=="input_validation_error"
-    result=call_tool("scene_editor",{**CASES["scene_editor"],"meters_to_dggt":-1.0},mode="mock")
+    result=call_tool("policy_trainer",{**CASES["policy_trainer"],"epochs":0},mode="mock")
     assert result["error"]["type"]=="input_validation_error"
 
 def test_wfa_description_uses_scene_tokens_and_registry_uses_mock_modules():

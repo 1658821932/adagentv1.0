@@ -1,71 +1,16 @@
 # adagent
 
-面向自动驾驶的场景生成与评测 Agent。通过自然语言组织失败分析、视频检索、三维重建和场景编辑，将已有驾驶案例转换为可用于测试与数据扩充的新场景，并按任务需要调用闭环仿真与监督微调。
+基于 LLM 的自动驾驶场景需求生成、检索、验证与后训练框架。主 Agent 根据用户任务和工具返回结果选择下一步，工具通过统一输入输出契约调用后端。
 
-例如，面对“直行接近同车道低速前车时未及时减速”这一失败模式，adagent 可以分析已有案例、形成测试需求、检索合适的视频，再编辑前车的运动，构造需要减速跟停的测试场景。自车是否正确响应，需要在策略仿真中另行验证。
+## 当前状态
 
-## 主要功能
+当前注册 9 个工具，涵盖失败分析、需求生成、多相机场景检索、攻击车/自车编辑接口、场景验证、仿真与训练。
+旧的实例发现、视频重建、编辑计划、配置生成和编辑执行工具，以及相应旧编辑服务已移除。
+新的攻击车编辑、自车专家轨迹编辑接口已注册，实际后端尚未配置。现阶段不能由 Agent 自动生成编辑场景；可以检索已有场景，也可以验证或仿真用户提供的合规输入。
 
-### 失败分析与场景需求
+## 运行环境
 
-结合 WorldEngine 官方指标、多相机图像、BEV 和运动记录，描述失败现象、比较候选原因，并保留证据与不确定性。分析结果用于生成场景需求，明确自车正在做什么、环境中有哪些关键参与者、发生了什么错误，以及期望测试哪种响应。
-
-也可以直接从用户给出的场景需求或视频开始，无需每次都执行失败分析。
-
-### 视频检索与实例发现
-
-根据自然语言需求检索本地视频库，对候选片段进行重排并导出合适的视频。支持默认库和独立的 Waymo 前视角库；互联网检索通过独立 CLI 显式调用。
-
-对视频中的车辆进行检测和跟踪，生成逐帧实例框与实例编号，供后续编辑选择目标。实例信息必须与被编辑的视频对应。
-
-### 三维重建与场景编辑
-
-使用 DGGT 从单目前视视频重建动态三维高斯场景，导出静态、动态及天空点云、相机参数和渲染视频。Agent 当前使用 mode 2，处理视频前40帧并沿用源视频帧率。
-
-通过自然语言生成编辑计划与配置，支持车辆轨迹调整、旋转、缩放、删除、添加和替换，再由 DGGT 渲染编辑结果。已有实例的轨迹编辑需要匹配的坐标转换；添加或替换需要指定资产和比例。
-
-### 场景验证与任务恢复
-
-tool10 检查输出文件、编辑配置及渲染画面，返回验证报告。主 Agent 根据报告或执行错误直接决定重试、修改计划或结束；不再调用独立的恢复决策工具。视觉检查用于发现场景问题，不能代替官方碰撞责任和道路合规评分。
-
-### 策略仿真与监督微调
-
-通过 WorldEngine 运行闭环策略仿真，并按配置保存仿真产物与指标。自定义高斯场景需先完成格式转换；地图与指标所需数据必须单独准备。
-
-支持对已转换的训练数据调用 AlgEngine 执行监督微调，保存训练日志和 checkpoint。当前 Agent 训练工具兼容 ILFT 和 RLFT；RL 需要 WE 导出的图像、元数据及候选轨迹奖励。tool14 仅读取官方 PDM 结果，以总分为 0 筛选失败场景；必须提供评分 CSV 和对应执行元数据。
-
-## MCP 服务与适配组件
-
-adagent 将以下能力统一接入工具调用流程。其中 SmartEdit 通过 MCP 服务交互，其他组件主要通过 JSON 子进程或项目脚本适配；并非所有组件都直接提供独立的 MCP 协议服务。
-
-| 服务 / 组件 | 职责 | 主要输入 | 主要输出 |
-|---|---|---|---|
-| [失败分析 WFA](mcp_servers/worldengine_failure_analysis/README.md) | 复用官方结果，驱动 VLM 查看图像、查询数值并归因 | 场景 token、评测数据配置 | 现象、候选原因、证据、最终原因与不确定性 |
-| [Sentry 视频检索](mcp_servers/sentry_video_search/README.md) | 视频建库、语义召回、候选重排与片段导出 | 场景描述、视频库 | 选中视频、候选分数与检索记录 |
-| [DGGT](mcp_servers/dggt/core/README.md) | 动态高斯重建及实例编辑渲染 | 视频、可选编辑配置 | 高斯点云、相机参数、渲染与对比视频 |
-| [SmartEdit](mcp_servers/smart_edit/README.md) | 将自然语言编辑要求转换为服务工具调用并保存配置 | 编辑计划、实例信息或指定资产 | 编辑 JSON 或相机轨迹偏移配置 |
-| [WorldEngine / AlgEngine](https://github.com/OpenDriveLab/WorldEngine) | 闭环策略仿真、评测及监督微调 | 场景、模型配置与权重、训练标注 | 仿真结果、配置启用的指标、训练日志与 checkpoint |
-
-需求生成、场景构思、编辑计划和视觉验证由工具层提供，下一步选择及失败恢复由主 Agent 决策。当前共 12 个工具。各阶段按任务需要调用，不要求每次完整运行全部流程。
-
-后端衔接代码集中在各组件的 adapter/，Agent 工具保留统一调用入口。组件与工具的对应关系、适配文件职责见 [MCP 组件说明](docs/MCP_SERVERS.md)。
-
-## 典型工作流
-
-```text
-失败案例或场景需求
-  → 场景构思与视频检索
-  → 三维重建与实例发现
-  → 编辑计划与配置生成
-  → 场景编辑、渲染与验证
-  → 按需执行策略仿真、失败筛选或监督微调
-```
-
-生成任务的主要产物是编辑配置、三维场景、相机参数和视频；失败分析保存独立的证据报告，仿真与训练保存各自的日志和结果。单工具测试成功不代表整条工作流已完成验证。
-
-## 快速开始
-
-使用 Python 3.10 或以上版本，从项目根目录创建 Agent 主环境：
+从项目根目录创建 Agent 环境（Python 3.10+）：
 
 ```bash
 python3 -m venv environments/agent/.venv
@@ -73,58 +18,64 @@ environments/agent/.venv/bin/python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-在 .env 只填写 OPENAI_API_KEY；模型、端点等非敏感配置填写 configs/agent.json 的 llm 块，兼容已有环境变量覆盖。然后按需准备各组件的运行环境、权重、数据及服务密钥，设置 `SMART_EDIT_ROOT`、`WORLDENGINE_ROOT` 等路径；主环境的安装不包含全部 real 工具依赖。
+`.env` 只填写密钥；`configs/api.json` 管理模型、端点、超时。Kimi 用于主 Agent、tool02、视觉验证及分析；阿里接口用于视频检索嵌入与重排序。检索重排序还需要配置 OSS 凭证。
 
 ```bash
 environments/agent/.venv/bin/python -m agent.main \
-  "使用 /absolute/path/to/driving.mp4，设计并生成一个同车道前车减速的测试场景"
+  "根据给定失败类型构思三个底场景方案，并检索一个已绑定标注与高斯资产的场景"
 ```
 
-`configs/agent.json` 控制每个工具的 `mock` / `real` 模式和 Agent 最大执行步数。mock 返回接口兼容的占位结果，不生成真实视频或点云；Agent 编排仍需要模型接口。real 模式需要相应组件的依赖与输入数据就绪。
+`configs/agent.json` 控制最大步数及各工具 mock/real 模式。Agent 编排需要模型接口；mock 工具不生成真实产物。
+各 real 后端需独立准备环境、数据、权重和索引，安装主环境不包含 GPU 服务依赖。
 
-## 纯文本 LLM 工具
+## 工具与后端
 
-场景与候选方案生成、编辑计划这 2 个工具采用统一的 Schema、独立提示词、非敏感配置和执行器；
-mock/real 共用输入输出校验。目录规范、模型角色和逐工具测试命令见 [LLM 工具开发规范](docs/LLM_TOOLS.md)。
+| 编号 | 工具 | 能力 |
+|---|---|---|
+| 01 | failure_analyzer | 使用 WFA 分析已有场景与官方评测证据 |
+| 02 | scene_instance_generator | 从失败分析构思目标场景、正确自车行为及三个候选方案 |
+| 04 | video_retriever | 检索任一路已注册相机，强制绑定完整多相机场景 |
+| 05 | attack_vehicle_editor | 标注驱动攻击车编辑接口，后端待配置 |
+| 06 | ego_trajectory_editor | 冲突理解与自车专家轨迹编辑接口，后端待配置 |
+| 10 | scene_validator | 对外部提供的渲染视频进行需求与视觉检查 |
+| 13 | policy_runner | 使用准备好的场景和资产运行 WorldEngine |
+| 14 | failure_case_filter | 读取官方 PDM 总分，筛选 0 分场景 |
+| 15 | policy_trainer | 使用标注执行 ILFT，或使用 rollout 和候选奖励执行 RLFT |
 
-## API 统一配置
+四个后端组件保存在 `mcp_servers/`，均采用 `core/`、`adapter/`、`runtime/` 分层：
 
-只需修改项目根目录这两个文件：
+- `sentry_video_search`：检索、入库与重排序，详见[多相机场景绑定](mcp_servers/sentry_video_search/README.md)。
+- `worldengine_failure_analysis`：失败取证、图像及数值分析。
+- `scene_editing`：攻击车与自车编辑阶段接口，详见[编辑接口](docs/EDITING_INTERFACES.md)。
+- `worldengine`：仿真、官方评分读取及训练。
 
-- `.env`：只放密钥。`OPENAI_API_KEY` 用于 Kimi，`DASHSCOPE_API_KEY` 用于检索；`OSS_*` 用于重排序视频临时上传。
-- `configs/api.json`：统一管理地址、模型、超时和密钥变量名。`kimi` profile 供 Agent、tool02/07、SmartEdit、视觉验证、视频辅助理解和 WFA 使用；`retrieval` profile 供阿里视频嵌入/召回与重排序使用。
+这些组件通过 Python 或 JSON 子进程调用；目录名称不表示每个组件都提供 MCP 协议服务。
 
-`configs/agent.json` 仍管理 Agent 步数、工具模式和模型角色；各服务配置只保留 profile 引用及运行参数，不再重复填写 API 地址或模型。可用显式环境变量覆盖 Kimi 设置；普通使用直接修改上述两个文件即可。修改 API 配置或密钥后重启已运行的进程。更换嵌入模型或维度时需重建对应检索索引。
+## 多相机场景绑定
 
-Agent 日志保存在 `logs/`，组件产物写入各自的 output、outputs 或 runs 目录。模型接口可能接收场景文本、图片或视频，具体范围见组件说明。密钥、模型权重、运行环境、检索索引和大体积数据不随源码分发。
+tool04 real 要求索引源视频带有效 `.scene.json`。结果包含 `scene_ref`：场景身份、相机清单、同步图像元数据、标注与高斯资产路径。未绑定直接报错；未下载文件明确标记缺失。
+新编辑模块将从这里读取现有数据集资产，详细接入仍待实现。
 
-## 开发文档
+## 验证与测试
 
-- [项目架构与目录分工](docs/ARCHITECTURE.md)
-- [Agent 文件、configs 和 logs 说明](docs/AGENT_FILES.md)
-- [tools 目录与 12 个工具说明](docs/TOOLS.md)
-- [工具字段级接口参考](docs/INTERFACES.md)（自动生成）
-- [工具调用契约、服务配置与长任务管理](docs/EXECUTION_CONTRACTS.md)
-- [后端组件、工具映射与适配层说明](docs/MCP_SERVERS.md)
-- [纯文本 LLM 工具规范](docs/LLM_TOOLS.md)
-- [IL/RL 训练工具说明](docs/policy_training.md)
+```bash
+environments/video_retriever/.venv/bin/python -m pytest -q
+environments/agent/.venv/bin/python -m tools.scripts.smoke_llm_tools --mode mock
+```
+
+测试依赖见 `requirements-test.txt`。接口测试不能代替真实场景质量、闭环表现或后训练收益验证。
+Agent 记录保存在 `logs/`；服务产物保存在 `mcp_servers/<service>/runtime/<run_id>/`。
+环境、密钥、数据、权重、索引与运行产物不随源码提交。现有后台数据准备任务依赖的环境暂时保留。
+
+## 文档
+
+- [项目结构与分工](docs/ARCHITECTURE.md)
+- [Agent 核心与运行记录](docs/AGENT_FILES.md)
+- [工具说明](docs/TOOLS.md)与[自动生成接口](docs/INTERFACES.md)
+- [后端组件](docs/MCP_SERVERS.md)与[执行契约](docs/EXECUTION_CONTRACTS.md)
+- [LLM 工具规范](docs/LLM_TOOLS.md)
+- [IL/RL 训练](docs/policy_training.md)
 
 ## 许可
 
-DGGT、WorldEngine 及其他第三方依赖遵循各自的原始许可与声明。Agent 所需的 DGGT 编辑扩展不属于官方原版能力，官方 README 用于说明上游项目
-
-运行文件统一存放在各服务的 `runtime/<run_id>/`，详见 [服务运行目录](mcp_servers/README.md)。旧运行目录已清理，运行数据不进入 Git。
-
-
-五个服务均采用 `core/`（项目自身）、`adapter/`（AdAgent 封装）和 `runtime/`（运行文件）分层。
-Agent 工具统一调用 `adapter/service.py`。执行 `python -m pytest` 会按 pytest.ini 收集主框架、各适配层与 WFA 自身测试，不扫描上游大型算法测试集。
-SmartEdit 的原生 MCP 测试在其自身环境中单独运行：
-```bash
-PYTHONPATH=mcp_servers/smart_edit/core environments/smart-edit/.venv/bin/python -m unittest discover -s mcp_servers/smart_edit/core/tests -v
-```
-
-## IL / RL 训练
-
-policy_trainer 支持 training_mode=ilft（默认）和 rlft。IL使用标注，RL使用WE导出的图像、元数据和候选轨迹奖励。调用示例见 [训练工具说明](docs/policy_training.md)。
-
-工具契约、服务配置、WorldEngine 参数与长任务管理见 [执行接口说明](docs/EXECUTION_CONTRACTS.md)。
+自有代码及内置第三方代码遵循各自许可证与声明，第三方项目许可见对应 core 目录。

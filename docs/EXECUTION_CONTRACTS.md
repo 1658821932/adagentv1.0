@@ -7,13 +7,13 @@
 ```python
 from tools.registry import call_tool
 result = call_tool("video_retriever", {
-    "requirement": "白天高速公路，第一视角",
+    "requirement": "白天城市道路，前方有车辆",
     "library": "default",
 }, mode="real")
 ```
 
 每个 Tool 都有 real.py、mock.py、schemas.py 和 description.py。调用统一使用 registry（旧 tool.py 兼容入口已删除）。
-三个纯文本 LLM 工具由 LLMTool 校验，其余后端工具在 registry 的统一边界校验。
+tool02 纯文本 LLM 工具由 LLMTool 校验，其余后端工具在 registry 的统一边界校验。
 
 - schemas.py 的 Input/Output 是可执行契约；description.py 提供用途和字段解释，并从 Schema 生成参数结构。
 - 参数缺失、类型错误、未知字段在启动后端前返回 input_validation_error。
@@ -22,20 +22,18 @@ result = call_tool("video_retriever", {
 
 ## 服务配置
 
-五个服务各自的 adapter/settings.json 保存非敏感接入配置，环境变量可覆盖。
+四个服务各自的 adapter/settings.json 保存非敏感接入配置，环境变量可覆盖。
 解释器路径支持项目相对路径和绝对路径；默认仍使用 environments 下已有环境或软链接。
 
 | 服务 | 解释器覆盖变量 |
 |---|---|
-| DGGT | AGENT_PYTHON、DGGT_PYTHON、DGGT_SEGFORMER_PYTHON |
-| SmartEdit | SMART_EDIT_PYTHON |
+| 新编辑接口 | 后端 argv 数组在 scene_editing/adapter/settings.json，默认未配置 |
 | 视频检索 | VIDEO_RETRIEVER_PYTHON |
 | WorldEngine | AGENT_PYTHON、SIMENGINE_PYTHON、ALGENGINE_PYTHON、WORLDENGINE_TRAIN_PYTHON |
 | WFA | WFA_PYTHON |
 
-SmartEdit 的模型默认值由自己的 adapter/settings.json 管理，不再读取 configs/agent.json。
-纯文本 LLM 工具（tool02/03/07）的配置在各自目录 config.json，由 tools/llm_runtime.py 统一加载。
-视觉验证的端点和模型默认值内嵌在 tools/tool10_scene_validator/real.py（默认 Kimi），可用 SCENE_VALIDATOR_* 环境变量覆盖。
+纯文本 LLM 工具（tool02）的配置在各自目录 config.json，由 tools/llm_runtime.py 统一加载。
+视觉验证使用 config.json 引用根 API profile，默认 Kimi；抽帧解释器和超时在工具配置中。
 密钥继续从本地环境/.env 读取，不写入上述 JSON。
 基础重建缺陷只允许通过某次验证的 ignored_reconstruction_artifacts 显式传入，不再对所有场景应用固定排除项。
 

@@ -5,7 +5,7 @@
 > 
 >     environments/video_retriever/.venv/bin/python scripts/generate_interface_docs.py
 
-每个工具的用途和调用时机见 [tools 目录与 12 个 Tool 说明](TOOLS.md)；
+每个工具的用途和调用时机见 [当前工具说明](TOOLS.md)；
 调用方式、mock/real 边界和错误类型见 [工具接口与运行管理](EXECUTION_CONTRACTS.md)。
 本文档只列字段级契约。
 
@@ -66,7 +66,7 @@ Expand a failure category into one target scene, ego's expected behavior, and th
 
 Retrieve a dataset camera video and its bound multi-camera scene from the existing local Sentry index. Unbound videos raise an error.
 
-**何时使用**：Use when a suitable indexed real driving scene is needed as the starting point for reconstruction or editing. This tool does not search the internet.
+**何时使用**：Use when a suitable indexed real driving scene is needed with annotations and Gaussian assets for downstream use. This tool does not search the internet.
 
 ### 输入
 
@@ -111,148 +111,214 @@ Retrieve a dataset camera video and its bound multi-camera scene from the existi
 | `images_complete` | boolean | ✅ | — |  |
 
 
-## tool05_instance_discovery: `instance_discovery`
+## tool05_attack_vehicle_editor: `attack_vehicle_editor`
 
-Discover important traffic participants from RGB videos using the DGGT YOLO backend.
+Edit one attack vehicle using existing scene annotations and Gaussian assets; the stage owns candidate generation, checks, submission and frozen-scene export.
 
-**何时使用**：Use after reconstruction to detect instances in its preprocessed input frames.
+**何时使用**：Use after tool04. Pass scene_ref unchanged and one selected tool02 candidate.edit_strategy as instruction. edit_existing uses an evidenced track ID when supplied; otherwise its backend selects the target from annotations before editing; add_vehicle requires an explicit asset, size and stationary/left_cut_in maneuver. Never guess target IDs or asset paths. A separate operation is needed for unsupported manoeuvres. Backend configuration is required; on editing_backend_not_configured stop rather than retrying or claiming a new scene. Output is an accepted frozen scene, not merely a proposed plan. Any simulation_input may be passed to tool13 together with its required model arguments; null means scene conversion remains unavailable.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `image_dir` | string | ✅ | — | Use reconstruction.result.input_dir, the parent of the input scene folder; do not use reconstruction.result.output_dir or append the scene name. |
-| `output_path` | string | ✅ | — | DGGT instance_info.json output path. |
-| `backend` | string | — | `"dggt_yolo"` | Must be dggt_yolo. |
-| `scene_name` | string | — | `"000"` | Use reconstruction.result.input_scene_name (normally 000); the output scene 001 is not the input scene name. |
-| `sequence_length` | integer | — | `40` | Exactly 40, matching reconstruction num_frames; never 64. |
-| `start_idx` | integer >=0 | — | `0` | Start Idx |
-| `weights` | string | — | `"yolo11m.pt"` | Weights |
-| `conf` | number >=0 | — | `0.25` | Conf |
+| `scene_ref` | SceneReference | ✅ | — | Pass tool04.result.scene_ref, retaining its dataset identity, metadata and asset paths. |
+| `instruction` | string | ✅ | — | Selected tool02 candidate.edit_strategy or an explicit user edit request. |
+| `operation` | enum["edit_existing", "add_vehicle"] | ✅ | — | Operation |
+| `target_track` | string \| null | — | null | Optional existing-vehicle track ID from annotations. If absent, the backend must select an evidenced track from scene annotations before editing; never guess a role ID or frame number. |
+| `maneuver` | enum["stationary", "left_cut_in"] \| null | — | null | Required for add_vehicle; the documented new-vehicle constructors have different internal signatures. |
+| `vehicle` | VehicleAsset \| null | — | null | vehicle |
+| `constraints` | AttackConstraints | — | — | constraints |
 | `timeout` | integer >0 | — | `3600` | Timeout |
-| `vis_dir` | string \| null | — | null | Vis Dir |
+
+**`SceneReference` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `scene_id` | string | ✅ | — |  |
+| `scene_token` | string | ✅ | — |  |
+| `sample_root` | string | ✅ | — |  |
+| `dataset` | string | ✅ | — |  |
+| `matched_camera` | string | ✅ | — |  |
+| `frame_count` | integer | ✅ | — |  |
+| `fps` | number \| null | — | null |  |
+| `manifest_path` | string | ✅ | — |  |
+| `frames_path` | string | ✅ | — |  |
+| `cameras_path` | string | ✅ | — |  |
+| `scenario_pkl` | string \| null | — | null |  |
+| `asset_config_path` | string \| null | — | null |  |
+| `asset_path` | string \| null | — | null |  |
+| `runtime_asset_path` | string \| null | — | null |  |
+| `maps_path` | string \| null | — | null |  |
+| `cameras` | object | ✅ | — |  |
+| `images_complete` | boolean | ✅ | — |  |
+
+**`VehicleAsset` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `asset_path` | string | ✅ | — |  |
+| `size_m` | array<number >0> | ✅ | — | Length, width, height in metres; independently specified from the PLY asset. |
+
+**`AttackConstraints` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `no_ego_contact_until_s` | number >=0 | — | `3.0` |  |
+| `target_window_s` | array<number> \| null | — | null |  |
 
 ### 输出
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `instances` | array<object> | ✅ | — | Object IDs, categories, boxes and masks. Note: YOLO instance_info provides 2D boxes only, not a calibrated 3D vehicle track or road height; do not claim exact metres-to-ego placement or road contact from it. |
-| `instance_info_path` | string | ✅ | — | DGGT-compatible per-frame instance_info.json for dggt_yolo. The returned state contains only sampled bbox frames; pass this path to Smart Edit tools for complete per-frame data instead of copying every detection frame into arguments. |
+| `schema_version` | string | — | `"editing_stage.v1"` | Schema Version |
+| `stage` | string | — | `"attack_editing"` | Stage |
+| `status` | string | — | `"completed"` | Status |
+| `mode` | enum["real", "mock"] | ✅ | — | Mode |
+| `run_dir` | string | ✅ | — | Run Dir |
+| `source_scene_ref` | SceneReference | ✅ | — | source_scene_ref |
+| `scene_id` | string | ✅ | — | Scene Id |
+| `scene_token` | string | ✅ | — | Scene Token |
+| `target_track` | string | ✅ | — | Target Track |
+| `selected_candidate_id` | string | ✅ | — | Selected Candidate Id |
+| `frozen_scene_path` | string | ✅ | — | Frozen Scene Path |
+| `frames_path` | string | ✅ | — | Frames Path |
+| `trajectory_path` | string | ✅ | — | Trajectory Path |
+| `provenance_path` | string | ✅ | — | Provenance Path |
+| `submission_path` | string | ✅ | — | Submission Path |
+| `checks` | StageChecks | ✅ | — | checks |
+| `annotation_changes` | object | ✅ | — | Annotation Changes |
+| `simulation_input` | SimulationInput \| null | — | null | Prepared native scene/asset paths for tool13; null until converted. A frozen metadata directory alone is not executable. |
+| `rendered_videos` | object | — | — | Camera name to edited render path; empty until rendered. Original recordings must not be relabelled as edited renders. |
+
+**`SceneReference` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `scene_id` | string | ✅ | — |  |
+| `scene_token` | string | ✅ | — |  |
+| `sample_root` | string | ✅ | — |  |
+| `dataset` | string | ✅ | — |  |
+| `matched_camera` | string | ✅ | — |  |
+| `frame_count` | integer | ✅ | — |  |
+| `fps` | number \| null | — | null |  |
+| `manifest_path` | string | ✅ | — |  |
+| `frames_path` | string | ✅ | — |  |
+| `cameras_path` | string | ✅ | — |  |
+| `scenario_pkl` | string \| null | — | null |  |
+| `asset_config_path` | string \| null | — | null |  |
+| `asset_path` | string \| null | — | null |  |
+| `runtime_asset_path` | string \| null | — | null |  |
+| `maps_path` | string \| null | — | null |  |
+| `cameras` | object | ✅ | — |  |
+| `images_complete` | boolean | ✅ | — |  |
+
+**`StageChecks` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `reference_screen` | string | ✅ | — |  |
+| `checks` | object | ✅ | — | Only actually evaluated checks may be passed; skipped checks are not_checked. |
+| `report_path` | string | ✅ | — |  |
+| `physical_avoidance` | string | — | `"undetermined"` |  |
+
+**`SimulationInput` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `scenario_data_folder_path` | string | ✅ | — |  |
+| `asset_folder_path` | string | ✅ | — |  |
+| `scenario_pkl_file_name` | string | — | `"all_scenarios.pkl"` |  |
 
 
-## tool06_reconstruction: `reconstruction`
+## tool06_ego_trajectory_editor: `ego_trajectory_editor`
 
-Reconstruct a single-view driving video into a DGGT Mode 2 Gaussian scene. This is a deterministic 3D-reconstruction backend: it uses no LLM internally, so every constraint must be passed as an argument.
+Generate and select a correct ego reference trajectory for the frozen attack scene; internally run conflict understanding, constructors, optional FOCI, inspection and repair.
 
-**何时使用**：Use after video_retriever when the task requires 3D scene reconstruction. Agent DGGT reconstruction processes only the first 40 frames of the source video.
+**何时使用**：Use after attack_vehicle_editor. Pass its successful result/envelope under attack_result and the one global tool02.target_effect. Preserve the frozen scene and attack vehicle. Output is an expert reference CSV, not evidence that VADv2 drove safely. A null ilft_training_data means expert-label export is still unavailable: do not pass CSV as tool15.ann_file. RLFT still requires tool13 dense candidate rewards. Only rendered_videos contains edited renders; original scene cameras are not edited videos. Backend configuration is required; stop on editing_backend_not_configured.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `video_path` | string | ✅ | — | Absolute local path of the single-view driving video. |
-| `num_frames` | integer | — | `40` | Exactly 40; Agent reconstructs only the first 40 frames. Never request 64 frames. |
-| `export_render_state` | boolean | — | `false` | Optional boolean, default false: export full native DGGT temporal Gaussians for faithful WorldEngine rendering; currently supports unedited reconstruction only, not scene_editor outputs. |
-| `timeout` | integer >0 | — | `86400` | Timeout |
+| `attack_result` | AttackOutput | ✅ | — | Pass the preceding attack_vehicle_editor.result or its successful full envelope. Frozen scene and target identity are retained. |
+| `target_effect` | string | ✅ | — | Pass tool02.result.target_effect, the one global correct ego behaviour. |
+| `allow_safe_stop` | boolean | — | `true` | Allow Safe Stop |
+| `use_foci` | boolean | — | `true` | Use Foci |
+| `timeout` | integer >0 | — | `3600` | Timeout |
+
+**`AttackOutput` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `schema_version` | string | — | `"editing_stage.v1"` |  |
+| `stage` | string | — | `"attack_editing"` |  |
+| `status` | string | — | `"completed"` |  |
+| `mode` | enum["real", "mock"] | ✅ | — |  |
+| `run_dir` | string | ✅ | — |  |
+| `source_scene_ref` | SceneReference | ✅ | — |  |
+| `scene_id` | string | ✅ | — |  |
+| `scene_token` | string | ✅ | — |  |
+| `target_track` | string | ✅ | — |  |
+| `selected_candidate_id` | string | ✅ | — |  |
+| `frozen_scene_path` | string | ✅ | — |  |
+| `frames_path` | string | ✅ | — |  |
+| `trajectory_path` | string | ✅ | — |  |
+| `provenance_path` | string | ✅ | — |  |
+| `submission_path` | string | ✅ | — |  |
+| `checks` | StageChecks | ✅ | — |  |
+| `annotation_changes` | object | ✅ | — |  |
+| `simulation_input` | SimulationInput \| null | — | null | Prepared native scene/asset paths for tool13; null until converted. A frozen metadata directory alone is not executable. |
+| `rendered_videos` | object | — | — | Camera name to edited render path; empty until rendered. Original recordings must not be relabelled as edited renders. |
 
 ### 输出
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `scene_ply` | string | ✅ | — | Combined reconstructed Gaussian scene PLY. |
-| `input_dir` | string | ✅ | — | Parent directory of preprocessed input frames. Pass this verbatim to instance_discovery.image_dir. |
-| `input_scene_name` | string | ✅ | — | Input scene name for instance_discovery.scene_name, normally 000; the output scene 001 is NOT the input scene name. |
-| `output_dir` | string | ✅ | — | DGGT reconstruction output directory. |
-| `rendered_video` | string | ✅ | — | Rendered reconstruction video. |
+| `schema_version` | string | — | `"editing_stage.v1"` | Schema Version |
+| `stage` | string | — | `"ego_editing"` | Stage |
+| `status` | string | — | `"completed"` | Status |
+| `mode` | enum["real", "mock"] | ✅ | — | Mode |
+| `run_dir` | string | ✅ | — | Run Dir |
+| `scene_id` | string | ✅ | — | Scene Id |
+| `scene_token` | string | ✅ | — | Scene Token |
+| `attack_run_dir` | string | ✅ | — | Attack Run Dir |
+| `frozen_scene_path` | string | ✅ | — | Frozen Scene Path |
+| `target_track` | string | ✅ | — | Target Track |
+| `selected_candidate_id` | string | ✅ | — | Selected Candidate Id |
+| `selected_source` | enum["constructor", "foci", "agent_edit", "repair"] | ✅ | — | Selected Source |
+| `expert_trajectory_path` | string | ✅ | — | Expert Trajectory Path |
+| `trajectory_metadata_path` | string | ✅ | — | Trajectory Metadata Path |
+| `conflict_brief_path` | string | ✅ | — | Conflict Brief Path |
+| `submission_path` | string | ✅ | — | Submission Path |
+| `checks` | StageChecks | ✅ | — | checks |
+| `annotation_changes` | object | ✅ | — | Annotation Changes |
+| `simulation_input` | SimulationInput \| null | — | null | simulation_input |
+| `ilft_training_data` | ILTrainingData \| null | — | null | Converted expert labels for tool15 ilft. CSV alone is not ann_file; null until export is implemented. |
+| `rendered_videos` | object | — | — | Rendered Videos |
 
-
-## tool07_edit_plan_builder: `edit_plan_builder`
-
-Use an LLM to turn an edit request and discovered scene context into a grounded natural-language editing plan.
-
-**何时使用**：Use after reconstruction and instance discovery when an edit must be specified. Supply actual instances so IDs can be checked. Existing trajectory edits are relative to original per-frame motion; cut-in timing comes from the current task.
-
-### 输入
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `edit_request` | string \| array<object \| string> | ✅ | — | Required natural-language edit request or non-empty list of editing ideas, supplied under edit_request. |
-| `scene_info` | object \| string \| null | — | null | Scene context, including frame count, coordinates and constraints. |
-| `instances` | array<object \| integer \| string> \| object | — | — | Actual discovered instances or the successful instance_discovery result/envelope. IDs must come from this context. |
-
-### 输出
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `edit_plan` | string | ✅ | — | Precise natural-language plan for SmartEdit; not its executable JSON config. |
-| `target_instances` | array<integer \| string> | — | — | Only instance IDs actually present in the input context. |
-| `operations` | array<Operation> | ✅ | — | Concrete proposed operations. |
-| `constraints` | array<string> | — | — | Geometry, motion and evidence constraints. |
-
-**`Operation` 对象字段：**
+**`StageChecks` 对象字段：**
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `operation` | string | ✅ | — | Named proposed edit operation. |
-| `target` | integer \| string \| null | — | null | A supplied instance ID, or null when not yet known. Role descriptions belong in parameters.target_role. |
-| `parameters` | object | — | — | Proposed edit parameters; distinguish design targets from measurements. |
+| `reference_screen` | string | ✅ | — |  |
+| `checks` | object | ✅ | — | Only actually evaluated checks may be passed; skipped checks are not_checked. |
+| `report_path` | string | ✅ | — |  |
+| `physical_avoidance` | string | — | `"undetermined"` |  |
 
-
-## tool08_edit_config_generator: `edit_config_generator`
-
-Use Smart Edit MCP to convert an edit plan into a DGGT-compatible JSON configuration.
-
-**何时使用**：Use after edit_plan_builder and before scene_editor. Set output_kind=ego_trajectory_offsets for natural-language ego render trajectory offsets; otherwise use rigid_config for instance edits.
-
-### 输入
+**`SimulationInput` 对象字段：**
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `edit_plan` | string \| object | ✅ | — | Detailed editing plan. Existing instance trajectory waypoints are per-frame offsets added to original positions; compensate the source vehicle existing displacement. For cut-in, hold ego-lane position from frame 12 through 39 and use zero height offset. Do not request a new object unless asset_path and asset_scale are supplied. |
-| `output_path` | string | ✅ | — | Required .json configuration path. |
-| `output_kind` | enum["rigid_config", "ego_trajectory_offsets"] | — | `"rigid_config"` | rigid_config for an existing traffic instance, or ego_trajectory_offsets for ego render-camera motion (not closed-loop policy braking). |
-| `instance_info_path` | string \| null | — | null | DGGT per-frame instance_info.json path for rigid instance edits. |
-| `frame_count` | integer | — | `40` | For ego offsets, supply 40; Smart Edit must return one vector or exactly 40 vectors. |
-| `scene_info` | object \| string \| null | — | null | Optional scene context. |
-| `asset_path` | string \| null | — | null | Required exact vehicle PLY path when adding or replacing an asset. |
-| `asset_scale` | number >0 \| null | — | null | Required explicit positive asset scale for add or replace; no default is assumed. |
-| `timeout` | integer >0 | — | `1800` | Timeout |
+| `scenario_data_folder_path` | string | ✅ | — |  |
+| `asset_folder_path` | string | ✅ | — |  |
+| `scenario_pkl_file_name` | string | — | `"all_scenarios.pkl"` |  |
 
-### 输出
+**`ILTrainingData` 对象字段：**
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `saved_path` | string | ✅ | — | Saved Smart Edit configuration path. |
-| `tool_calls` | array<string> | ✅ | — | Smart Edit MCP tools called by the client. |
-
-
-## tool09_scene_editor: `scene_editor`
-
-Execute the DGGT Mode 2 edit_config against the source driving video.
-
-**何时使用**：Use after edit_config_generator produces a JSON config.
-
-### 输入
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `video_path` | string | ✅ | — | Source driving video. |
-| `edit_config_path` | string \| null | — | null | Optional Smart Edit JSON; instance trajectory values add to each frame original instance position, not absolute target positions. |
-| `ego_trajectory_offsets_path` | string \| null | — | null | Optional JSON of [forward,left,up] offsets from each predicted ego pose in DGGT native units. These alter rendering camera poses only; they cannot force the WorldEngine closed-loop policy to brake. |
-| `camera_params_path` | string \| null | — | null | DGGT camera_params.json required for Smart Edit instance trajectory coordinates. |
-| `meters_to_dggt` | number >0 \| null | — | null | Explicit metric-to-DGGT scale. Historical instance-edit experiments suggest ~0.01 as a starting estimate (0.001 for smaller shifts); verify on this scene. Do not copy WorldEngine translation_scale=10000: that is a different conversion. DGGT config offsets are pre-normalization world units; PLY-derived corrections must multiply ply_world_transform.scale. |
-| `coordinate_system` | enum["smart_edit", "dggt_world"] | — | `"smart_edit"` | smart_edit or dggt_world. |
-| `export_dynamic_frame_ply` | boolean | — | `true` | Optional; defaults to true for edited scenes so WorldEngine receives per-frame dynamic PLY metadata. |
-| `num_frames` | integer | — | `40` | Exactly 40; render only the first 40 video frames. |
-| `timeout` | integer >0 | — | `86400` | Timeout |
-
-### 输出
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| `scene_ply` | string | ✅ | — | Scene Ply |
-| `rendered_video` | string | ✅ | — | Rendered Video |
-| `output_dir` | string | ✅ | — | Output Dir |
+| `ann_file` | string | ✅ | — |  |
+| `token_file` | string | ✅ | — |  |
 
 
 ## tool10_scene_validator: `scene_validator`
@@ -324,12 +390,9 @@ Run a driving policy in WorldEngine closed loop for evaluation or IL/RL data col
 | `asset_name` | string \| null | — | null | Optional renderer asset name. |
 | `added_name` | string | — | `"mcp"` | Optional output suffix. |
 | `num_scenarios` | integer >0 \| null | — | null | Optional positive scenario count. |
-| `scenario_data_folder_path` | string \| null | — | null | Optional scenario directory; supports custom/DGGT-converted scenarios. |
+| `scenario_data_folder_path` | string \| null | — | null | Optional scenario directory; supports prepared dataset scenarios. |
 | `asset_folder_path` | string \| null | — | null | Optional scenario asset directory. |
 | `scenario_pkl_file_name` | string \| null | — | null | Optional scenario pickle filename. |
-| `dggt_output_dir` | string \| null | — | null | Optional DGGT edited output directory; policy_runner automatically stages the selected instance and converts it to WorldEngine data. |
-| `instance_id` | integer >=0 | — | `0` | DGGT instance to stage when dggt_output_dir is provided; defaults to 0. |
-| `translation_scale` | number >0 | — | `10000.0` | WorldEngine metres per DGGT reconstruction unit; defaults to 10000 for normalized DGGT outputs. |
 | `num_history` | integer >0 | — | `4` | Optional history frame count. |
 | `num_future` | integer >0 \| null | — | null | Optional future frame count. |
 | `max_frame_per_scene` | integer >=5 | — | `40` | Positive frame budget (at least 5), default 40. num_history + num_future must equal this budget; future is derived when omitted. Never pad observations. |

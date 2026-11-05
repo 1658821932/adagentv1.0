@@ -21,9 +21,9 @@ def isolated_runtime(tmp_path, monkeypatch):
 
 
 def test_concurrent_tasks_never_share_workspace():
-    @runtime_task("dggt", "isolation")
+    @runtime_task("worldengine", "isolation")
     def task(number):
-        run = current_run("dggt")
+        run = current_run("worldengine")
         (run.output / "value").write_text(str(number))
         return str(run.root)
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -35,10 +35,10 @@ def test_concurrent_tasks_never_share_workspace():
 
 
 def test_nested_calls_share_task_and_requests_redact_secrets():
-    @runtime_task("smart_edit", "inner")
+    @runtime_task("sentry_video_search", "inner")
     def inner():
-        return str(current_run("smart_edit").root)
-    @runtime_task("smart_edit", "outer")
+        return str(current_run("sentry_video_search").root)
+    @runtime_task("sentry_video_search", "outer")
     def outer(payload):
         return inner()
     root = Path(outer({"api_key": "do-not-record", "checkpoint": "/weights/base.pth"}))
@@ -49,14 +49,10 @@ def test_nested_calls_share_task_and_requests_redact_secrets():
 
 
 def test_failures_have_manifest_even_before_backend_launch(tmp_path):
-    from mcp_servers.dggt.adapter.service import reconstruct
-    from mcp_servers.smart_edit.adapter.service import generate_edit_config
     from mcp_servers.sentry_video_search.adapter.service import search_local
     from mcp_servers.worldengine.adapter.training import train_policy
     from mcp_servers.worldengine_failure_analysis.adapter.service import analyze_scene
     cases = [
-        ("dggt", lambda: reconstruct("missing", edit_config_path="x", export_render_state=True)),
-        ("smart_edit", lambda: generate_edit_config({})),
         ("sentry_video_search", lambda: search_local("")),
         ("worldengine", lambda: train_policy({"training_mode": "unknown"})),
         ("worldengine_failure_analysis", lambda: analyze_scene("")),

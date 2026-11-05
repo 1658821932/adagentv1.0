@@ -11,13 +11,6 @@ def test_settings_path_and_environment_override(tmp_path,monkeypatch):
     monkeypatch.setenv("TEST_SERVICE_PYTHON",str(tmp_path/"override-python"))
     assert runtime_path(component,"python","TEST_SERVICE_PYTHON","unused")==tmp_path/"override-python"
 
-def test_smartedit_llm_settings_do_not_read_agent_json(tmp_path,monkeypatch):
-    import mcp_servers.smart_edit.adapter.config as config
-    monkeypatch.setattr(config,"PROJECT_ROOT",tmp_path/"no-agent-config")
-    with patch("dotenv.load_dotenv"),patch.dict("os.environ",{"OPENAI_API_KEY":"test"},clear=True),patch.object(config,"settings",return_value={"llm":{"model":"editor-model","base_url":"https://editor.invalid/v1","timeout":123,"max_tokens":321}}):
-        values=config.llm_settings()
-    assert values["model"]=="editor-model"
-    assert values["timeout"]==123 and values["max_tokens"]==321
 
 def test_visual_exclusions_are_per_scene_not_global(tmp_path,monkeypatch):
     import tools.tool10_scene_validator.real as validator
@@ -37,10 +30,10 @@ def test_visual_exclusions_are_per_scene_not_global(tmp_path,monkeypatch):
 def test_agent_snapshot_is_written_after_completed_tool(tmp_path):
     from agent.logger import RunLogger
     logger=RunLogger("test",3,"test","https://example.invalid",{},logs_root=tmp_path)
-    logger.start_tool_call(0,"reconstruction",{"video_path":"/video"})
-    logger.save_state({"status":"running","current_step":0,"history":[{"tool":"reconstruction","result":{"status":"success"}}]})
-    assert json.loads((logger.run_dir/"state.json").read_text())["history"][0]["tool"]=="reconstruction"
-    assert json.loads((logger.tools_dir/"step_00_reconstruction/call.json").read_text())["tool_call_id"].endswith(":step_00:reconstruction")
+    logger.start_tool_call(0,"policy_runner",{"video_path":"/video"})
+    logger.save_state({"status":"running","current_step":0,"history":[{"tool":"policy_runner","result":{"status":"success"}}]})
+    assert json.loads((logger.run_dir/"state.json").read_text())["history"][0]["tool"]=="policy_runner"
+    assert json.loads((logger.tools_dir/"step_00_policy_runner/call.json").read_text())["tool_call_id"].endswith(":step_00:policy_runner")
 
 def test_interpreter_symlink_keeps_virtual_environment(tmp_path):
     import subprocess,sys

@@ -44,6 +44,21 @@ the current task and execution state.
 
 You must output ONLY valid JSON.
 
+The active project uses existing dataset Gaussian assets and annotations.
+After retrieval, pass video_retriever.result.scene_ref unchanged into
+attack_vehicle_editor. Pass one selected tool02 candidate.edit_strategy as
+instruction; do not replace a real track ID or asset with an invented value.
+Pass the successful attack editor result into ego_trajectory_editor.attack_result,
+and the global tool02.target_effect as target_effect. Conflict understanding and
+candidate optimization are internal to the ego stage.
+The editing interfaces are registered, but their actual backend commands must be
+configured. If editing_backend_not_configured is returned, stop and explain the
+missing integration; do not retry, fall back to a removed tool, or claim success.
+A completed expert trajectory is a reference, not the policy's closed-loop output.
+Only use explicitly returned rendered_videos for visual validation. Only pass
+simulation_input or ilft_training_data when non-null; never treat a frozen metadata
+directory as a native simulation package or a trajectory CSV as training labels.
+
 Available actions:
 1. call_tool
 2. finish (only when the task goals are satisfied)
@@ -110,7 +125,7 @@ Recovery decisions are your responsibility:
   weights or input files require a known available remedy. Never invent
   replacement paths, assets, IDs or tool capabilities.
 - For scene-content or geometry failures, identify the earliest affected
-  planning, configuration, retrieval or reconstruction step and call it
+  planning or retrieval step and call it
   with concrete modifications. Reuse successful unaffected artifacts.
   An edited vehicle floating above the road calls for correcting the edit,
   not blindly repeating validation of the same video.

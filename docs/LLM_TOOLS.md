@@ -1,7 +1,7 @@
 # 纯文本 LLM 工具开发规范
 
-当前统一覆盖两个工具：tool02 场景与候选方案生成、tool07 编辑计划。
-它们通过公共运行器执行一次受约束的文本转换；WFA、SmartEdit、视觉验证和 GPU 后端保留各自实现。
+当前统一覆盖 tool02 场景与候选方案生成。
+它通过公共运行器执行一次受约束的文本转换；WFA、视觉验证和 GPU 后端保留各自实现。
 
 ## 文件职责
 
@@ -31,7 +31,7 @@ result = call_tool(
 )
 ```
 成功返回 status、tool、result、meta。业务字段仍放在 result，不增加通用 data 层，
-保留原链路的 scene_requirement、scene_plan、edit_plan 和 action 等字段。
+tool02 输出 scene_requirement、target_effect 和 candidates。
 meta 包含 mode、model、prompt_version、prompt_sha256、attempts、elapsed_seconds；
 真实 SDK 返回 usage 时附 last_call_usage（仅最后一次模型调用的用量，不是全部尝试总量）。
 
@@ -53,9 +53,7 @@ SDK 自身的传输重试策略独立于此计数。
   可选 variation_hints、existing_instances；输出仅 scene_requirement、target_effect、candidates（三个候选，各含 base_video_requirement、edit_strategy）。
   原始分析及调用输入保存在运行记录，路径见 meta.record_dir。
 - 原 tool03 已合并到 tool02，不再独立调用；将 candidates[i].base_video_requirement 直接传给 tool04.requirement。
-- tool07：必须通过 edit_request 提交编辑请求，不接受 edit_ideas 参数别名。支持实际实例列表及发现工具的成功返回。
-  target_instances 和 operations.target 必须引用输入提供的实例 ID；无 ID 时只能使用空列表/null，
-  角色放在 parameters.target_role。帧编号不能当实例 ID。
+
 
 
 mock 同样要求合法输入。它只验证接口与执行路径，不证明场景、视觉或驾驶策略真实有效。
@@ -66,7 +64,7 @@ mock 同样要求合法输入。它只验证接口与执行路径，不证明场
 
 根 .env 只存密钥，沿用已有 OPENAI_API_KEY / LLM_API_KEY。
 默认模型与端点统一来自 configs/api.json 的 kimi profile；configs/agent.json 的 llm.api_profile 引用它，兼容原环境变量覆盖规则。
-llm.roles 定义 planner、editor 等角色；空对象表示沿用默认模型。
+llm.roles 当前定义 planner 角色；空对象表示沿用默认模型。
 角色只允许 model、timeout、max_tokens，不接受密钥或端点字段。
 各工具 config.json 选择 model_role，指定 timeout/max_tokens，并管理 prompt_version 和 validation_retries。
 
@@ -92,8 +90,8 @@ python3 -m venv .venv-test
 .venv-test/bin/python -m pip install -r requirements-test.txt
 .venv-test/bin/python -m pytest tests/ -q
 ```
-smoke 通过公开注册表调用三个工具，其中 tool02 候选检索描述直接传给 tool04（mock）。恢复决策由主 Agent 提示词负责，使用 tools.scripts.smoke_agent_recovery 单独测试。报告默认写入被 Git 忽略的 logs/llm_tools_smoke/。
-真实 smoke 不启动 DGGT/WorldEngine，不读取视频，不证明完整场景生成链路或模仿学习收益。
+smoke 通过公开注册表调用 tool02；其候选检索描述直接传给 tool04（mock），real smoke 只检验文本生成和检索输入契约。
+报告默认写入被 Git 忽略的 logs/llm_tools_smoke/。真实 smoke 不启动 GPU 仿真，也不证明编辑或后训练收益。
 
 ## 新增同类工具
 

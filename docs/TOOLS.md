@@ -1,91 +1,28 @@
-# tools 目录与 12 个 Tool 说明
+# 当前工具
 
-Tool 是主 Agent 可以选择并调用的一个功能入口，例如“检索视频”或“重建场景”。每个入口接收参数，执行功能，再返回统一格式的结果。一个后端可以支持多个 Tool；一个 Tool 内部也可以调用多个后端步骤。
+当前主 Agent 注册 9 个工具，编号沿用现有目录，不重新编号。新的两个编辑工具目前仅提供阶段接口，真实后端尚未配置。
 
-本项目当前注册 12 个 Agent Tool，编号沿用已有目录，因此不连续。SmartEdit 服务内部的 15 个 MCP 子工具属于另一层，见 [MCP 组件说明](MCP_SERVERS.md)。
+| 工具 | 输入概要 | 输出概要 | 执行位置 |
+|---|---|---|---|
+| tool01 failure_analyzer | 场景 token、取证配置 | 失败分析及证据 | WFA adapter/core |
+| tool02 scene_instance_generator | 已有失败分析，可选变化方向 | scene_requirement、target_effect、三个候选 | LLMTool 公共运行器 |
+| tool04 video_retriever | requirement、library | video_path、source_file、scene_ref | 检索 adapter/core |
+| tool05 attack_vehicle_editor | scene_ref、instruction、operation | 冻结场景、目标 ID、攻击轨迹 | 新编辑 adapter，后端待配置 |
+| tool06 ego_trajectory_editor | attack_result、target_effect | 专家轨迹、冲突理解、提交和检查 | 新编辑 adapter，后端待配置 |
+| tool10 scene_validator | 渲染视频、场景需求 | passed、issues、evidence 等 | 工具内视觉评估 |
+| tool13 policy_runner | 模型配置、权重、原生场景和资产位置 | 仿真结果、可选 rollout 与奖励 | WorldEngine adapter |
+| tool14 failure_case_filter | 场景 pkl、官方结果目录 | 0 分失败场景、逐场景得分 | WorldEngine adapter |
+| tool15 policy_trainer | ilft 标注或 rlft rollout、token 清单、基础权重 | 新 checkpoint、训练审计 | WorldEngine adapter |
 
-## 每个 Tool 是干什么的
+字段级约束见自动生成的 [INTERFACES.md](INTERFACES.md)。
 
-下表按照当前 real 实现和 Schema 说明。输入、输出仅列常用字段，完整参数见各目录中的源码。
+## 关键衔接
 
-| 编号与工具 | 主要做什么、什么时候用 | 主要输入 | 主要输出 | 调用的功能 |
-|---|---|---|---|---|
-| [tool01：failure_analyzer](../tools/tool01_failure_analyzer/real.py)，失败分析 | 分析一个已有驾驶场景为什么失败，为后续设计针对性场景提供证据。 | 场景 token、WFA 评测配置路径。 | failure_analysis、证据详情、报告路径。 | WFA adapter 启动失败取证，结合官方结果、图像和数值分析。 |
-| [tool02：scene_instance_generator](../tools/tool02_scene_instance_generator/real.py)，场景需求生成 | 将失败分析转换为“需要生成什么场景”，明确条件、参与者和目标效果。 | failure_analysis；可选 variation_hints、existing_instances。 | scene_requirement、required_conditions、required_actors、target_effect。 | 公共 LLM 运行器，根据本工具 prompt.md 生成需求。 |
-| [tool04：video_retriever](../tools/tool04_video_retriever/real.py)，视频检索 | 在已有本地索引中寻找适合重建和编辑的驾驶视频。 | requirement；可选 library。 | 视频路径、匹配分数和候选记录。 | Sentry adapter 调用召回、重排和片段导出。 |
-| [tool05：instance_discovery](../tools/tool05_instance_discovery/real.py)，实例发现 | 从重建预处理后的图像中识别并跟踪车辆，确定后续编辑哪个实例。 | image_dir、scene_name、output_path；40 帧。 | 实例 ID、逐帧检测框、instance_info_path。 | DGGT adapter 调用 YOLO/跟踪脚本。 |
-| [tool06：reconstruction](../tools/tool06_reconstruction/real.py)，三维重建 | 将单目前视驾驶视频重建为可用于后续编辑的三维高斯场景。 | video_path；num_frames=40。 | 点云、相机参数、渲染视频、预处理图像目录和输出目录。 | DGGT adapter 组织预处理及 mode 2 推理。 |
-| [tool07：edit_plan_builder](../tools/tool07_edit_plan_builder/real.py)，编辑计划生成 | 根据编辑要求和实际实例信息，明确修改对象、操作和约束。 | edit_request、instances；可选 scene_info。 | edit_plan、target_instances、operations、constraints。 | 公共 LLM 运行器；输入提供实例时校验引用的实例 ID。 |
-| [tool08：edit_config_generator](../tools/tool08_edit_config_generator/real.py)，编辑配置生成 | 将编辑计划转换为 DGGT 可执行的 JSON 配置。 | edit_plan、output_path；按操作需要提供实例清单、资产和比例。 | saved_path、内部 MCP 工具调用记录。 | SmartEdit adapter 启动内部模型和 MCP 服务，组装并保存配置。 |
-| [tool09：scene_editor](../tools/tool09_scene_editor/real.py)，场景编辑执行 | 实际应用编辑配置，生成修改后的场景和渲染视频。 | video_path、edit_config_path 或 ego_trajectory_offsets_path；轨迹编辑可能需要相机参数和坐标比例。 | 编辑后视频、场景产物、配置路径和坐标转换信息。 | DGGT adapter 进行必要的坐标转换并执行编辑渲染。 |
-| [tool10：scene_validator](../tools/tool10_scene_validator/real.py)，场景验证 | 检查编辑结果是否满足原始需求，发现悬空、破碎、位置异常等画面问题。 | rendered_video、原始 scene_requirement；可提供已有视觉评估结果或本地评估器。 | passed、各检查项、evidence、issues。 | 检查文件与配置，调用视觉模型或指定的本地评估器。 |
-| [tool13：policy_runner](../tools/tool13_policy_runner/real.py)，驾驶策略运行 | 将场景交给驾驶策略做闭环仿真，观察策略实际行为。 | 模型配置、checkpoint、场景类型和运行参数；也可提供 DGGT 编辑输出。 | 运行目录、场景报告、仿真产物等。 | WorldEngine adapter，按需转换场景后启动仿真。 |
-| [tool14：failure_case_filter](../tools/tool14_failure_case_filter/real.py)，失败案例筛选 | 根据官方 PDM 总分为 0 筛选失败场景。 | scenario_pkl、policy_runner 的 result_dir 必填。 | is_failure_case、failure_cases、scene_results、评分来源。 | 读取官方 PDM CSV 并匹配执行元数据。 |
-| [tool15：policy_trainer](../tools/tool15_policy_trainer/real.py)，IL/RL训练 | 按training_mode选择模仿学习或强化学习后训练。 | IL：ann_file、token_file；RL：rollout_dir、token_file、vocab_path；另需基础权重，可指定配置和epochs。 | checkpoint、日志、实际配置、数据准备统计和参数更新检查。 | WorldEngine adapter启动AlgEngine；支持ilft（默认）和rlft，RL奖励缺失时明确失败。 |
+- tool02.candidates[i].base_video_requirement 原文可作为 tool04.requirement。
+- tool04 real 强制绑定场景；scene_ref 引用全部相机、同步标注和高斯资产。逐帧列表保存在 manifest_path。
+- tool10 可以验证外部提供的视频，但自身不会创建或修复编辑场景；视觉通过不能代替正式仿真评分。
+- tool13 的输入是已准备的原生场景和资产，不再接受已退役编辑后端的输出目录。
+- tool14 只读取官方 PDM 总分，不做纯几何碰撞检测。
+- tool15 的 RL 当前只使用闭环 PDM 总分为 0 的 rollout；普通日志基线需另行适配。
 
-## 容易混淆的几组工具
-
-**合并后的 tool02**：输出目标场景、自车应有行为，以及三个候选底视频检索描述和对应编辑策略。各候选的 base_video_requirement 可直接作为 tool04 的 requirement。
-
-**tool07、tool08 与 tool09**：07 生成编辑计划，08 将计划变成配置文件，09 执行配置并渲染。生成配置文件并不表示场景已经编辑完成。
-
-**tool10 与 tool14**：10 检查生成画面和需求是否一致；14 读取官方 PDM 评分筛选零分场景。视觉验证不能代替驾驶策略闭环评测。
-
-**tool13 与 tool15**：13 运行策略并收集结果；15 更新模型权重。13 的结果不会自动成为可训练的标注文件，进入 15 前需要准备对应训练数据。
-
-## tools 根目录的文件
-
-| 文件 | 主要做什么 |
-|---|---|
-| [registry.py](../tools/registry.py) | 保存工具名称与函数的对应关系，按 mock/real 模式分发调用。 |
-| [llm_runtime.py](../tools/llm_runtime.py) | 为 tool02/03/07 提供公共模型调用、输入输出校验、有限纠错和结果包装。 |
-| `scripts/` | 存放开发验证脚本，例如纯文本工具 smoke 和主 Agent 恢复流程验证。 |
-| `__init__.py` | Python 包入口。 |
-
-## 每个工具目录里的文件
-
-| 文件 | 主要做什么 |
-|---|---|
-| `description.py` | 主 Agent 看到的工具说明，包括用途、调用时机和参数。由 agent/tool_descriptions.py 汇总。 |
-| `real.py` | 实际执行入口。后端工具调用对应 adapter 并包装结果；tool02/03/07 绑定公共 LLM 运行器；tool10 保留自己的评估实现。 |
-| `mock.py` | 提供模拟结果，用于验证接口和编排流程。 |
-| `schemas.py` | tool02/03/07 的输入输出结构与业务校验。 |
-| `prompt.md` | tool02/03/07 内部模型的指令。 |
-| `config.json` | tool02/03/07 的模型角色、提示词版本、输出长度和纠错设置。 |
-| `__init__.py` | 将目录组织成 Python 包。 |
-
-并非每个工具都有上述全部文件。对接后端的进程启动和格式转换已集中到各组件 adapter；当前工具入口不再承担这些完整实现。
-
-## 调用与结果怎么看
-
-主调用链是：
-
-```text
-主 Agent 决策
-  → agent/executor.py
-  → tools/registry.py：选择 mock 或 real
-  → 对应工具的 run(input_data)
-  → 返回结果，写入状态和日志
-```
-
-成功返回 `status="success"`、`tool` 和 `result`；错误由工具或执行器转换成标准错误结果。部分工具还返回模型用量、耗时等 meta。
-
-`status="success"` 只说明该调用完成，不代表业务目标已经满足。例如 tool10 必须看 `result.passed`，tool14 则看 `result.is_failure_case`。下一步重试、修改方案或结束，由主 Agent 继续决策。
-
-典型顺序为：
-
-```text
-失败分析 → 需求生成 → 场景构思 → 视频检索
-  → 重建 → 实例发现 → 编辑计划 → 编辑配置 → 编辑执行 → 场景验证
-  → 按用户目标执行仿真、失败筛选或模仿学习训练
-```
-
-用户已提供视频、需求或已有产物时，可以从对应步骤开始，不要求每次调用全部工具。
-
-## 运行时说明的待同步项
-
-核对文档时发现，部分 description.py 仍有旧表述：tool01 仍描述自由失败列表输入；tool10 的输出说明仍称必须使用本地评估器；tool13 的帧数说明只写 40，但实际实现也允许 60；tool14 的用途描述提到存储训练数据，但实际入口主要返回筛选结果。
-
-本文按当前 real 实现说明。这些提供给主 Agent 的旧描述需要在后续代码整理中同步修正，当前文档更新不代表它们已经修复。
-
-后端文件与子工具清单见 [MCP 组件说明](MCP_SERVERS.md)，纯文本工具开发方式见 [LLM 工具规范](LLM_TOOLS.md)。
+工具执行成功仅表示本步骤完成；产物质量、场景可用性和后训练收益需要独立检查。
