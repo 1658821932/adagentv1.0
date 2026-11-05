@@ -198,6 +198,8 @@ def _finish(
         mode=mode,
         match_score=round(float(hit["similarity_score"]), 6),
         timings=timings,
+        source_file=hit.get("source_file"),
+        source_segment={key: float(hit[key]) for key in ("start_time", "end_time") if key in hit},
     )
     _write_json(current_run("sentry_video_search").output / RESULT_LOG, {"status": "success", **result.to_dict()})
     return result

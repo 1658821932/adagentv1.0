@@ -10,6 +10,9 @@ class VideoSearchResult:
     mode: str
     match_score: float
     timings: dict[str, float]
+    source_file: str | None = None
+    source_segment: dict[str, float] | None = None
+    scene_ref: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

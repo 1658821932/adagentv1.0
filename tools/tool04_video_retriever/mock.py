@@ -27,6 +27,8 @@ def run(input_data: dict) -> dict:
             "video_path": video_path,
             "run_dir": str((PROJECT_ROOT / "logs" / "mock_video_retriever").resolve()),
             "mode": "mock",
+            "source_file": video_path,
+            "scene_ref": None,
             "match_score": 1.0,
             "timings": {"total_seconds": 0.0},
         },

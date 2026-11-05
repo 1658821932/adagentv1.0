@@ -94,7 +94,7 @@ class VideoLibraryTests(unittest.TestCase):
             self.assertTrue(args[1].preprocess_chunks)
 
     def test_agent_forwards_library_selection(self):
-        response = {"status": "success", "result": {"video_path": "/tmp/match.mp4"}}
+        response = {"status": "success", "result": {"video_path": "/tmp/match.mp4", "source_file": "/source.mp4", "scene_ref": {"scene_token": "test"}}}
         completed = type("Completed", (), {
             "returncode": 0,
             "stdout": json.dumps(response),

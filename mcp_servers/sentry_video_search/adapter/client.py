@@ -47,4 +47,7 @@ def retrieve_video(input_data: dict) -> dict:
         message = error.get("message") or proc.stderr.strip() or "video retrieval failed"
         raise RuntimeError(message)
 
-    return payload["result"]
+    result = payload["result"]
+    if not result.get("source_file") or not result.get("scene_ref"):
+        raise RuntimeError("video_retriever requires a bound multi-camera scene")
+    return result

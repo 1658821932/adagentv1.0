@@ -64,7 +64,7 @@ Expand a failure category into one target scene, ego's expected behavior, and th
 
 ## tool04_video_retriever: `video_retriever`
 
-Retrieve a real base driving video from the existing local Sentry Video Search index.
+Retrieve a dataset camera video and its bound multi-camera scene from the existing local Sentry index. Unbound videos raise an error.
 
 **何时使用**：Use when a suitable indexed real driving scene is needed as the starting point for reconstruction or editing. This tool does not search the internet.
 
@@ -83,7 +83,32 @@ Retrieve a real base driving video from the existing local Sentry Video Search i
 |---|---|---|---|---|
 | `video_path` | string | ✅ | — | Absolute local path of the matched video clip. |
 | `match_score` | number | ✅ | — | Local retrieval similarity score. |
-| `mode` | string | ✅ | — | local_hit. |
+| `mode` | string | ✅ | — | Local retrieval mode. |
+| `source_file` | string \| null | — | null | Original indexed camera video; video_path is the exported search clip. |
+| `source_segment` | object \| null | — | null | Matched index segment in seconds relative to source_file; not necessarily the exported clip bounds. |
+| `scene_ref` | SceneReference \| null | — | null | Required in real mode: complete scene identity, matched camera, all camera image availability, synchronized frame metadata, annotations and Gaussian asset paths. manifest_path stores ordered images/timestamps/calibrations. Real mode raises an error when scene binding is unavailable; mock may return null. Use this scene reference for dataset editing; camera videos and metadata describe the full source scene. |
+
+**`SceneReference` 对象字段：**
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `scene_id` | string | ✅ | — |  |
+| `scene_token` | string | ✅ | — |  |
+| `sample_root` | string | ✅ | — |  |
+| `dataset` | string | ✅ | — |  |
+| `matched_camera` | string | ✅ | — |  |
+| `frame_count` | integer | ✅ | — |  |
+| `fps` | number \| null | — | null |  |
+| `manifest_path` | string | ✅ | — |  |
+| `frames_path` | string | ✅ | — |  |
+| `cameras_path` | string | ✅ | — |  |
+| `scenario_pkl` | string \| null | — | null |  |
+| `asset_config_path` | string \| null | — | null |  |
+| `asset_path` | string \| null | — | null |  |
+| `runtime_asset_path` | string \| null | — | null |  |
+| `maps_path` | string \| null | — | null |  |
+| `cameras` | object | ✅ | — |  |
+| `images_complete` | boolean | ✅ | — |  |
 
 
 ## tool05_instance_discovery: `instance_discovery`

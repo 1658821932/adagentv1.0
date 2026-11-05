@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -40,11 +41,20 @@ def import_source_video(video: Path, *, library_dir: Path) -> tuple[Path, bool]:
 
     target = library_dir / source_group_name(video) / video.name
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and target.stat().st_size > 0:
-        return target.resolve(), False
-
-    shutil.copy2(video, target)
-    return target.resolve(), True
+    imported = not (target.exists() and target.stat().st_size > 0)
+    if imported:
+        shutil.copy2(video, target)
+    for sidecar in (video.with_suffix(".scene.json"), Path(str(video) + ".scene.json")):
+        if not sidecar.is_file():
+            continue
+        record = json.loads(sidecar.read_text())
+        if record.get("sample_root"):
+            root = Path(record["sample_root"]).expanduser()
+            record["sample_root"] = str((sidecar.parent / root).resolve() if not root.is_absolute() else root.resolve())
+        record["video_path"] = str(target.resolve())
+        target.with_suffix(".scene.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+        break
+    return target.resolve(), imported
 
 
 def source_videos(path: Path) -> list[Path]:

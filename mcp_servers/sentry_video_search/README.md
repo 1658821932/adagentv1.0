@@ -26,3 +26,29 @@ python -m pytest mcp_servers/sentry_video_search/adapter/tests -q
 ```
 
 权重、环境、密钥、长期数据与运行文件不随源码提交。服务目录之外的依赖通过配置或软链接接入。
+
+## 多相机场景绑定（tool04 real 强制）
+
+检索仍命中一条相机视频，但返回 `source_file`（索引原视频）和 `scene_ref`（完整场景）。
+绑定使用源视频旁的 `<stem>.scene.json`，不根据裁剪视频文件名猜测场景。
+没有绑定、token 不一致或相机不属于该场景时直接报错，普通无标注视频不再作为 tool04 real 的成功结果。
+
+为任一路相机视频注册场景后，按原有方式建索引：
+
+```python
+from mcp_servers.sentry_video_search.adapter.scene_binding import register_scene_video
+register_scene_video("/data/CAM_L0.mp4", "/data/dataset/samples/anchor", "CAM_L0")
+```
+
+样本目录需含 `manifest.json`（anchor_token/scene_token）、`metadata/frames.json`、`metadata/cameras.json`。
+帧元数据使用 timestamp（微秒）及 cams[相机名].data_path；相对图片路径以 original_images/ 为根。
+视频应覆盖该样本的原始完整时间轴；相机视频的生成和同步由数据准备流程负责，注册不会重新编码或校验视频画面。
+入库复制视频时同时保留绑定文件，重排、裁剪后仍按原始命中视频绑定。
+
+`scene_ref` 包含场景 token、命中相机、全部相机的图片可用数量、标注路径、场景 pkl、资产配置、高斯资产和地图路径。
+`manifest_path` 指向本次 runtime/output/scene_binding.json，保存按时间排序的各路原始图片、时间戳及相机参数，避免把逐帧列表放进 Agent 上下文。
+相机视频存在显式绑定时返回 video_path；没有生成视频时为 null，仍可从 manifest 读取原始图像序列。
+文件完整性按磁盘实况计算，不使用可能过时的下载状态字段。尚未下载的图片和资产明确标记缺失。
+
+这些路径对应完整底场景；`source_segment` 是检索命中的索引片段范围（原视频秒数），不等于最终导出片段边界，也不表示八路已经统一裁剪。
+mock 保留占位输出，不执行真实场景绑定。

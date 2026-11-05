@@ -11,7 +11,10 @@ def search_local(requirement, config=None):
     from ..core.service import search_local as search
     from ..core.workspace import bind_run
     with bind_run(current_run("sentry_video_search")):
-        return search(requirement, config or SearchConfig())
+        result = search(requirement, config or SearchConfig())
+        from .scene_binding import bind_scene
+        result.scene_ref = bind_scene(result.source_file, current_run("sentry_video_search").output)
+        return result
 
 @runtime_task("sentry_video_search", "index_local")
 def index_local(path, config=None):
