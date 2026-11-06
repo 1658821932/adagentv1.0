@@ -1,31 +1,16 @@
-"""
-Tool description for the scene_validator tool (tool10_scene_validator).
-
-This is the single source of truth shown to the LLM orchestrator when it
-decides whether and how to call this tool. Keep orchestrator-facing rules
-about this tool here, not in the global system prompt.
-"""
-
-DESCRIPTION = {
-    "name": 'scene_validator',
-    "description": 'Evaluate whether an edited scene satisfies requirements and remains physically and logically reasonable.',
-    "when_to_use": 'Use after editing before simulation. Run visual validation on at least 8 uniformly spaced frames and treat bad grounding, off-road placement, or fragmented vehicle geometry as edit failure even if artifact files exist.',
-    'inputs': {
-        'rendered_video': 'Rendered video from the previous edit step.',
-        'scene_requirement': 'Original requirement generated before editing.',
-        'frame_count': 'Optional uniformly sampled frame count for the visual model; defaults to 8.',
-        'frame_paths': 'Optional locally extracted keyframe paths.',
-        'edited_scene': 'Optional scene metadata with scene_config and scene_ply.',
-        'visual_evaluation': 'Optional result from a local visual evaluator.',
-    },
-    'outputs': {
-        'validation': 'Requirement and visual validation; without a local evaluator it fails explicitly.',
-    },
-}
-
+"""Tool purpose, invocation context and workflow handoff; fields come from Schema."""
+from tools.llm_runtime import make_description
 from .schemas import Input, Output
-DESCRIPTION["input_schema"] = Input.model_json_schema()
-DESCRIPTION["output_schema"] = Output.model_json_schema()
-DESCRIPTION["inputs"] = {key: DESCRIPTION["inputs"].get(key, value.get("description", value.get("title", key))) for key,value in DESCRIPTION["input_schema"]["properties"].items()}
 
-DESCRIPTION["outputs"] = {key: DESCRIPTION["outputs"].get(key, value.get("description", value.get("title", key))) for key,value in DESCRIPTION["output_schema"]["properties"].items()}
+DESCRIPTION = make_description(
+    name='scene_validator',
+    description='Check edited-render requirement consistency and visible geometry, motion and traffic plausibility.',
+    when_to_use='Check a new or revised edited render.',
+    input_model=Input,
+    output_model=Output,
+    handoff={'input': 'Use an actual path from editing result.rendered_videos and the original scene_requirement; original recordings are not edited renders.', 'output': 'Continue only when result.passed=true. Otherwise use issues and frame evidence to revise the affected retrieval/editing stage.'},
+    rules=[
+        'The configured VLM evaluates sampled frames unless an explicit local evaluation is supplied. File existence alone does not validate the scene.',
+        'Visual plausibility does not establish policy behavior, exact metric distances or dynamics guarantees.',
+    ],
+)

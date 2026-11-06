@@ -1,14 +1,9 @@
 """Runtime contracts for backend tools; LLM tools retain their typed runner."""
 from functools import wraps
 from importlib import import_module
-from pydantic import BaseModel, ConfigDict, ValidationError
-from tools.llm_runtime import NonEmptyStr, validation_details
-
-class InputModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
-
-class OutputModel(BaseModel):
-    model_config = ConfigDict(extra="allow", strict=True)
+from pydantic import ValidationError
+from common.models import InputModel, OutputModel, NonEmptyStr
+from tools.llm_runtime import validation_details
 
 def validated(tool_name, module, function):
     schemas = import_module(module + ".schemas")

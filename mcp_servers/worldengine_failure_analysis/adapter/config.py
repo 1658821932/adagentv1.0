@@ -15,7 +15,7 @@ DEFAULT_RUN_NAME = "adagent_failure_analysis"
 def _resolve_python() -> str:
     """Pick a Python that can run wfa (needs numpy/opencv/Pillow)."""
     python = runtime_path(COMPONENT_ROOT, "python", "WFA_PYTHON",
-                          "environments/simengine/.conda/bin/python")
+                          "environments/simengine/bin/python")
     if not python.is_file():
         raise FileNotFoundError(f"WFA interpreter not found: {python}; set WFA_PYTHON or adapter/settings.json")
     return str(python)

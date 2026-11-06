@@ -1,5 +1,6 @@
 """Scene provenance must survive import, reranking and clip export."""
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -127,5 +128,5 @@ def test_adapter_rejects_unbound_retrieval(tmp_path):
 def test_client_rejects_legacy_unbound_subprocess_payload():
     from mcp_servers.sentry_video_search.adapter.client import retrieve_video
     result = type("Completed", (), {"returncode": 0, "stderr": "", "stdout": json.dumps({"status": "success", "result": {"video_path": "/clip.mp4"}})})()
-    with patch("mcp_servers.sentry_video_search.adapter.client.run_logged", return_value=result), pytest.raises(RuntimeError, match="bound multi-camera scene"):
+    with patch("mcp_servers.sentry_video_search.adapter.client.VIDEO_RETRIEVER_PYTHON", Path(sys.executable)), patch("mcp_servers.sentry_video_search.adapter.client.run_logged", return_value=result), pytest.raises(RuntimeError, match="bound multi-camera scene"):
         retrieve_video({"requirement": "test"})

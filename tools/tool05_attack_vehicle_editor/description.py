@@ -1,4 +1,17 @@
-"""Orchestrator-facing stage contract."""
+"""Tool purpose, invocation context and workflow handoff; fields come from Schema."""
 from tools.llm_runtime import make_description
 from .schemas import Input, Output
-DESCRIPTION = make_description(name='attack_vehicle_editor', description='Edit one attack vehicle using existing scene annotations and Gaussian assets; the stage owns candidate generation, checks, submission and frozen-scene export.', when_to_use='Use after tool04. Pass scene_ref unchanged and one selected tool02 candidate.edit_strategy as instruction. edit_existing uses an evidenced track ID when supplied; otherwise its backend selects the target from annotations before editing; add_vehicle requires an explicit asset, size and stationary/left_cut_in maneuver. Never guess target IDs or asset paths. A separate operation is needed for unsupported manoeuvres. Backend configuration is required; on editing_backend_not_configured stop rather than retrying or claiming a new scene. Output is an accepted frozen scene, not merely a proposed plan. Any simulation_input may be passed to tool13 together with its required model arguments; null means scene conversion remains unavailable.', input_model=Input, output_model=Output)
+
+DESCRIPTION = make_description(
+    name='attack_vehicle_editor',
+    description='Edit one attack vehicle and export the accepted frozen scene.',
+    when_to_use='Apply a vehicle-edit strategy to a retrieved scene.',
+    input_model=Input,
+    output_model=Output,
+    handoff={'input': 'scene_ref: retrieval result_ref or unchanged scene_ref. instruction: selected tool02 candidate.edit_strategy.', 'output': 'Pass this call result_ref to ego_trajectory_editor.attack_result. Non-null simulation_input can supply native scene/asset paths to policy_runner.'},
+    rules=[
+        'For edit_existing, supply an evidenced target_track or let the backend select it from annotations. For add_vehicle, provide the asset, dimensions and supported maneuver required by input_schema.',
+        'On editing_backend_not_configured, stop: the stage has no configured algorithm backend.',
+        'A frozen scene without simulation_input is not an executable WorldEngine package.',
+    ],
+)

@@ -1,5 +1,5 @@
 {
   "timeout": 180,
-  "frame_python": "environments/dggt/.conda/bin/python",
+  "frame_python": "environments/simengine/bin/python",
   "api_profile": "kimi"
 }

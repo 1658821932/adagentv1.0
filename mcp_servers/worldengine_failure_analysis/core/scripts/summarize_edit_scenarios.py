@@ -9,22 +9,10 @@ from pathlib import Path
 
 from evidence import save
 from vlm_review import Client
+from prompt_utils import load_prompt
 
 PROJECT=Path(__file__).resolve().parents[1]
-RULES='''你的任务是总结已有案例中可用于后续场景编辑的典型失败场景，不重新诊断模型内部原因。
-只用提供的现象、原因和不确定性。原结果也可能过度推断，不能将其推测升级为事实。
-每类按固定顺序写四句话：自车正在做什么；环境及其他参与者如何；自车的可观察错误行为；应有的驾驶响应。
-场景名称只写“自车动作+关键环境”，不含未减速、间距不足、导致、越界、追尾等错误或结果。例如“直行接近同车道低速或静止前车场景”“路口转弯时与他车交互场景”。示例仅说明风格，不作为证据。
-ego_action写自车动作；environment写道路、参与者及相对运动；wrong_behavior写记录支持的不当响应；expected_behavior写以“自车应”开头的测试目标。
-场景归并依据自车动作与关键环境的共同组合，不只依据碰撞/越界。没有直行证据就写“前进接近”，没有他车干扰证据就不能写他车干扰。
-“有他车干扰”要说明他车从哪里来、如何运动；若并非整个组都有该条件，不推广至整组。不能把未知对象、信号、墙距补成事实。
-错误行为限未及时减速、持续接近、横向偏移或越出边界等可见事实，不猜未识别、感知失败、控制失效、避让动机。
-没有因果证据时写“持续加速且车角越界”，不能写“加速导致越界”。不能把部分成员的动作或环境写成整组共有；可写“部分案例中”。
-应有响应是后续仿真的测试目标，不是已经证明有效的修复方案。结合场景写提前减速、保持间距、让行或停车等，不编造通行权与安全阈值。
-正文只输出上述四句话，不添加编辑参数、指标定义或模块分析。应有响应不能当作直接编辑自车轨迹的指令。
-没有明确触发情境的案例进U0，不强行归因。每例只有一个主场景组；复合条件可在依据中保留。
-U0明确写动作/环境/错误行为哪些未知，expected_behavior写“暂不确定，不直接生成编辑任务”，不能凑造标准响应。
-每类四句话尽量简短，约120至180字，保留必要条件，不设硬字数上限。写共通情境，少用重复的“部分案例”。正文不用“导致”，以“并出现”描述共现结果。不要写模块猜测、指标科普或大段证据。'''
+RULES = load_prompt("scene_groups.md")
 
 
 def validate_description(g):
@@ -52,6 +40,7 @@ def ask(client,messages,name,validate=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--api-config',type=Path,help='Standalone API profile JSON')
     parser.add_argument('--run-name',required=True)
     parser.add_argument('--run-dir',type=Path,required=True)
     parser.add_argument('--output-name',required=True)
@@ -80,14 +69,14 @@ def main():
     if snapshot_path.exists() and json.loads(snapshot_path.read_text())!=snapshot:raise ValueError('Inputs changed; use a new output-name')
     save(snapshot_path,snapshot)
     import sys
-    sys.path.insert(0, str(PROJECT.parents[2]))
-    from api_config import wfa_settings
-    client=Client(wfa_settings(),out)
+    sys.path.insert(0, str(PROJECT))
+    from api_settings import vlm_settings
+    client=Client(vlm_settings(args.api_config),out)
     if existing is not None:
         by_token={c['token']:c for c in cases}
         def rewrite(g):
             if g['id']=='U0':return {**g,'name':'关键场景信息不足','ego_action':'部分案例缺少明确的自车动作描述。','environment':'关键参与者或交互条件尚不明确。','wrong_behavior':'无法据此形成一致的错误行为描述。','expected_behavior':'暂不确定，不直接生成编辑任务。'}
-            task={'task':'保持本组成员不变，依据它们的共同情境重新命名，并生成动作、环境、错误行为、应有响应四句话。组内条件不一致时适当概括或注明部分案例，不强加直行/转弯或他车干扰。',
+            task={'task':'保持本组成员不变，按共同情境重新命名并填写描述字段。',
                   'previous_name':g['name'],'cases':[by_token[c['token']] for c in g['cases']],
                   'output':{'name':'动作+环境+场景，不写错误或结果','ego_action':'自车正在做什么。','environment':'环境如何。','wrong_behavior':'自车错误行为。','expected_behavior':'自车应如何响应。'}}
             description=ask(client,[{'role':'system','content':RULES},{'role':'user','content':json.dumps(task,ensure_ascii=False)}],'describe_'+g['id'],validate_description)
@@ -97,7 +86,7 @@ def main():
         write_summary(out,cases,groups,assignments)
         return
     brief=[{**c,'visual_observations':c['visual_observations'][:3],'observations':c['observations'][:2]} for c in cases]
-    task={'task':'阅读全部案例，提炼5至7个有实际案例支持的主要场景，另设U0信息不足。每类用自然连贯的四句话，按自车动作、环境、错误行为、应有响应的顺序。不要输出每例分组。',
+    task={'task':'阅读全部案例，提炼5至7个有案例支持的主要场景，另设U0。此阶段只输出类型定义，不输出逐例分组。',
           'cases':brief,'output':{'groups':[{'id':'G1','name':'自车动作+关键环境+场景',
           'ego_action':'自车正在进行的动作。','environment':'道路及其他参与者的位置和相对运动。',
           'wrong_behavior':'自车有证据支持的错误行为。','expected_behavior':'自车应采取的适当响应，作为测试目标。'}],
@@ -110,7 +99,7 @@ def main():
         raise ValueError('Each scene needs action, environment, wrong behavior and expected response')
     def classify(job):
         number,batch=job
-        prompt={'task':'按自车动作与关键环境组合，将每例归入一个主场景组。直行/转弯、切入/横穿不能混淆；没有他车干扰证据不能归入依赖该条件的组。缺少符合组定义的关键情境则U0。依据短于40字，不凭侧向间距标签猜窄路或停靠车辆。',
+        prompt={'task':'将每例归入一个符合定义的主场景组；缺少关键情境则U0。basis用不到40字说明明确依据。',
                 'groups':groups,'cases':batch,'output':{'assignments':[{'case':'C001','group':'G1','basis':'归组所依据的明确场景条件，简短'}]}}
         answer=ask(client,[{'role':'system','content':RULES},{'role':'user','content':json.dumps(prompt,ensure_ascii=False)}],f'assign_{number:02d}')
         assignments=answer['assignments']

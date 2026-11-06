@@ -24,7 +24,7 @@ def retrieve_video(input_data: dict) -> dict:
             "video_retriever environment is missing. Create it with: "
             "python3 -m venv environments/video_retriever/.venv && "
             "environments/video_retriever/.venv/bin/pip install -r "
-            "environments/video_retriever/requirements.txt"
+            "mcp_servers/sentry_video_search/core/requirements.txt"
         )
 
     proc = run_logged(

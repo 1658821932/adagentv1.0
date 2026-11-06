@@ -145,7 +145,7 @@ class Agent:
                     )
                     raise
 
-                self.logger.finish_tool_call(
+                result_ref = self.logger.finish_tool_call(
                     step,
                     tool_name,
                     result,
@@ -154,7 +154,7 @@ class Agent:
                 print("Tool Result:")
                 print(result)
 
-                self.state.add_tool_result(tool_name, result)
+                self.state.add_tool_result(tool_name, result, result_ref=result_ref)
                 self.logger.save_state(self.state.to_dict())
 
             self.state.mark_error("Maximum agent steps reached")

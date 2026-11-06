@@ -1,29 +1,17 @@
-"""Single source of training tool instructions shown to the Agent."""
-DESCRIPTION = {
-    "name": "policy_trainer",
-    "description": "Fine-tune the driving policy with imitation learning (ilft) or reinforcement learning (rlft).",
-    "when_to_use": "Use ilft for trajectory annotations. Use rlft only after WorldEngine exports complete rollout images, metadata and 8192-candidate PDM rewards. Scene packages and videos alone are not RL training data. Evaluate the new checkpoint independently before accepting it.",
-    "inputs": {
-        "training_mode": "ilft (default) or rlft. Missing RL inputs cause an error; never silently fall back to IL.",
-        "training_data": "ilft: {ann_file, token_file}. rlft: {rollout_dir, token_file, vocab_path}. rollout_dir is the WE openscene_format directory with meta_datas/, sensor_blobs/, pdms_pkl/ including plan_idx.csv, plus all_scenes_pdm_averages_*.csv from the closed-loop run. Only scenes whose closed-loop PDM total score is 0 are kept as failure cases; all their valid frames are used for training. vocab_path is the (8192,40,3) vocabulary used to compute those rewards.",
-        "base_checkpoint": "Existing policy checkpoint. Record the architecture/config when comparing checkpoints.",
-        "config_path": "Optional mode-appropriate AlgEngine config; defaults to existing IL config or native RL rollout config.",
-        "epochs": "Positive epoch count, default 1.",
-        "seed": "Nonnegative random seed, default 0.",
-        "worldengine_root": "Optional WorldEngine code root.",
-        "python": "Optional AlgEngine interpreter.",
-        "work_dir": "Optional export parent; execution always uses an isolated runtime directory.",
-        "timeout": "Positive per-process timeout in seconds."
-    },
-    "outputs": {
-        "training_mode": "The actual mode used.",
-        "checkpoint": "Checkpoint saved by real training.",
-        "log_path": "Training log.",
-        "training_audit": "Mode-specific losses, finite-value check and actual parameter updates.",
-        "data_preparation": "Training inputs and rollout preparation summary."
-    }
-}
-
+"""Tool purpose, invocation context and workflow handoff; fields come from Schema."""
+from tools.llm_runtime import make_description
 from .schemas import Input, Output
-DESCRIPTION["input_schema"] = Input.model_json_schema()
-DESCRIPTION["output_schema"] = Output.model_json_schema()
+
+DESCRIPTION = make_description(
+    name='policy_trainer',
+    description='Post-train a driving policy using imitation learning (ilft) or reinforcement learning (rlft).',
+    when_to_use="Train when the requested mode's converted data is ready.",
+    input_model=Input,
+    output_model=Output,
+    handoff={'input': 'ILFT: training_data.ann_file and token_file. RLFT: policy_runner rollout_dir, matching token_file and the vocabulary used for its candidate rewards.', 'output': 'Use the returned checkpoint in a subsequent policy_runner call to measure post-training performance.'},
+    rules=[
+        'RLFT requires rollout images/metadata, native 8192-candidate PDM rewards and plan_idx.csv. It keeps zero-PDM failure scenes and all their valid frames.',
+        'Videos, frozen metadata or an expert CSV alone are not training_data. Do not silently switch RLFT to ILFT.',
+        'A saved checkpoint and training_audit establish execution; improvement requires a separate evaluation.',
+    ],
+)

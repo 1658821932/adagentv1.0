@@ -110,7 +110,7 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
     candidates = hits[:MAX_VIDEO_CANDIDATES]
     if not candidates:
         raise ValueError("Cannot rerank an empty candidate list")
-    from api_config import get_profile
+    from .api_settings import get_profile
     profile = get_profile("retrieval", require_key=True)
     settings = _settings()
 

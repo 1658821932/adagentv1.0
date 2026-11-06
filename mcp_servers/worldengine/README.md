@@ -13,7 +13,7 @@
 
 从 `mcp_servers.worldengine.adapter.service` 导入：run_policy(input_data)、filter_failure_cases(input_data)、train_policy(input_data)。
 
-环境：`environments/simengine/.conda、environments/algengine/.conda`。WORLDENGINE_ROOT；启动脚本为 adapter/run_testing.sh；训练支持 ILFT 与 RLFT。
+环境：`environments/simengine、environments/algengine`。WORLDENGINE_ROOT；启动脚本为 adapter/run_testing.sh；训练支持 ILFT 与 RLFT。
 
 输入输出沿用原工具格式；结果中的 run_dir 指向任务根目录，具体产物通过原有路径字段返回。显式导出路径继续支持，旧运行目录已清理。
 

@@ -1,9 +1,16 @@
-"""Merged scenario conception and candidate retrieval guide."""
+"""Tool purpose, invocation context and workflow handoff; fields come from Schema."""
 from tools.llm_runtime import make_description
 from .schemas import Input, Output
+
 DESCRIPTION = make_description(
-    name="scene_instance_generator",
-    description="Expand a failure category into one target scene, ego's expected behavior, and three alternative base-video/edit-strategy pairs. Includes the former tool03 conception responsibility.",
-    when_to_use="Use saved failure_analysis. Select one candidate and pass candidates[i].base_video_requirement unchanged as video_retriever.requirement. Retain that candidate's edit_strategy for downstream editing. Empty base scenes are valid for adding a vehicle. Prefer editing one other vehicle and optionally ego trajectory.",
-    input_model=Input, output_model=Output,
+    name='scene_instance_generator',
+    description='Generate one target scene, one global ego goal and three source-video/edit-strategy candidates.',
+    when_to_use='Construct a new scenario from saved failure analysis.',
+    input_model=Input,
+    output_model=Output,
+    handoff={'input': 'failure_analysis: saved category or successful failure_analyzer result.', 'output': 'Choose candidates[i]; pass base_video_requirement verbatim to video_retriever.requirement and retain its paired edit_strategy. target_effect applies to the whole target scene.'},
+    rules=[
+        'Candidate requirements describe source content to retrieve, not the final edited hazard.',
+        'Planning supports adding, deleting or modifying vehicles and their trajectories, plus ego trajectory edits. Prefer changing at most one other vehicle; execution still follows the chosen editor contract.',
+    ],
 )

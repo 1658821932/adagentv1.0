@@ -29,5 +29,26 @@ TOOLS = [
 ]
 
 
-def get_tool_descriptions():
-    return TOOLS
+def get_tool_descriptions(*, compact=False):
+    if not compact:
+        return TOOLS
+    return [_compact_description(tool) for tool in TOOLS]
+
+
+def _compact_description(tool):
+    """Keep executable input constraints; omit duplicated/output JSON schemas."""
+    def clean(value):
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items() if key != "title"}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+    return {
+        "name": tool["name"],
+        "description": tool["description"],
+        "when_to_use": tool.get("when_to_use", ""),
+        "handoff": dict(tool.get("handoff", {})),
+        "rules": list(tool.get("rules", [])),
+        "input_schema": clean(tool["input_schema"]),
+        "outputs": list(tool.get("outputs", {})),
+    }

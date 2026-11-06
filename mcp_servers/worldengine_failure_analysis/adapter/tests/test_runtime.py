@@ -15,7 +15,8 @@ from mcp_servers.runtime import current_run, runtime_task
 
 
 
-def test_wfa_reads_only_this_task_output(tmp_path):
+def test_wfa_reads_only_this_task_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("WFA_PYTHON", sys.executable)
     from mcp_servers.worldengine_failure_analysis.adapter.service import analyze_scene
     config = tmp_path / "config.json"; config.write_text("{}")
     def backend(command, **kwargs):

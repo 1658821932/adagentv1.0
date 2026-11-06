@@ -207,8 +207,8 @@ def _finish(
 
 
 def _ensure_dashscope_key() -> None:
-    """Validate the root retrieval API profile before using the index."""
-    from api_config import get_profile
+    """Validate the active retrieval API profile before using the index."""
+    from .api_settings import get_profile
     get_profile("retrieval", require_key=True)
 
 

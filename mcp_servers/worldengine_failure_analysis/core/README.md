@@ -1,39 +1,35 @@
-# 独立项目入口
+# WorldEngine 失败分析
 
-在本目录运行 `python run.py --help`，API 统一引用项目根配置。依赖见 requirements.txt。
-配置模板位于 configs/complete.json.example。API 地址和模型读取项目根 configs/api.json 的 kimi profile；凭证读取根 .env 的 OPENAI_API_KEY。
-使用 --run-dir 指定输出目录；未指定时在上一级 runtime/ 下分配新任务。
-旧运行产物已清理；watch_batch.py 和 summarize_edit_scenarios.py 使用 --run-dir 明确选择已有分析输出。
+读取 WorldEngine 官方评测文件、场景图片与数值证据，使用 VLM 分析失败原因。官方评分来自评测产物，本工具不重新计算评分。
 
----
+## 独立运行
 
-# 失败分析
-
-基于 WorldEngine 官方闭环评测数据，通过外部 VLM 输出现象、候选行为原因、数值核验及最终原因。不推断模型内部根因，也不重新计算或改写官方评分。
-
-## 流程与结果
-
-官方指标确定失败 → VLM查看12张多相机总览并按需补看相机/BEV → 提出现象和候选 → 查询自车、周车、边界及规划数值 → 比较候选并输出原因和不确定性。
-
-图像和数值由程序提供，原因由 VLM 判断。官方首次违规时间不能代替每类事件的独立时间；EP=0不能证明静止；周车速度由同一对象的世界坐标历史计算；几何接触候选不能冒充官方责任判定。缺失证据保留不确定，不填0或强行定因。
-
-## 配置与运行
-
-独立分析环境需要 `requirements.txt` 中的依赖；通过 Agent 调用时可用 `WFA_PYTHON` 指定解释器，否则依次查找项目的 simengine、dggt、agent 环境。
-
-复制 `configs/complete.json` 为自己的配置，设置 `worldengine_root`、`result_root`、可选数值缓存和 `vlm_allowed_tokens`。示例中的本地数据路径须改为本机路径。API 在项目根 `configs/api.json` 设置，密钥放根 `.env`。分析会向该端点发送场景图片和相关证据。以下命令在本组件目录执行，使用已装依赖的 Python：
+需要 Python 及 requirements.txt 中的依赖，不需要安装 AdAgent。
 
 ```bash
-python run.py scene --token <scene-token> --config /path/to/config.json --run-name trial
-python run.py report --run-name trial
+python -m pip install -r requirements.txt
+cp configs/complete.json.example /path/to/analysis.json
+cp api.example.json /path/to/api.json
+export OPENAI_API_KEY="<your-key>"
+python run.py scene --token <scene-token> --config /path/to/analysis.json   --api-config /path/to/api.json --run-dir /path/to/output --run-name trial
 ```
 
-续跑加 `--resume`；新实验使用新 run-name。Agent 工具 `failure_analyzer` 接受 `token`（也兼容 `scene_token`）、可选 `config_path`、`run_name` 和 `resume`，返回供需求生成使用的 `failure_analysis` 以及完整取证结果路径。
+在 analysis.json 填写 worldengine_root、result_root 等数据路径；api.json 设置模型、端点和 api_key_env，密钥只通过相应环境变量提供。
+也可用 WFA_API_CONFIG 指向 API 配置；未指定时读取本目录 api.example.json。API 示例不是密钥文件，应按实际服务修改。
+场景图片及相关证据会发送到所配置的端点。
 
-## 产物与汇总
+加 --resume 续跑；使用 --run-dir 明确选择输出目录，未指定时在本组件上一级 runtime/ 分配任务。
+场景产物位于输出目录 scenes/<token>/：result.json、report.md、图像、候选、数值证据及模型调用记录。
 
-`runs/<run-name>/scenes/<token>/` 保存 `result.json`、`report.md`、候选、图片、数值证据及模型调用记录；运行根目录保存汇总。失败或未结束的调用不计为完整分析。
+## 分组与接入
 
-`scripts/summarize_edit_scenarios.py` 对已完成案例分组，输出“自车动作→环境及他车→错误行为→应有响应”，保留成员及依据。应有响应是后续场景测试目标，不能据此直接修改自车轨迹。已有分组仅改描述时使用 `--groups-from` 保持成员不变。
+scripts/summarize_edit_scenarios.py 对已完成案例归组，支持 --api-config 指定相同 API 配置，--run-dir 指定分析输出；--groups-from 可在不改变成员时更新描述。
+scripts/watch_batch.py 查看已有批次，具体参数见 --help。
 
-原始指标、视频、密钥及运行结果不随源码分发。历史分析报告留在原研究项目，不作为当前使用说明。
+AdAgent 的 adapter 负责解释器、任务目录和主项目配置注入，tool01 返回 failure_analysis 与完整证据路径。独立 core 不导入根 api_config 或 agent/tools。
+原因分析保留证据范围；候选几何接触不等于官方责任判定，专家行为建议不等于已经验证的驾驶轨迹。
+数据、密钥和运行产物不随源码提交。
+
+## 提示词
+
+静态任务说明集中在本 core 的 prompts/；原生代码按文件位置读取，不依赖主 Agent。任务数据和返回协议仍由调用代码组装。

@@ -18,8 +18,8 @@ def build_commands(args, environ):
     def interpreter(variable, default):
         path = Path(env.get(variable) or default).expanduser()
         return os.path.abspath(path if path.is_absolute() else project / path)
-    sim_python = interpreter("SIMENGINE_PYTHON", "environments/simengine/.conda/bin/python")
-    alg_python = interpreter("ALGENGINE_PYTHON", "environments/algengine/.conda/bin/python")
+    sim_python = interpreter("SIMENGINE_PYTHON", "environments/simengine/bin/python")
+    alg_python = interpreter("ALGENGINE_PYTHON", "environments/algengine/bin/python")
     folder = Path(env.get("SCENARIO_DATA_FOLDER_PATH") or f"data/sim_engine/scenarios/original/{args.data_type}").expanduser()
     if not folder.is_absolute():
         folder = root / folder

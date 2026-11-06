@@ -11,38 +11,53 @@
 
 ## tool01_failure_analyzer: `failure_analyzer`
 
-Analyze one WorldEngine scene token using official metrics, image evidence and numeric verification.
+Analyze one WorldEngine scene from official metrics, images and numeric evidence.
 
-**何时使用**：Use for evidence-based analysis of an existing WorldEngine scene with archived evaluation data. Supply token and, when needed, config_path.
+**何时使用**：Diagnose a scene with archived evidence; reuse saved analysis when sufficient.
+
+**上下游衔接**
+- input: Use the existing scene token and analysis configuration.
+- output: Pass result.failure_analysis to scene_instance_generator.failure_analysis; report_path/result_path locate the full evidence.
+
+**工具规则**
+- This tool analyzes one scene; it does not summarize a free-form list of failure cases.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `token` | string | ✅ | — | Token（别名：`scene_token`） |
-| `config_path` | string \| null | — | null | Config Path |
-| `run_name` | string \| null | — | null | Run Name |
-| `resume` | boolean | — | `true` | Resume |
-| `timeout` | integer >0 | — | `1800` | Timeout |
+| `token` | string | ✅ | — | WorldEngine scene token to analyze; scene_token is also accepted.（别名：`scene_token`） |
+| `config_path` | string \| null | — | null | Optional WFA configuration for archived evaluation data and scene metadata. |
+| `run_name` | string \| null | — | null | Optional analysis run label. |
+| `resume` | boolean | — | `true` | Reuse an existing completed analysis when available. |
+| `timeout` | integer >0 | — | `1800` | Analysis process timeout in seconds. |
 
 ### 输出
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `failure_analysis` | object | ✅ | — | One dominant cross-case failure_type, failure_reason, key_scene_factors and risk_factors, with supporting and uncovered case IDs. Use only case IDs actually present in the input; never invent supporting evidence. |
+| `failure_analysis` | object | ✅ | — | Single-scene failure_type, failure_reason and scene factors; forensics retains observations, candidate assessments and full evidence/report paths. |
 
 
 ## tool02_scene_instance_generator: `scene_instance_generator`
 
-Expand a failure category into one target scene, ego's expected behavior, and three alternative base-video/edit-strategy pairs. Includes the former tool03 conception responsibility.
+Generate one target scene, one global ego goal and three source-video/edit-strategy candidates.
 
-**何时使用**：Use saved failure_analysis. Select one candidate and pass candidates[i].base_video_requirement unchanged as video_retriever.requirement. Retain that candidate's edit_strategy for downstream editing. Empty base scenes are valid for adding a vehicle. Prefer editing one other vehicle and optionally ego trajectory.
+**何时使用**：Construct a new scenario from saved failure analysis.
+
+**上下游衔接**
+- input: failure_analysis: saved category or successful failure_analyzer result.
+- output: Choose candidates[i]; pass base_video_requirement verbatim to video_retriever.requirement and retain its paired edit_strategy. target_effect applies to the whole target scene.
+
+**工具规则**
+- Candidate requirements describe source content to retrieve, not the final edited hazard.
+- Planning supports adding, deleting or modifying vehicles and their trajectories, plus ego trajectory edits. Prefer changing at most one other vehicle; execution still follows the chosen editor contract.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `failure_analysis` | object | ✅ | — | Saved failure evidence or a successful tool01 envelope. Accepts failure_reason or a saved group with wrong_behavior and id. Keep original case IDs. |
+| `failure_analysis` | object | ✅ | — | Saved failure category or tool01 result with nonempty failure_reason or wrong_behavior. Preserve supplied case IDs. |
 | `variation_hints` | object | — | — | Optional qualitative variation directions, e.g. traffic_density: sparse, target_actor: crossing bus. Legacy parameter_assignment is accepted. No distance/speed/timing values are required.（别名：`parameter_assignment`） |
 | `existing_instances` | array<string> | — | — | Previous requirement summaries or successful tool02 outputs. Exact normalized descriptions are rejected; semantic diversity remains a model suggestion. |
 
@@ -64,29 +79,38 @@ Expand a failure category into one target scene, ego's expected behavior, and th
 
 ## tool04_video_retriever: `video_retriever`
 
-Retrieve a dataset camera video and its bound multi-camera scene from the existing local Sentry index. Unbound videos raise an error.
+Retrieve a local camera video and its bound annotated multi-camera scene.
 
-**何时使用**：Use when a suitable indexed real driving scene is needed with annotations and Gaussian assets for downstream use. This tool does not search the internet.
+**何时使用**：Retrieve a source scene for editing or downstream use.
+
+**上下游衔接**
+- input: Use the selected scene_instance_generator candidate.base_video_requirement as requirement.
+- output: Pass the successful history entry.result_ref or result.scene_ref to attack_vehicle_editor.scene_ref. source_file is the indexed original; video_path is the exported search clip.
+
+**工具规则**
+- No internet search. Real mode requires a valid scene binding.
+- scene_ref describes the full source scene. source_segment is the matched index range, not a synchronized multi-camera crop.
+- Check returned asset/image availability before requesting an operation that needs those files.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `requirement` | string | ✅ | — | One natural-language description of the required base driving video. |
-| `library` | enum["default", "waymo"] | — | `"default"` | Optional: default or waymo. Use waymo to search the separate Waymo front-camera index; default searches the existing local index. |
-| `timeout` | integer >0 | — | `1800` | Timeout |
-| `mock_video_path` | string \| null | — | null | Mock Video Path |
+| `requirement` | string | ✅ | — | Natural-language source-video search description. |
+| `library` | enum["default", "waymo"] | — | `"default"` | Local index selection: default library or the separate Waymo library. |
+| `timeout` | integer >0 | — | `1800` | Retrieval process timeout in seconds. |
+| `mock_video_path` | string \| null | — | null | Mock-only video path; it does not provide a real indexed scene. |
 
 ### 输出
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `video_path` | string | ✅ | — | Absolute local path of the matched video clip. |
-| `match_score` | number | ✅ | — | Local retrieval similarity score. |
-| `mode` | string | ✅ | — | Local retrieval mode. |
-| `source_file` | string \| null | — | null | Original indexed camera video; video_path is the exported search clip. |
-| `source_segment` | object \| null | — | null | Matched index segment in seconds relative to source_file; not necessarily the exported clip bounds. |
-| `scene_ref` | SceneReference \| null | — | null | Required in real mode: complete scene identity, matched camera, all camera image availability, synchronized frame metadata, annotations and Gaussian asset paths. manifest_path stores ordered images/timestamps/calibrations. Real mode raises an error when scene binding is unavailable; mock may return null. Use this scene reference for dataset editing; camera videos and metadata describe the full source scene. |
+| `video_path` | string | ✅ | — | Exported search clip path. |
+| `match_score` | number | ✅ | — | Retrieval similarity score, not scenario-validation confidence. |
+| `mode` | string | ✅ | — | Retrieval execution mode. |
+| `source_file` | string \| null | — | null | Original indexed camera video. |
+| `source_segment` | object \| null | — | null | Index-match start/end in source-video seconds; not exported clip bounds. |
+| `scene_ref` | SceneReference \| null | — | null | Full source-scene identity, camera/image availability and annotation/Gaussian paths. Required by real retrieval; mock may return null. manifest_path locates ordered images, timestamps and calibrations. |
 
 **`SceneReference` 对象字段：**
 
@@ -113,16 +137,25 @@ Retrieve a dataset camera video and its bound multi-camera scene from the existi
 
 ## tool05_attack_vehicle_editor: `attack_vehicle_editor`
 
-Edit one attack vehicle using existing scene annotations and Gaussian assets; the stage owns candidate generation, checks, submission and frozen-scene export.
+Edit one attack vehicle and export the accepted frozen scene.
 
-**何时使用**：Use after tool04. Pass scene_ref unchanged and one selected tool02 candidate.edit_strategy as instruction. edit_existing uses an evidenced track ID when supplied; otherwise its backend selects the target from annotations before editing; add_vehicle requires an explicit asset, size and stationary/left_cut_in maneuver. Never guess target IDs or asset paths. A separate operation is needed for unsupported manoeuvres. Backend configuration is required; on editing_backend_not_configured stop rather than retrying or claiming a new scene. Output is an accepted frozen scene, not merely a proposed plan. Any simulation_input may be passed to tool13 together with its required model arguments; null means scene conversion remains unavailable.
+**何时使用**：Apply a vehicle-edit strategy to a retrieved scene.
+
+**上下游衔接**
+- input: scene_ref: retrieval result_ref or unchanged scene_ref. instruction: selected tool02 candidate.edit_strategy.
+- output: Pass this call result_ref to ego_trajectory_editor.attack_result. Non-null simulation_input can supply native scene/asset paths to policy_runner.
+
+**工具规则**
+- For edit_existing, supply an evidenced target_track or let the backend select it from annotations. For add_vehicle, provide the asset, dimensions and supported maneuver required by input_schema.
+- On editing_backend_not_configured, stop: the stage has no configured algorithm backend.
+- A frozen scene without simulation_input is not an executable WorldEngine package.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `scene_ref` | SceneReference | ✅ | — | Pass tool04.result.scene_ref, retaining its dataset identity, metadata and asset paths. |
-| `instruction` | string | ✅ | — | Selected tool02 candidate.edit_strategy or an explicit user edit request. |
+| `scene_ref` | SceneReference \| string | ✅ | — | Full source-scene reference or saved retrieval-result JSON path. |
+| `instruction` | string | ✅ | — | Qualitative vehicle-edit request for the selected source scene. |
 | `operation` | enum["edit_existing", "add_vehicle"] | ✅ | — | Operation |
 | `target_track` | string \| null | — | null | Optional existing-vehicle track ID from annotations. If absent, the backend must select an evidenced track from scene annotations before editing; never guess a role ID or frame number. |
 | `maneuver` | enum["stationary", "left_cut_in"] \| null | — | null | Required for add_vehicle; the documented new-vehicle constructors have different internal signatures. |
@@ -232,16 +265,25 @@ Edit one attack vehicle using existing scene annotations and Gaussian assets; th
 
 ## tool06_ego_trajectory_editor: `ego_trajectory_editor`
 
-Generate and select a correct ego reference trajectory for the frozen attack scene; internally run conflict understanding, constructors, optional FOCI, inspection and repair.
+Generate a correct ego expert trajectory for the frozen attack scene.
 
-**何时使用**：Use after attack_vehicle_editor. Pass its successful result/envelope under attack_result and the one global tool02.target_effect. Preserve the frozen scene and attack vehicle. Output is an expert reference CSV, not evidence that VADv2 drove safely. A null ilft_training_data means expert-label export is still unavailable: do not pass CSV as tool15.ann_file. RLFT still requires tool13 dense candidate rewards. Only rendered_videos contains edited renders; original scene cameras are not edited videos. Backend configuration is required; stop on editing_backend_not_configured.
+**何时使用**：Create the expert reference after attack editing.
+
+**上下游衔接**
+- input: attack_result: successful attack editor result_ref, result or envelope. target_effect: the one global scene_instance_generator.target_effect.
+- output: Use rendered_videos for scene_validator; non-null simulation_input for policy_runner; non-null ilft_training_data for policy_trainer ILFT.
+
+**工具规则**
+- Preserve the frozen attack scene and its target vehicle.
+- An expert trajectory is a reference, not a policy closed-loop success. Its CSV is not ann_file training data; use the explicit converted handoff blocks.
+- On editing_backend_not_configured, stop.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `attack_result` | AttackOutput | ✅ | — | Pass the preceding attack_vehicle_editor.result or its successful full envelope. Frozen scene and target identity are retained. |
-| `target_effect` | string | ✅ | — | Pass tool02.result.target_effect, the one global correct ego behaviour. |
+| `attack_result` | AttackOutput \| string | ✅ | — | Full attack result, successful envelope or saved attack-result JSON path. |
+| `target_effect` | string | ✅ | — | One correct ego behavior for the target scene. |
 | `allow_safe_stop` | boolean | — | `true` | Allow Safe Stop |
 | `use_foci` | boolean | — | `true` | Use Foci |
 | `timeout` | integer >0 | — | `3600` | Timeout |
@@ -323,25 +365,33 @@ Generate and select a correct ego reference trajectory for the frozen attack sce
 
 ## tool10_scene_validator: `scene_validator`
 
-Evaluate whether an edited scene satisfies requirements and remains physically and logically reasonable.
+Check edited-render requirement consistency and visible geometry, motion and traffic plausibility.
 
-**何时使用**：Use after editing before simulation. Run visual validation on at least 8 uniformly spaced frames and treat bad grounding, off-road placement, or fragmented vehicle geometry as edit failure even if artifact files exist.
+**何时使用**：Check a new or revised edited render.
+
+**上下游衔接**
+- input: Use an actual path from editing result.rendered_videos and the original scene_requirement; original recordings are not edited renders.
+- output: Continue only when result.passed=true. Otherwise use issues and frame evidence to revise the affected retrieval/editing stage.
+
+**工具规则**
+- The configured VLM evaluates sampled frames unless an explicit local evaluation is supplied. File existence alone does not validate the scene.
+- Visual plausibility does not establish policy behavior, exact metric distances or dynamics guarantees.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `rendered_video` | string | ✅ | — | Rendered video from the previous edit step. |
-| `scene_requirement` | string \| object | ✅ | — | Original requirement generated before editing. |
-| `frame_count` | integer >=8 | — | `8` | Optional uniformly sampled frame count for the visual model; defaults to 8. |
-| `frame_paths` | array<string> \| null | — | null | Optional locally extracted keyframe paths. |
-| `edited_scene` | object \| null | — | null | Optional scene metadata with scene_config and scene_ply. |
-| `visual_evaluation` | VisualEvaluation \| null | — | null | Optional result from a local visual evaluator. |
-| `local_evaluator` | string \| array<string> \| null | — | null | Local Evaluator |
-| `scene_config` | string \| null | — | null | Scene Config |
-| `scene_ply` | string \| null | — | null | Scene Ply |
-| `ignored_reconstruction_artifacts` | array<string> | — | — | Ignored Reconstruction Artifacts |
-| `mock_force_fail` | boolean | — | `false` | Mock Force Fail |
+| `rendered_video` | string | ✅ | — | Actual edited-render video to inspect. |
+| `scene_requirement` | string \| object | ✅ | — | Original target-scene requirement. |
+| `frame_count` | integer >=8 | — | `8` | Uniformly sampled frames for VLM review; at least eight. |
+| `frame_paths` | array<string> \| null | — | null | Optional already extracted keyframes of this same edited render. |
+| `edited_scene` | object \| null | — | null | Optional editing-result metadata; does not replace the rendered video. |
+| `visual_evaluation` | VisualEvaluation \| null | — | null | Optional result from an actual external visual evaluator; otherwise use the configured VLM. |
+| `local_evaluator` | string \| array<string> \| null | — | null | Optional local evaluator command; receives scene/video context and returns JSON. |
+| `scene_config` | string \| null | — | null | Optional scene configuration file to check for existence and valid JSON. |
+| `scene_ply` | string \| null | — | null | Optional scene PLY artifact to check for existence. |
+| `ignored_reconstruction_artifacts` | array<string> | — | — | Known source-render defects excluded from edit-quality issues unless they hide the target. |
+| `mock_force_fail` | boolean | — | `false` | Mock-only forced validation failure. |
 
 **`VisualEvaluation` 对象字段：**
 
@@ -363,126 +413,151 @@ Evaluate whether an edited scene satisfies requirements and remains physically a
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `passed` | boolean | ✅ | — | Passed |
-| `requirement_consistency` | boolean | ✅ | — | Requirement Consistency |
-| `geometry_valid` | boolean | ✅ | — | Geometry Valid |
-| `physics_valid` | boolean | ✅ | — | Physics Valid |
-| `traffic_logic_valid` | boolean | ✅ | — | Traffic Logic Valid |
-| `visual_valid` | boolean | ✅ | — | Visual Valid |
-| `issues` | array<string> | ✅ | — | Issues |
+| `passed` | boolean | ✅ | — | True only when all five checks pass and issues is empty. |
+| `requirement_consistency` | boolean | ✅ | — | Rendered scene matches the requested scenario. |
+| `geometry_valid` | boolean | ✅ | — | Visible vehicle placement, scale and road contact are plausible. |
+| `physics_valid` | boolean | ✅ | — | Visible motion is plausible; not a dynamics guarantee. |
+| `traffic_logic_valid` | boolean | ✅ | — | Visible participant interaction is plausible. |
+| `visual_valid` | boolean | ✅ | — | Target is recognizable and visually continuous without edit-induced damage. |
+| `issues` | array<string> | ✅ | — | Actionable failed checks and their evidence. |
 
 
 ## tool13_policy_runner: `policy_runner`
 
-Run a driving policy in WorldEngine closed loop for evaluation or IL/RL data collection.
+Run a policy in WorldEngine closed loop for evaluation or post-training data collection.
 
-**何时使用**：Use after scene validation succeeds to load the scenario, start SimEngine and run the policy.
+**何时使用**：Evaluate prepared scenes or collect post-training rollouts.
+
+**上下游衔接**
+- input: Use existing model config/checkpoint paths and native scene/asset paths. Merge an editor simulation_input only when it is non-null.
+- output: result_dir feeds failure_case_filter. rollout_dir and native dense rewards feed policy_trainer RLFT.
+
+**工具规则**
+- Validate new edited renders before policy evaluation; prepared native dataset scenes can run directly.
+- For RLFT data collection enable with_dense_reward_manager; ordinary evaluation does not imply candidate rewards are present.
+- Match history/future frame counts to the native scenario. Do not pad missing observations.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `config_path` | string | ✅ | — | Absolute existing AlgEngine config. Standard: <WORLDENGINE_ROOT>/projects/AlgEngine/configs/worldengine/e2e_vadv2_50pct.py. |
-| `checkpoint_path` | string | ✅ | — | Absolute existing policy checkpoint. Standard: <WORLDENGINE_ROOT>/data/alg_engine/ckpts/e2e_vadv2_50pct_ep8.pth. |
-| `model_name` | string | ✅ | — | Experiment model name. |
-| `data_type` | string | ✅ | — | WorldEngine scenario data type. |
-| `react_type` | enum["R", "NR"] | — | `"NR"` | R or NR. |
-| `asset_name` | string \| null | — | null | Optional renderer asset name. |
-| `added_name` | string | — | `"mcp"` | Optional output suffix. |
-| `num_scenarios` | integer >0 \| null | — | null | Optional positive scenario count. |
-| `scenario_data_folder_path` | string \| null | — | null | Optional scenario directory; supports prepared dataset scenarios. |
-| `asset_folder_path` | string \| null | — | null | Optional scenario asset directory. |
-| `scenario_pkl_file_name` | string \| null | — | null | Optional scenario pickle filename. |
-| `num_history` | integer >0 | — | `4` | Optional history frame count. |
-| `num_future` | integer >0 \| null | — | null | Optional future frame count. |
-| `max_frame_per_scene` | integer >=5 | — | `40` | Positive frame budget (at least 5), default 40. num_history + num_future must equal this budget; future is derived when omitted. Never pad observations. |
-| `sampling_poses` | integer >0 | — | `8` | Optional native rollout timing override in 0.5-second units. |
-| `with_dense_reward_manager` | boolean | — | `false` | Set true to collect native 8192-candidate rewards for RL; false preserves ordinary IL/evaluation collection. |
-| `ego_policy` | string \| null | — | null | Ego Policy |
-| `ego_controller` | string \| null | — | null | Ego Controller |
-| `ego_client` | string \| null | — | null | Ego Client |
-| `ego_navigation` | string \| null | — | null | Ego Navigation |
-| `agent_policy` | string \| null | — | null | Agent Policy |
-| `agent_navigation` | string \| null | — | null | Agent Navigation |
-| `agent_client` | string \| null | — | null | Agent Client |
-| `timeout` | integer >0 | — | `86400` | Timeout |
+| `config_path` | string | ✅ | — | Existing AlgEngine model configuration path. |
+| `checkpoint_path` | string | ✅ | — | Existing driving-policy checkpoint path. |
+| `model_name` | string | ✅ | — | Experiment label for this policy. |
+| `data_type` | string | ✅ | — | Native WorldEngine scenario data type. |
+| `react_type` | enum["R", "NR"] | — | `"NR"` | Reactive R or nonreactive NR background traffic. |
+| `asset_name` | string \| null | — | null | Optional native renderer asset group. |
+| `added_name` | string | — | `"mcp"` | Run-name suffix. |
+| `num_scenarios` | integer >0 \| null | — | null | Optional maximum number of scenarios to execute. |
+| `scenario_data_folder_path` | string \| null | — | null | Prepared native scenario directory; may come from editor simulation_input. |
+| `asset_folder_path` | string \| null | — | null | Prepared native Gaussian/renderer asset directory. |
+| `scenario_pkl_file_name` | string \| null | — | null | Scenario pickle name within scenario_data_folder_path. |
+| `num_history` | integer >0 | — | `4` | Input history frame count. |
+| `num_future` | integer >0 \| null | — | null | Future frame count; derived from the total budget when omitted. |
+| `max_frame_per_scene` | integer >=5 | — | `40` | Total frame budget; num_history + num_future must equal this value. |
+| `sampling_poses` | integer >0 | — | `8` | Native rollout timing override in 0.5-second units. |
+| `with_dense_reward_manager` | boolean | — | `false` | Collect native 8192-candidate PDM rewards for subsequent RLFT. |
+| `ego_policy` | string \| null | — | null | Optional native ego policy override. |
+| `ego_controller` | string \| null | — | null | Optional native ego controller override. |
+| `ego_client` | string \| null | — | null | Optional native planner-client override. |
+| `ego_navigation` | string \| null | — | null | Optional native ego navigation override. |
+| `agent_policy` | string \| null | — | null | Optional native background-agent policy override. |
+| `agent_navigation` | string \| null | — | null | Optional native background-agent navigation override. |
+| `agent_client` | string \| null | — | null | Optional native background-agent client override. |
+| `timeout` | integer >0 | — | `86400` | Simulation process timeout in seconds. |
 
 ### 输出
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `result_dir` | string | ✅ | — | WorldEngine closed-loop output directory. |
-| `reports` | array | ✅ | — | Native runner reports. |
-| `policy_result` | string | ✅ | — | Policy Result |
-| `rollout_dir` | string \| null | — | null | WE openscene_format directory; pass as training_data.rollout_dir to RL training. |
-| `reward_dir` | string \| null | — | null | Candidate rewards and actual plan_idx.csv when dense rewards were requested. |
-| `candidate_rewards_present` | boolean | — | `false` | Candidate Rewards Present |
+| `result_dir` | string | ✅ | — | Closed-loop output directory containing official evaluation artifacts. |
+| `reports` | array | ✅ | — | Native execution reports. |
+| `policy_result` | string | ✅ | — | Policy-run result identifier or path. |
+| `rollout_dir` | string \| null | — | null | WorldEngine openscene_format directory for rollout-based training. |
+| `reward_dir` | string \| null | — | null | Dense candidate-reward directory including actual plan_idx.csv when collected. |
+| `candidate_rewards_present` | boolean | — | `false` | Whether candidate rewards were exported by this run. |
 
 
 ## tool14_failure_case_filter: `failure_case_filter`
 
-Select failure scenes exclusively using saved official closed-loop PDM total scores.
+Select zero-score failure scenes from official closed-loop PDM results.
 
-**何时使用**：Use after policy_runner. Official PDM CSV and matching execution metadata are required. score == 0 selects failures. Missing scores raise an error.
+**何时使用**：Filter a completed run's official PDM results.
+
+**上下游衔接**
+- input: Use policy_runner.result_dir and the scenario_pkl corresponding to that execution; scene_token optionally selects one scene.
+- output: failure_cases contains selected scene identities and PDM scores; pass their tokens to failure_analyzer when analysis is needed.
+
+**工具规则**
+- Only official PDM total score == 0 selects a failure. Missing scores or ambiguous scene matches are errors; do not substitute geometry checks.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `scenario_pkl` | string | ✅ | — | WorldEngine custom scenario pickle containing ego and dynamic-object tracks.（别名：`scenario_path`） |
-| `result_dir` | string | ✅ | — | Required policy_runner result directory containing official PDM scores. Scene identities must match executed metadata; missing or ambiguous matches fail explicitly. |
-| `scene_token` | string \| null | — | null | Optional full scene ID or unambiguous 16-character suffix to evaluate only one scene. |
-| `timeout` | integer >0 | — | `120` | Timeout |
-| `python` | string \| null | — | null | Python |
+| `scenario_pkl` | string | ✅ | — | Scenario pickle whose identities correspond to the evaluated run.（别名：`scenario_path`） |
+| `result_dir` | string | ✅ | — | policy_runner output containing official PDM CSV and execution metadata. |
+| `scene_token` | string \| null | — | null | Optional full scene identity or unambiguous 16-character suffix. |
+| `timeout` | integer >0 | — | `120` | Score-reading process timeout in seconds. |
+| `python` | string \| null | — | null | Optional interpreter for reading native scenario metadata. |
 
 ### 输出
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `is_failure_case` | boolean | ✅ | — | Whether any selected scene has official PDM total score == 0. |
-| `failure_cases` | array<object> | ✅ | — | Selected zero-score scenes with scene_id, scenario_pkl and pdm_score. |
-| `pdm_scores_file` | string | ✅ | — | Pdm Scores File |
-| `scene_count` | integer >0 | — | `1` | Scene Count |
-| `scene_results` | array<object> | — | — | Scene Results |
+| `is_failure_case` | boolean | ✅ | — | Whether any selected scene has official PDM total score zero. |
+| `failure_cases` | array<object> | ✅ | — | Zero-PDM scene identities, scenario paths and scores. |
+| `pdm_scores_file` | string | ✅ | — | Official PDM CSV actually read. |
+| `scene_count` | integer >0 | — | `1` | Number of matched evaluated scenes. |
+| `scene_results` | array<object> | — | — | Per-scene official score and failure selection. |
 
 
 ## tool15_policy_trainer: `policy_trainer`
 
-Fine-tune the driving policy with imitation learning (ilft) or reinforcement learning (rlft).
+Post-train a driving policy using imitation learning (ilft) or reinforcement learning (rlft).
 
-**何时使用**：Use ilft for trajectory annotations. Use rlft only after WorldEngine exports complete rollout images, metadata and 8192-candidate PDM rewards. Scene packages and videos alone are not RL training data. Evaluate the new checkpoint independently before accepting it.
+**何时使用**：Train when the requested mode's converted data is ready.
+
+**上下游衔接**
+- input: ILFT: training_data.ann_file and token_file. RLFT: policy_runner rollout_dir, matching token_file and the vocabulary used for its candidate rewards.
+- output: Use the returned checkpoint in a subsequent policy_runner call to measure post-training performance.
+
+**工具规则**
+- RLFT requires rollout images/metadata, native 8192-candidate PDM rewards and plan_idx.csv. It keeps zero-PDM failure scenes and all their valid frames.
+- Videos, frozen metadata or an expert CSV alone are not training_data. Do not silently switch RLFT to ILFT.
+- A saved checkpoint and training_audit establish execution; improvement requires a separate evaluation.
 
 ### 输入
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `training_mode` | enum["ilft", "rlft"] | — | `"ilft"` | ilft (default) or rlft. Missing RL inputs cause an error; never silently fall back to IL. |
-| `training_data` | TrainingData | ✅ | — | ilft: {ann_file, token_file}. rlft: {rollout_dir, token_file, vocab_path}. rollout_dir is the WE openscene_format directory with meta_datas/, sensor_blobs/, pdms_pkl/ including plan_idx.csv, plus all_scenes_pdm_averages_*.csv from the closed-loop run. Only scenes whose closed-loop PDM total score is 0 are kept as failure cases; all their valid frames are used for training. vocab_path is the (8192,40,3) vocabulary used to compute those rewards. |
-| `base_checkpoint` | string | ✅ | — | Existing policy checkpoint. Record the architecture/config when comparing checkpoints.（别名：`checkpoint_path`） |
-| `config_path` | string \| null | — | null | Optional mode-appropriate AlgEngine config; defaults to existing IL config or native RL rollout config. |
-| `epochs` | integer >0 | — | `1` | Positive epoch count, default 1.（别名：`total_epochs`） |
-| `worldengine_root` | string \| null | — | null | Optional WorldEngine code root. |
-| `python` | string \| null | — | null | Optional AlgEngine interpreter. |
-| `work_dir` | string \| null | — | null | Optional export parent; execution always uses an isolated runtime directory. |
-| `timeout` | integer >0 | — | `86400` | Positive per-process timeout in seconds. |
-| `seed` | integer >=0 | — | `0` | Nonnegative random seed, default 0. |
+| `training_mode` | enum["ilft", "rlft"] | — | `"ilft"` | Post-training objective; required data depends on this mode. |
+| `training_data` | TrainingData | ✅ | — | Converted ILFT annotations or complete RLFT rollout data, as specified by TrainingData. |
+| `base_checkpoint` | string | ✅ | — | Existing policy checkpoint to update.（别名：`checkpoint_path`） |
+| `config_path` | string \| null | — | null | Optional mode-appropriate native model/training configuration. |
+| `epochs` | integer >0 | — | `1` | Number of training epochs.（别名：`total_epochs`） |
+| `worldengine_root` | string \| null | — | null | Optional WorldEngine source root. |
+| `python` | string \| null | — | null | Optional AlgEngine training interpreter. |
+| `work_dir` | string \| null | — | null | Optional export parent; execution uses an isolated runtime task. |
+| `timeout` | integer >0 | — | `86400` | Training process timeout in seconds. |
+| `seed` | integer >=0 | — | `0` | Random seed for this training run. |
 
 **`TrainingData` 对象字段：**
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `ann_file` | string \| null | — | null |  |
-| `token_file` | string | ✅ | — | （别名：`nav_filter_path`） |
-| `rollout_dir` | string \| null | — | null |  |
-| `vocab_path` | string \| null | — | null |  |
+| `ann_file` | string \| null | — | null | ILFT converted annotation file; expert trajectory CSV alone is not this file. |
+| `token_file` | string | ✅ | — | Token-selection file matching the training scenes.（别名：`nav_filter_path`） |
+| `rollout_dir` | string \| null | — | null | RLFT openscene_format directory with meta_datas/, sensor_blobs/, pdms_pkl/, plan_idx.csv and official all_scenes_pdm_averages_*.csv. |
+| `vocab_path` | string \| null | — | null | RLFT (8192,40,3) trajectory vocabulary used to generate the supplied candidate rewards. |
 
 ### 输出
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `checkpoint` | string | ✅ | — | Checkpoint saved by real training. |
-| `training_mode` | enum["ilft", "rlft"] | ✅ | — | The actual mode used. |
-| `log_path` | string | ✅ | — | Training log. |
-| `training_audit` | object \| null | — | null | Mode-specific losses, finite-value check and actual parameter updates. |
-| `data_preparation` | object \| null | — | null | Training inputs and rollout preparation summary. |
+| `checkpoint` | string | ✅ | — | Checkpoint produced by training. |
+| `training_mode` | enum["ilft", "rlft"] | ✅ | — | Actual executed mode. |
+| `log_path` | string | ✅ | — | Training log path. |
+| `training_audit` | object \| null | — | null | Recorded losses, finite-value checks and parameter-update audit. |
+| `data_preparation` | object \| null | — | null | Mode-specific training input preparation summary. |
 

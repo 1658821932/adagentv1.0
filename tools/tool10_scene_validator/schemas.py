@@ -21,17 +21,17 @@ class VisualEvaluation(OutputModel):
 
 
 class Input(InputModel):
-    rendered_video: NonEmptyStr
-    scene_requirement: NonEmptyStr | dict[str, Any]
-    frame_count: Annotated[int, Field(ge=8)] = 8
-    frame_paths: list[NonEmptyStr] | None = None
-    edited_scene: dict[str, Any] | None = None
-    visual_evaluation: VisualEvaluation | None = None
-    local_evaluator: NonEmptyStr | list[NonEmptyStr] | None = None
-    scene_config: NonEmptyStr | None = None
-    scene_ply: NonEmptyStr | None = None
-    ignored_reconstruction_artifacts: list[NonEmptyStr] = Field(default_factory=list)
-    mock_force_fail: bool = False
+    rendered_video: NonEmptyStr = Field(description='Actual edited-render video to inspect.')
+    scene_requirement: NonEmptyStr | dict[str, Any] = Field(description='Original target-scene requirement.')
+    frame_count: Annotated[int, Field(ge=8)] = Field(default=8, description='Uniformly sampled frames for VLM review; at least eight.')
+    frame_paths: list[NonEmptyStr] | None = Field(default=None, description='Optional already extracted keyframes of this same edited render.')
+    edited_scene: dict[str, Any] | None = Field(default=None, description='Optional editing-result metadata; does not replace the rendered video.')
+    visual_evaluation: VisualEvaluation | None = Field(default=None, description='Optional result from an actual external visual evaluator; otherwise use the configured VLM.')
+    local_evaluator: NonEmptyStr | list[NonEmptyStr] | None = Field(default=None, description='Optional local evaluator command; receives scene/video context and returns JSON.')
+    scene_config: NonEmptyStr | None = Field(default=None, description='Optional scene configuration file to check for existence and valid JSON.')
+    scene_ply: NonEmptyStr | None = Field(default=None, description='Optional scene PLY artifact to check for existence.')
+    ignored_reconstruction_artifacts: list[NonEmptyStr] = Field(default_factory=list, description='Known source-render defects excluded from edit-quality issues unless they hide the target.')
+    mock_force_fail: bool = Field(default=False, description='Mock-only forced validation failure.')
 
     @model_validator(mode="before")
     @classmethod
@@ -49,10 +49,10 @@ class Input(InputModel):
         return data
 
 class Output(OutputModel):
-    passed: bool
-    requirement_consistency: bool
-    geometry_valid: bool
-    physics_valid: bool
-    traffic_logic_valid: bool
-    visual_valid: bool
-    issues: list[str]
+    passed: bool = Field(description='True only when all five checks pass and issues is empty.')
+    requirement_consistency: bool = Field(description='Rendered scene matches the requested scenario.')
+    geometry_valid: bool = Field(description='Visible vehicle placement, scale and road contact are plausible.')
+    physics_valid: bool = Field(description='Visible motion is plausible; not a dynamics guarantee.')
+    traffic_logic_valid: bool = Field(description='Visible participant interaction is plausible.')
+    visual_valid: bool = Field(description='Target is recognizable and visually continuous without edit-induced damage.')
+    issues: list[str] = Field(description='Actionable failed checks and their evidence.')

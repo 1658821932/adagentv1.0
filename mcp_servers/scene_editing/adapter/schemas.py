@@ -1,8 +1,9 @@
 """Public editing_stage.v1 contracts, based on the editing module report."""
 from typing import Any, Annotated, Literal
 from pydantic import Field, model_validator
-from tools.contracts import InputModel, OutputModel, NonEmptyStr
-from mcp_servers.scene_refs import SceneReference
+from common.models import InputModel, OutputModel, NonEmptyStr
+from common.scene_refs import SceneReference
+from common.artifacts import load_tool_result
 
 PositiveInt = Annotated[int, Field(gt=0)]
 CheckState = Literal["passed", "failed", "not_checked"]
@@ -22,14 +23,25 @@ class AttackConstraints(InputModel):
         return self
 
 class AttackInput(InputModel):
-    scene_ref: SceneReference = Field(description="Pass tool04.result.scene_ref, retaining its dataset identity, metadata and asset paths.")
-    instruction: NonEmptyStr = Field(description="Selected tool02 candidate.edit_strategy or an explicit user edit request.")
+    scene_ref: SceneReference | NonEmptyStr = Field(description="Full source-scene reference or saved retrieval-result JSON path.")
+    instruction: NonEmptyStr = Field(description="Qualitative vehicle-edit request for the selected source scene.")
     operation: Literal["edit_existing", "add_vehicle"]
     target_track: NonEmptyStr | None = Field(default=None, description="Optional existing-vehicle track ID from annotations. If absent, the backend must select an evidenced track from scene annotations before editing; never guess a role ID or frame number.")
     maneuver: Literal["stationary", "left_cut_in"] | None = Field(default=None, description="Required for add_vehicle; the documented new-vehicle constructors have different internal signatures.")
     vehicle: VehicleAsset | None = None
     constraints: AttackConstraints = Field(default_factory=AttackConstraints)
     timeout: PositiveInt = 3600
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_scene_reference(cls, value):
+        if isinstance(value, dict) and isinstance(value.get("scene_ref"), str):
+            value = dict(value)
+            result = load_tool_result(value["scene_ref"], "video_retriever")
+            if not isinstance(result.get("scene_ref"), dict):
+                raise ValueError("Referenced video_retriever result has no scene_ref object")
+            value["scene_ref"] = result["scene_ref"]
+        return value
 
     @model_validator(mode="after")
     def operation_arguments(self):
@@ -83,8 +95,8 @@ class AttackOutput(OutputModel):
     rendered_videos: dict[str, NonEmptyStr] = Field(default_factory=dict, description="Camera name to edited render path; empty until rendered. Original recordings must not be relabelled as edited renders.")
 
 class EgoInput(InputModel):
-    attack_result: AttackOutput = Field(description="Pass the preceding attack_vehicle_editor.result or its successful full envelope. Frozen scene and target identity are retained.")
-    target_effect: NonEmptyStr = Field(description="Pass tool02.result.target_effect, the one global correct ego behaviour.")
+    attack_result: AttackOutput | NonEmptyStr = Field(description="Full attack result, successful envelope or saved attack-result JSON path.")
+    target_effect: NonEmptyStr = Field(description="One correct ego behavior for the target scene.")
     allow_safe_stop: bool = True
     use_foci: bool = True
     timeout: PositiveInt = 3600
@@ -95,6 +107,9 @@ class EgoInput(InputModel):
         if isinstance(value, dict):
             value = dict(value)
             attack = value.get("attack_result")
+            if isinstance(attack, str):
+                attack = load_tool_result(attack, "attack_vehicle_editor")
+                value["attack_result"] = attack
             if isinstance(attack, dict) and "tool" in attack:
                 if attack.get("tool") != "attack_vehicle_editor" or attack.get("status") != "success":
                     raise ValueError("attack_result must be a successful attack_vehicle_editor result")

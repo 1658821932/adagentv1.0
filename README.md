@@ -10,7 +10,7 @@
 
 ## 运行环境
 
-从项目根目录创建 Agent 环境（Python 3.10+）：
+从项目根目录创建 Agent 环境（Python 3.10+，需安装对应版本的 venv 支持）：
 
 ```bash
 python3 -m venv environments/agent/.venv
@@ -59,7 +59,9 @@ tool04 real 要求索引源视频带有效 `.scene.json`。结果包含 `scene_r
 ## 验证与测试
 
 ```bash
-environments/video_retriever/.venv/bin/python -m pytest -q
+python3 -m venv environments/test/.venv
+environments/test/.venv/bin/python -m pip install -r requirements-test.txt
+environments/test/.venv/bin/python -m pytest -q
 environments/agent/.venv/bin/python -m tools.scripts.smoke_llm_tools --mode mock
 ```
 
@@ -73,9 +75,9 @@ Agent 记录保存在 `logs/`；服务产物保存在 `mcp_servers/<service>/run
 - [Agent 核心与运行记录](docs/AGENT_FILES.md)
 - [工具说明](docs/TOOLS.md)与[自动生成接口](docs/INTERFACES.md)
 - [后端组件](docs/MCP_SERVERS.md)与[执行契约](docs/EXECUTION_CONTRACTS.md)
-- [LLM 工具规范](docs/LLM_TOOLS.md)
+- [提示词分层](docs/PROMPTS.md)与[LLM 工具规范](docs/LLM_TOOLS.md)
 - [IL/RL 训练](docs/policy_training.md)
 
 ## 许可
 
-自有代码及内置第三方代码遵循各自许可证与声明，第三方项目许可见对应 core 目录。
+自有代码使用 [Apache 2.0](LICENSE)，声明见 [NOTICE](NOTICE)。内置第三方代码保留各自许可证与声明，见对应 core 目录。

@@ -101,7 +101,7 @@ class QwenAPIEmbedder(BaseEmbedder):
         dimensions: int | None = None,
         fps: float | None = None,
     ):
-        from api_config import get_profile
+        from ...api_settings import get_profile
         profile = get_profile("retrieval", require_key=True)
         api_key = profile["api_key"]
         if not api_key:

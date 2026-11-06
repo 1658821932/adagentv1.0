@@ -11,7 +11,9 @@ def model_environment(monkeypatch):
         monkeypatch.delenv(key,raising=False)
     monkeypatch.setenv('OPENAI_API_KEY','test-kimi-key')
     monkeypatch.setenv('DASHSCOPE_API_KEY','test-retrieval-key')
-    with patch('dotenv.load_dotenv'):
+    import api_config
+    from mcp_servers.sentry_video_search.core.api_settings import bind_profiles
+    with patch('dotenv.load_dotenv'), bind_profiles(api_config.get_profile):
         yield
 
 @pytest.mark.parametrize('kind',['search_plan','precheck','first_person'])
@@ -36,6 +38,15 @@ def test_auxiliary_video_reasoning_uses_kimi_credentials(kind,model_environment,
     assert received[0]['payload']['model']=='kimi-k3'
     assert received[0]['api_key']=='test-kimi-key'
     assert received[0]['base_url']=='https://apicz.boyuerichdata.com/v1'
+    messages=received[0]["payload"]["messages"]
+    assert [m["role"] for m in messages]==["system","user"]
+    prompts=Path("mcp_servers/sentry_video_search/core/prompts")
+    filename={"search_plan":"search_plan.md","precheck":"preview_review.md","first_person":"first_person.md"}[kind]
+    assert messages[0]["content"]==(prompts/filename).read_text().strip()
+    if kind=="precheck":
+        context=json.loads(messages[1]["content"][0]["text"])
+        assert context["requirement"]=="road"
+        assert "accepted" not in context
 
 
 def test_reasoning_cannot_borrow_retrieval_key(monkeypatch):
@@ -102,3 +113,17 @@ def test_rerank_request_reads_root_profile(model_environment,root_profile_overri
     assert post.call_args.args[0]=='https://rerank.invalid/api'
     assert post.call_args.kwargs['json']['model']=='root-rerank'
     assert post.call_args.kwargs['headers']['Authorization']=='Bearer root-retrieval-key'
+
+
+
+def test_adapter_injects_host_config_without_native_implicit_import(root_profile_override,tmp_path,monkeypatch):
+    from mcp_servers.sentry_video_search.adapter import service
+    from mcp_servers.sentry_video_search.core import service as native
+    from mcp_servers.sentry_video_search.core.api_settings import get_profile
+    monkeypatch.setenv("ADAGENT_RUNTIME_ROOT",str(tmp_path/"runtime"))
+    def index(*args,**kwargs):
+        assert get_profile()["model"]=="root-test-model"
+        return {"status":"indexed"}
+    with patch("dotenv.load_dotenv"),patch.object(native,"index_local",side_effect=index):
+        assert service.index_local("/unused")["status"] == "indexed"
+    assert get_profile()["model"] != "root-test-model"

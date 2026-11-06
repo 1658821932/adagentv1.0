@@ -1,0 +1,7 @@
+AdAgent
+Copyright 2026 AdAgent contributors.
+
+AdAgent-owned code is licensed under Apache License 2.0 (see LICENSE).
+Vendored components retain their upstream notices and licenses; see the
+LICENSE, NOTICE and README files under each component's core/ directory.
+WorldEngine is included under mcp_servers/worldengine/core/.

@@ -57,6 +57,7 @@ def summarize(directory,rows):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['scene','batch','report']);p.add_argument('--config',type=Path,default=PROJECT/'configs/complete.json')
+    p.add_argument('--api-config',type=Path,help='Standalone API profile JSON')
     p.add_argument('--token');p.add_argument('--tokens',nargs='+');p.add_argument('--run-name',default='vlm_behavior_v3')
     p.add_argument('--run-dir',type=Path,help='Explicit existing task output for report/resume; default: a fresh runtime task')
     p.add_argument('--resume',action='store_true');p.add_argument('--attempts',type=int,default=1)
@@ -79,9 +80,8 @@ def main():
         if matches[0] not in selected:selected.append(matches[0])
     if not requested:selected=[r for r in rows if float(r['no_at_fault_collisions'])<1 or float(r['drivable_area_compliance'])<1]
     if any(r['token'] not in cfg['vlm_allowed_tokens'] for r in selected):p.error('Selected token is outside configured external-image authorization')
-    sys.path.insert(0, str(PROJECT.parents[2]))
-    from api_config import wfa_settings
-    secret = wfa_settings()
+    from api_settings import vlm_settings
+    secret = vlm_settings(args.api_config)
     for row in selected:
         out=prepare_attempt(directory,row['token'],args.resume,args.attempts)
         if out is None:continue

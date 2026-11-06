@@ -62,3 +62,26 @@ class SceneValidatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_vlm_template_uses_runtime_schema_and_keeps_context_separate(tmp_path):
+    import json
+    from tools.tool10_scene_validator import real
+    frames=[]
+    for i in range(8):
+        p=tmp_path/f"frame_{i}.jpg";p.write_bytes(b"test-frame");frames.append(str(p))
+    evaluation={name:True for name in ("requirement_consistency","geometry_valid","visual_valid","physics_valid","traffic_logic_valid")}
+    settings=real.VLMSettings(base_url="https://offline.invalid/v1",model="offline",timeout=10,api_key="test-only")
+    response={"choices":[{"message":{"content":json.dumps(evaluation)}}]}
+    with patch.object(real,"vlm_settings",return_value=settings),patch.object(real,"_chat_completion",return_value=response) as chat:
+        result=real._evaluate_visual({"frame_paths":frames,"ignored_reconstruction_artifacts":["known source hole"]},tmp_path/"render.mp4","lead vehicle slows down")
+    content=chat.call_args.args[2]["messages"][0]["content"]
+    prompt=content[0]["text"]
+    assert not any(token in prompt for token in ("{response_schema}","{ignored_artifacts}","{requirement}"))
+    assert "lead vehicle slows down" in prompt and "known source hole" in prompt
+    schema_text=prompt.split("# 输出",1)[1].split("# 最初场景需求",1)[0].split("\n",2)[-1].strip()
+    schema=json.loads(schema_text)
+    assert set(schema["required"])==set(evaluation)
+    assert "model" not in schema["properties"] and "sampled_frames" not in schema["properties"]
+    assert len(content)==9 and result["sampled_frames"]==8

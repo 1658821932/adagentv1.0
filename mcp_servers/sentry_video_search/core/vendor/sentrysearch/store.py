@@ -5,7 +5,6 @@ import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
-import chromadb
 
 
 DEFAULT_DB_PATH = Path.home() / ".sentrysearch" / "db"
@@ -37,6 +36,7 @@ def detect_index(db_path: str | Path | None = None) -> tuple[str | None, str | N
     db_path = str(db_path or DEFAULT_DB_PATH)
     if not Path(db_path).exists():
         return None, None
+    import chromadb
     client = chromadb.PersistentClient(path=db_path)
     existing = {c.name for c in client.list_collections()}
 
@@ -91,6 +91,7 @@ class SentryStore:
                  model: str | None = None):
         db_path = str(db_path or DEFAULT_DB_PATH)
         Path(db_path).mkdir(parents=True, exist_ok=True)
+        import chromadb
         self._client = chromadb.PersistentClient(path=db_path)
         self._backend = backend
         self._model = model

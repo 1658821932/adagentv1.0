@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 from evidence import Evidence,steps
-from vlm_review import run,validate_final
+from vlm_review import run,validate_final,SYSTEM,IMAGE_SYSTEM
 
 
 def final():
@@ -26,9 +26,11 @@ class FakeEvidence:
 
 
 class FakeClient:
-    def __init__(self,early=False):self.early=early;self.agent_requests=[]
+    def __init__(self,early=False):self.early=early;self.agent_requests=[];self.image_requests=[]
     def ask(self,messages,name):
-        if not name.startswith('turn_'):return {'observations':['测试图像观察'],'uncertainties':[]}
+        if not name.startswith('turn_'):
+            self.image_requests.append(messages.copy())
+            return {'observations':['测试图像观察'],'uncertainties':[]}
         self.agent_requests.append(messages.copy());i=int(name.split('_')[-1])
         actions=[{'action':'images','purpose':'查看BEV','requests':[{'camera':'bev','steps':[7]}]},
             {'action':'visual_complete','observations':['测试现象'],'candidates':[{'id':'A','reason':'候选A'},{'id':'B','reason':'候选B'}]},
@@ -44,6 +46,11 @@ class WorkflowTests(unittest.TestCase):
             result=run(client,evidence,{'metrics':{},'source':'official.csv','source_sha256':'hash'},Path(d))
             self.assertEqual(result['failure_reason'],'测试行为原因')
             self.assertEqual([q['kind'] for q in evidence.queries],['ego','actors'])
+            self.assertEqual(client.agent_requests[0][0]["content"],SYSTEM)
+            self.assertEqual(client.image_requests[0][0]["content"],IMAGE_SYSTEM)
+            self.assertNotEqual(SYSTEM,IMAGE_SYSTEM)
+            self.assertNotIn("rules",json.loads(client.agent_requests[0][1]["content"]))
+            self.assertEqual(set(json.loads(client.image_requests[0][1]["content"][0]["text"])),{"purpose"})
             trace=json.loads((Path(d)/'trace.json').read_text())
             self.assertEqual([e['action']['action'] for e in trace],['images','visual_complete','numbers','final'])
 

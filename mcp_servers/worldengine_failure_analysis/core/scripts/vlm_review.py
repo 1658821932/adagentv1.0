@@ -8,26 +8,10 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 from evidence import POSITIONS, save
+from prompt_utils import load_prompt
 
-RULES='''官方指标是正确事实，不重新裁决NC/DAC。目标是驾驶行为原因（如未及时减速、侧向间距不足），不追究模型内部根因。
-每步0.5秒，step3开始控制。先描述现象，提出若干合理候选；按需要继续看相机或BEV，然后主动查询数值比较候选。
-刹车灯不能证明急刹，画面模糊不能证明物理冲击。BEV是256米固定世界视角，640像素为2.5px/m：白自车、橙周车、绿规划、黄历史、蓝路线。
-几何接触对象只是候选，NC不提供对象ID；first_violation_step是NC=0或DAC=0的最早者，双失败不等于同时发生；EP=0不证明静止。
-TTC等字段是评分项，不是原始秒数。DAC与boundary只能核对区域越界，不能单独排除侧车间距不足、墙体接触或侧向空间影响。
-排除一个候选需要直接相关证据；没有支持不等于被否定，间接或不完整证据应标uncertain。几何重叠增大不等于冲击程度增大，不使用“无任何不确定性”的绝对结论。
-候选不一定互斥，可以同时得到支持；区分主要行为原因与促成因素，不为了选一个原因而强行否定其余候选。
-核验必须回答每个候选原先needs_evidence提出的问题。逐项写出判定需要的观测、实际返回的观测、仍缺少的证据。
-rejected必须有直接矛盾观测；没有量到墙体/侧车间距时，DAC=1只能排除越界，侧向空间候选仍是uncertain。EP=0不能解释停止原因。
-运动记录只能说明速度变化，不能写未采取制动指令或未识别目标。几何重叠对象只能称接触候选，不能写官方确认与该对象碰撞。
-前车减速必须查同一track_token的世界速度历史，不能把相对间距变化当前车速度。只引用工具实际返回值，缺失不当成0。
-不能从图片直接猜track_token，先查询actors列表再按位置匹配；匹配不唯一就保留不确定。
-有支持、被否定、证据不足分开。选最有证据的行为原因；无法区分就待确认，不强行挑一个。不要推断未提供的感知错误或执行故障。'''
-
-SYSTEM='''你分析可观察的驾驶行为。所有输出只描述图像、记录与官方指标能证明的事实。
-没有感知输出或控制指令：不能写未识别、感知失败、未采取制动等；写速度是否下降、间距如何变化。
-EP=0不能说明停止或停止原因。NC只能确认官方碰撞评分，几何对象只能称接触候选。
-轴投影重叠不等于间距不足。DAC与道路边界不能否定墙体/侧车空间影响。
-最终原因只写驾驶行为，例如“跟车时未及时减速，持续加速接近低速前车”；不要添加内部原因。'''
+SYSTEM = load_prompt("forensic_analysis.md")
+IMAGE_SYSTEM = load_prompt("image_review.md")
 
 
 class Client:
@@ -70,10 +54,9 @@ class Client:
 def inspect_images(client,evidence,images,purpose,name,workers):
     def group(job):
         i,selected=job
-        prompt={'task':'只观察本组图片，简洁中文JSON：observations、uncertainties。注明相机、step和图片id；最多3条，不给最终原因。',
-                'purpose':purpose,'rules':RULES}
+        prompt={'purpose':purpose}
         content=[{'type':'text','text':json.dumps(prompt,ensure_ascii=False)}]+evidence.content(selected)
-        review=client.ask([{'role':'system','content':SYSTEM},{'role':'user','content':content}],f'{name}_{i:02d}')
+        review=client.ask([{'role':'system','content':IMAGE_SYSTEM},{'role':'user','content':content}],f'{name}_{i:02d}')
         return {'image_ids':[im['id'] for im in selected],'review':review}
     jobs=list(enumerate([images[i:i+3] for i in range(0,len(images),3)]))
     with ThreadPoolExecutor(max_workers=workers) as pool:return list(pool.map(group,jobs))
@@ -104,7 +87,7 @@ def validate_final(action,candidates,numeric_ids,image_ids=frozenset()):
 def run(client,evidence,official,out,max_turns=12,workers=2):
     initial=[evidence.images[f'I_overview_{i:02d}'] for i in range(12)]
     overview=inspect_images(client,evidence,initial,'整体12个时刻，逐组观察', 'overview',workers)
-    contract={'rules':RULES,'official_evidence':{'id':'E0','metrics':official['metrics'],'source':official['source'],'sha256':official['source_sha256']},
+    contract={'official_evidence':{'id':'E0','metrics':official['metrics'],'source':official['source'],'sha256':official['source_sha256']},
        'layout':POSITIONS,'layout_note':'3x3布局，中央空白；八相机无旧BEV','overview_observations':overview,
        'numeric_tools':{'ego':'自车速度、纵向加速度、位置、朝向','actors':'对象ID、相对位置、几何间距、世界速度及速度变化；可选track_token、nearest',
                         'boundary':'车角边界余量、区域外车角','plans':'所选轨迹；steps表示输入帧，含executed字段'},
@@ -114,8 +97,8 @@ def run(client,evidence,official,out,max_turns=12,workers=2):
           'numbers':{'action':'numbers','purpose':'比较哪个候选','queries':[{'kind':'ego','steps':[3,4,5]},{'kind':'actors','steps':[3,4,5],'nearest':3}]},
           'final':{'action':'final','observations':['核验后现象'],'candidate_assessment':[{'id':'A','verdict':'supported/rejected/uncertain','evidence_ids':['E1'],'explanation':{'required_observation':'回答该候选needs_evidence，需要何种观测才能支持或直接否定','actual_observation':'实际证据中的相关观测；无直接反证不能rejected','missing_evidence':'尚缺什么，缺少关键证据则uncertain；确无缺失才写无'}}],
                    'selected_candidate_id':'支持最强的候选id；不能确定则null','failure_reason':'一句驾驶行为原因','reason_category':'简短可汇总的行为类别；不能确定则待确认','uncertainty':'仍不确定之处'}},
-       'instruction':'你主导取证。先按需补看图片（不限制总张数），形成现象和若干候选后发visual_complete，再请求数值逐项比较。数值阶段也可继续补图。最终逐项检查引用的证据是否真正支持或排除该候选；不够则uncertain。一次只输出一个action的简洁中文JSON，不输出Markdown。不要用程序外知识补造证据。'}
-    save(out/'context.json',contract)
+       'phase':'visual_review'}
+    save(out/'context.json',{'system_prompt':SYSTEM,**contract})
     history=[{'role':'system','content':SYSTEM},{'role':'user','content':json.dumps(contract,ensure_ascii=False)}]
     candidates={};numeric_ids=set();image_ids={im['id'] for im in initial};trace=[]
     for turn in range(max_turns):

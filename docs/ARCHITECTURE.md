@@ -23,6 +23,7 @@
 | 目录/文件 | 职责 |
 |---|---|
 | agent/ | LLM 决策循环、执行器、状态和日志 |
+| common/ | 不依赖 Agent 或 Tool 的通用模型、场景引用和结果引用读取 |
 | tools/ | 9 个工具的说明、Schema、real 与 mock 入口 |
 | mcp_servers/ | 四个后端的独立核心与 AdAgent 适配 |
 | configs/agent.json | 最大步数、工具模式、LLM 角色 |
@@ -40,7 +41,8 @@
 | 文件 | 职责 |
 |---|---|
 | main.py | 创建一次运行，循环决策、执行和写日志 |
-| orchestrator.py | 主提示词、工具选择、决策 JSON 校验与格式纠正 |
+| prompt.md | 主 Agent 的调度、完成与纠错规则 |
+| orchestrator.py | 加载主提示词、工具选择、决策 JSON 校验与格式纠正 |
 | executor.py | 根据配置选择 real/mock，将异常转换成标准错误 |
 | state.py | 任务、阶段、调用历史和运行状态 |
 | schemas.py | 通用决策和工具结果 envelope 校验 |
@@ -49,7 +51,8 @@
 | config.py | 校验运行配置和工具模式 |
 | logger.py | 每步日志、调用追踪和状态快照 |
 
-主 LLM 每次看到原始任务、所有可用工具说明和执行历史；工具内部 prompt 不作为全部历史提示词重复注入。
+主 LLM 每次看到原始任务、精简工具目录和当前历史。目录保留完整输入 Schema（含嵌套约束），省去重复字段说明与输出 Schema，输出只列字段名，传递语义在 handoff 维护；工具内部 prompt 不重复注入。
+完整工具输入输出写入日志；每个历史结果附 result_ref。编辑阶段可传该绝对 JSON 路径，适配层读取完整数据并按原有 Schema 校验；历史中相同版本的大对象参数可改为引用，错误反馈保留。
 参数由主 LLM 从已有结果中组装，Schema 验证类型与必填字段。状态快照支持检查，不等于自动续跑。
 恢复决策由主 Agent 作出；当前没有独立长期记忆库，也没有针对全部工具的自动质量检查器。
 
@@ -79,7 +82,7 @@
 | scene_editing | 独立编辑后端预留位置 | 阶段 JSON 桥、身份与轨迹校验 |
 | worldengine | SimEngine、AlgEngine、原生模型与配置 | 仿真启动、PDM 筛选、训练准备与审计 |
 
-调用方向为 Tool → adapter/service.py → core。core 不导入主 Agent；任务目录与过程追踪在适配层管理。
+调用方向为 Tool → adapter/service.py → core；Tool 与 adapter 可依赖 common，common 不反向依赖它们。core 不导入主 Agent、Tool 或根 api_config。Sentry 由 adapter 显式注入主项目 API profile；WFA 子进程由 adapter 传 --api-config。独立 core 使用自己的配置入口。任务目录与过程追踪在适配层管理。
 各服务 runtime/<run_id>/ 包含 manifest.json、input/、logs/、output/。
 
 ## 新编辑接入边界

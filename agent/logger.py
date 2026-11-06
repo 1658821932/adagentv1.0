@@ -125,8 +125,8 @@ class RunLogger:
         step: int,
         tool_name: str,
         result: Dict[str, Any],
-    ) -> None:
-        """Record tool output and mark the invocation as finished."""
+    ) -> str:
+        """Record full output and return its saved result reference path."""
 
         tool_dir = self._tool_dir(step, tool_name)
         self._write_json(tool_dir / "output.json", result)
@@ -143,6 +143,8 @@ class RunLogger:
                     f"[{self._now()}] tool finished status={status} "
                     f"duration_seconds={duration:.3f}\n"
                 )
+
+        return str((tool_dir / "output.json").resolve())
 
     def log_tool_error(
         self,

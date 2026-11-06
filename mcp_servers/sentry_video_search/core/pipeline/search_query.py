@@ -6,38 +6,13 @@ import json
 import os
 from typing import Any
 
-from .common import chat_completion, extract_json, model_settings
+from .common import chat_completion, extract_json, model_settings, load_prompt
 
 
 
 
 
-SYSTEM_PROMPT = """你是自动驾驶视频数据集检索专家。
-用户会描述想找的视频内容。请把需求解析为结构化检索计划，并分别生成适合 YouTube 和 Bilibili 的搜索串。
-
-要求：
-- 默认目标是汽车第一视角/行车记录仪/前挡风玻璃外道路视角。
-- YouTube 搜索串使用英文。
-- Bilibili 搜索串使用中文。
-- 搜索串要适合直接输入平台搜索框。
-- 只输出 JSON，不要 Markdown。
-
-JSON 格式：
-{
-  "original_input": "用户原始输入",
-  "structured": {
-    "scene": "highway | urban | rural | parking | tunnel | unknown",
-    "weather": "sunny | rainy | snowy | foggy | night | unknown",
-    "events": ["事件关键词"],
-    "objects": ["目标对象关键词"],
-    "viewpoint": "first_person_dashcam | other | unknown",
-    "extra_context": "补充说明"
-  },
-  "youtube_queries": ["英文搜索串，3到5条"],
-  "bilibili_queries": ["中文搜索串，3到5条"],
-  "negative_keywords": ["应排除的内容关键词"]
-}
-"""
+SYSTEM_PROMPT = load_prompt("search_plan.md")
 
 
 def generate_search_plan(

@@ -15,7 +15,7 @@ from typing import Annotated, Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-NonEmptyStr = Annotated[str, Field(min_length=1)]
+from common.models import NonEmptyStr
 
 
 class ToolModel(BaseModel):
@@ -81,6 +81,7 @@ def parse_json_object(response: str) -> dict[str, Any]:
 def make_description(
     *, name: str, description: str, when_to_use: str,
     input_model: type[BaseModel], output_model: type[BaseModel],
+    handoff: dict[str, str] | None = None, rules: list[str] | None = None,
 ) -> dict[str, Any]:
     """Generate advertised parameter fields from the executable contracts."""
     input_schema = input_model.model_json_schema()
@@ -92,6 +93,7 @@ def make_description(
         }
     return {
         "name": name, "description": description, "when_to_use": when_to_use,
+        "handoff": dict(handoff or {}), "rules": list(rules or []),
         "inputs": fields(input_schema), "outputs": fields(output_schema),
         "input_schema": input_schema, "output_schema": output_schema,
     }

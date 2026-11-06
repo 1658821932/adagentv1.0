@@ -195,3 +195,30 @@ def test_accepted_candidate_cannot_hide_failed_or_missing_checks(checks):
     from mcp_servers.scene_editing.adapter.schemas import StageChecks
     with pytest.raises(ValueError):
         StageChecks.model_validate({"reference_screen":"passed","checks":checks,"report_path":"/report.json"})
+
+
+
+def test_saved_result_references_resolve_before_json_backend(source,scripted_backend,tmp_path):
+    retrieved=tmp_path/"retrieved.json"
+    retrieved.write_text(json.dumps({"tool":"video_retriever","status":"success","result":{"scene_ref":source}}))
+    args=attack_args(source);args["scene_ref"]=str(retrieved)
+    with patch("mcp_servers.scene_editing.adapter.service.stage_command",return_value=scripted_backend):
+        attack=call_tool("attack_vehicle_editor",args,mode="real")
+        assert attack["status"]=="success",attack
+        saved=tmp_path/"attack.json";saved.write_text(json.dumps(attack))
+        ego=call_tool("ego_trajectory_editor",{"attack_result":str(saved),"target_effect":"Stop safely."},mode="real")
+    assert ego["status"]=="success",ego
+    assert ego["result"]["attack_run_dir"]==attack["result"]["run_dir"]
+
+
+@pytest.mark.parametrize("payload",[
+    {"tool":"video_retriever","status":"error","result":{}},
+    {"tool":"wrong","status":"success","result":{"scene_ref":{}}},
+    {"tool":"video_retriever","status":"success","result":{}},
+    {"tool":"video_retriever","status":"success","result":[]},
+])
+def test_invalid_reference_files_become_input_errors(source,tmp_path,payload):
+    p=tmp_path/"bad.json";p.write_text(json.dumps(payload))
+    args=attack_args(source);args["scene_ref"]=str(p)
+    result=call_tool("attack_vehicle_editor",args,mode="real")
+    assert result["error"]["type"]=="input_validation_error",result

@@ -32,6 +32,8 @@ if attack["status"] == "success":
 新增车辆的 ID 由后端分配。未提供资产、尺寸或模式时，在调用后端前报参数错误。
 当前不声明支持删除车辆、右侧切入或任意新增行为。
 
+tool05.scene_ref 也可传主 Agent 历史中成功检索条目的 result_ref 绝对路径；tool06.attack_result 可传成功攻击编辑条目的 result_ref。读取后仍校验完整对象；原来的对象输入继续支持。文件必须是相应工具 status=success 的标准输出 envelope，不能把服务内部任意 JSON 当作结果引用。
+
 ## 攻击输出
 
 成功 envelope 的 result 为 AttackOutput，主要字段：

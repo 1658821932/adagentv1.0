@@ -7,6 +7,7 @@ status.
 """
 
 from typing import Any, Dict, Optional
+from copy import deepcopy
 
 
 TOOL_STAGE_MAP = {
@@ -53,13 +54,14 @@ class AgentState:
             }
         )
 
-    def add_tool_result(self, tool_name: str, result: Dict[str, Any]) -> None:
+    def add_tool_result(self, tool_name: str, result: Dict[str, Any], result_ref: str | None = None) -> None:
         """Record a tool execution result."""
 
         self.history.append(
             {
                 "tool": tool_name,
                 "result": result,
+                **({"result_ref": result_ref} if result_ref else {}),
             }
         )
 
@@ -90,5 +92,36 @@ class AgentState:
         }
 
     def to_orchestrator_dict(self) -> Dict[str, Any]:
-        """Return the current task and available tool history to the planner."""
-        return self.to_dict()
+        """Compact repeated editing context; leave complete state/log files intact."""
+        state = deepcopy(self.to_dict())
+        references = []
+        for entry in state["history"]:
+            decision = entry.get("decision", {})
+            arguments = decision.get("arguments", {})
+            name = decision.get("tool_name")
+            if name == "attack_vehicle_editor":
+                value = arguments.get("scene_ref")
+                for tool, payload, reference in reversed(references):
+                    if tool == "video_retriever" and isinstance(value, dict) and value == payload.get("scene_ref"):
+                        arguments["scene_ref"] = reference
+                        break
+            elif name == "ego_trajectory_editor":
+                value = arguments.get("attack_result")
+                if isinstance(value, dict) and value.get("tool") == "attack_vehicle_editor" and value.get("status") == "success":
+                    value = value.get("result")
+                for tool, payload, reference in reversed(references):
+                    if tool == "attack_vehicle_editor" and isinstance(value, dict) and value == payload:
+                        arguments["attack_result"] = reference
+                        break
+            tool = entry.get("tool")
+            envelope = entry.get("result", {})
+            payload = envelope.get("result")
+            if not tool or envelope.get("status") != "success" or not entry.get("result_ref") or not isinstance(payload, dict):
+                continue
+            references.append((tool, deepcopy(payload), entry["result_ref"]))
+            if tool == "attack_vehicle_editor":
+                payload.pop("source_scene_ref", None)
+            elif tool == "failure_analyzer":
+                # A duplicate of the native result; retain interpreted evidence/paths.
+                payload.pop("raw", None)
+        return state

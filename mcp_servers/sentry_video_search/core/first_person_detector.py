@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-from .pipeline.common import chat_completion, model_settings
+from .pipeline.common import chat_completion, model_settings, load_prompt
 
 
 
@@ -133,26 +133,12 @@ def classify_frames(
         content.append({"type": "image_url", "image_url": {"url": _data_url(frame_path)}})
         frame_count += 1
 
-    prompt = """判断这些视频关键帧是否适合进入第一视角视频检索库。
-
-第一视角包括：行车记录仪/驾驶员视角、骑行者视角、行人佩戴相机视角、从主体行动者眼前看到道路或环境。
-非第一视角包括：第三人称外部拍摄、监控固定机位、航拍、远景跟拍、从路边或车外观察主体。
-
-“视角干净”表示：主要视野清楚、无遮挡、无严重模糊/过曝/欠曝、无大面积水印/字幕/ UI 遮挡、镜头没有被车内物体/雨刷/污渍/强反光严重遮挡。夜间视频只要道路和环境主体清晰可辨，也可以算视角干净。
-
-只输出 JSON，不要输出 Markdown。格式：
-{
-  "is_first_person": true,
-  "is_clean_view": true,
-  "confidence": 0.0,
-  "reason": "一句话说明判断依据"
-}
-"""
-    content.append({"type": "text", "text": prompt})
+    prompt = load_prompt("first_person.md")
+    content.insert(0, {"type": "text", "text": "以下为待审核视频的关键帧，按顺序排列。"})
 
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": content}],
+        "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": content}],
         "temperature": 0,
     }
     body = chat_completion(

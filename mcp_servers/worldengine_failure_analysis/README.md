@@ -4,7 +4,7 @@
 
 | 目录 | 内容 |
 |---|---|
-| core/ | 原生算法、入口和说明；API 使用项目根配置 |
+| core/ | 原生算法、入口和说明；独立 API 配置，不导入主项目 |
 | adapter/ | service.py 对外入口、config.py 接入配置、schemas.py 返回约定 |
 | adapter/tests/ | 服务接口、路径隔离和导出兼容性测试 |
 | runtime/<run_id>/ | manifest.json、input/、logs/、output/，不进入 Git |
@@ -13,7 +13,7 @@
 
 从 `mcp_servers.worldengine_failure_analysis.adapter.service` 导入：analyze_scene(token, config_path=...)。
 
-环境：`WFA_PYTHON 或已配置的仿真环境`。WFA_ROOT 默认 core/；配置模板在 core/configs/；API 读取根 configs/api.json，密钥读取根 .env。
+环境：`WFA_PYTHON 或已配置的仿真环境`。WFA_ROOT 默认 core/；配置模板在 core/configs/；通过 adapter 调用时，读取根 .env 凭证并将根 configs/api.json 通过 --api-config 传给 core。独立运行配置见 core/README.md。
 
 输入输出沿用原工具格式；结果中的 run_dir 指向任务根目录，具体产物通过原有路径字段返回。显式导出路径继续支持，旧运行目录已清理。
 

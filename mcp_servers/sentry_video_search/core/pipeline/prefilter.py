@@ -10,7 +10,7 @@ from typing import Any
 
 import requests
 
-from .common import model_settings, common_headers, chat_completion, extract_json, image_data_url, real_user_home_env, run, safe_name, yt_dlp_cmd
+from .common import load_prompt, model_settings, common_headers, chat_completion, extract_json, image_data_url, real_user_home_env, run, safe_name, yt_dlp_cmd
 
 
 HARD_NEGATIVE_KEYWORDS = {
@@ -133,25 +133,16 @@ def visual_precheck(*, frames: list[Path], requirement: str, search_plan: dict[s
     if not frames:
         return False, 0.0, "no preview frames"
 
-    prompt = f"""你是自动驾驶视频数据集的预筛审核员。下面是候选视频少量预览帧。
-
-用户需求：{requirement}
-结构化需求：{json.dumps(search_plan.get("structured") or {}, ensure_ascii=False)}
-视频标题：{item.get("title") or ""}
-视频简介：{str(item.get("description") or "")[:500]}
-
-请判断这个候选视频是否值得完整下载。预筛要相对宽松，但必须拒绝明显错误类型。
-accepted=true 应同时满足：汽车第一视角/行车记录仪视角；包含道路/车辆/交通环境；画面清晰；不是封面/PPT/游戏/骑行/航拍/车评教学。
-
-只输出 JSON：
-{{"accepted": true, "confidence": 0.0, "reason": "一句话说明"}}
-"""
-    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    prompt = load_prompt("preview_review.md")
+    content: list[dict[str, Any]] = [{"type": "text", "text": json.dumps({
+        "requirement": requirement, "structured": search_plan.get("structured") or {},
+        "title": item.get("title") or "", "description": str(item.get("description") or "")[:500],
+    }, ensure_ascii=False)}]
     content += [{"type": "image_url", "image_url": {"url": image_data_url(frame)}} for frame in frames]
     body = chat_completion(
         base_url=base_url,
         api_key=api_key,
-        payload={"model": model, "messages": [{"role": "user", "content": content}], "temperature": 0},
+        payload={"model": model, "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": content}], "temperature": 0},
     )
     parsed = extract_json(body["choices"][0]["message"]["content"])
     return bool(parsed.get("accepted")), float(parsed.get("confidence", 0.0)), str(parsed.get("reason", ""))

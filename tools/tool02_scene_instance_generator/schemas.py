@@ -9,7 +9,7 @@ def normalized(text):
 
 
 class Input(ToolModel):
-    failure_analysis: dict[str, Any] = Field(description="Saved failure evidence or a successful tool01 envelope. Accepts failure_reason or a saved group with wrong_behavior and id. Keep original case IDs.")
+    failure_analysis: dict[str, Any] = Field(description="Saved failure category or tool01 result with nonempty failure_reason or wrong_behavior. Preserve supplied case IDs.")
     variation_hints: dict[str, NonEmptyStr] = Field(default_factory=dict, validation_alias=AliasChoices("variation_hints", "parameter_assignment"), description="Optional qualitative variation directions, e.g. traffic_density: sparse, target_actor: crossing bus. Legacy parameter_assignment is accepted. No distance/speed/timing values are required.")
     existing_instances: list[NonEmptyStr] = Field(default_factory=list, description="Previous requirement summaries or successful tool02 outputs. Exact normalized descriptions are rejected; semantic diversity remains a model suggestion.")
 

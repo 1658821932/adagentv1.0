@@ -45,27 +45,12 @@ logs/
 input/
 *.log
 
-# dggt core runtime dirs
-mcp_servers/dggt/core/outputs/
-mcp_servers/dggt/core/logs/
-
 # Large binary data
 *.ply
-# ...but ship the smart_edit 3DGS asset library (required by list_assets/editing)
-!mcp_servers/smart_edit/core/assets/**/*.ply
 *.mmdb
 
 # Codex / local
 .codex/
-
-# WorldEngine / env symlinks (point to external checkouts, not vendored)
-mcp_servers/worldengine/root
-
-# One-off dev scripts archived out of open-source scope
-_dev_scripts_archive/
-
-# Sentry video search runtime index cache (rebuild or symlink separately)
-mcp_servers/sentry_video_search/runtime/
 
 # VLM / API secrets (never commit)
 .secrets/
@@ -73,8 +58,6 @@ mcp_servers/sentry_video_search/runtime/
 *.pem
 *.key
 
-# wfa runtime artifacts
-mcp_servers/worldengine_failure_analysis/runs/
 # WorldEngine vendored data (external, symlinked)
 mcp_servers/worldengine/core/data
 # WorldEngine vendored runtime experiment outputs (keep *.py configs tracked)

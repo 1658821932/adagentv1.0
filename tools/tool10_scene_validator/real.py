@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # Non-secret defaults live in config.json; overridable via SCENE_VALIDATOR_* env vars.
 _SETTINGS = json.loads(Path(__file__).with_name("config.json").read_text())
 
-# Evaluation rules live in prompt.md; {ignored_artifacts} and {requirement} are filled per call.
+# Task rules live in prompt.md; variable context and the response schema are filled per call.
 _PROMPT_TEMPLATE = Path(__file__).with_name("prompt.md").read_text(encoding="utf-8").strip()
 if not _PROMPT_TEMPLATE:
     raise ValueError("scene_validator prompt.md must not be empty")
@@ -153,6 +153,14 @@ def _evaluate_locally(input_data: dict[str, Any], video: Path, requirement: Any)
     return result
 
 
+def _visual_response_schema() -> dict[str, Any]:
+    """Use the executable evaluator contract without runtime-populated metadata."""
+    schema = VisualEvaluation.model_json_schema()
+    for name in ("model", "sampled_frames"):
+        schema["properties"].pop(name, None)
+    return schema
+
+
 def _evaluate_visual(input_data: dict[str, Any], video: Path, requirement: Any) -> dict[str, Any]:
     settings = vlm_settings()
     supplied_frames = input_data.get("frame_paths")
@@ -171,6 +179,8 @@ def _evaluate_visual(input_data: dict[str, Any], video: Path, requirement: Any) 
         prompt = _PROMPT_TEMPLATE.replace(
             "{ignored_artifacts}",
             "；".join(input_data.get("ignored_reconstruction_artifacts", [])),
+        ).replace(
+            "{response_schema}", json.dumps(_visual_response_schema(), ensure_ascii=False)
         ).replace(
             "{requirement}", json.dumps(requirement, ensure_ascii=False)
         )

@@ -1,5 +1,7 @@
 """Stable AdAgent entry points; native retrieval remains framework-independent."""
 from mcp_servers.runtime import runtime_task, current_run
+from api_config import get_profile
+from ..core.api_settings import bind_profiles
 
 def retrieve_video(input_data: dict) -> dict:
     from .client import retrieve_video as call
@@ -10,7 +12,7 @@ def search_local(requirement, config=None):
     from ..core.config import SearchConfig
     from ..core.service import search_local as search
     from ..core.workspace import bind_run
-    with bind_run(current_run("sentry_video_search")):
+    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile):
         result = search(requirement, config or SearchConfig())
         from .scene_binding import bind_scene
         result.scene_ref = bind_scene(result.source_file, current_run("sentry_video_search").output)
@@ -21,7 +23,7 @@ def index_local(path, config=None):
     from ..core.config import SearchConfig
     from ..core.service import index_local as index
     from ..core.workspace import bind_run
-    with bind_run(current_run("sentry_video_search")):
+    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile):
         return index(path, config or SearchConfig())
 
 @runtime_task("sentry_video_search", "search_internet")
@@ -29,5 +31,5 @@ def search_internet(requirement, config=None):
     from ..core.config import SearchConfig
     from ..core.service import search_internet as search
     from ..core.workspace import bind_run
-    with bind_run(current_run("sentry_video_search")):
+    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile):
         return search(requirement, config or SearchConfig())

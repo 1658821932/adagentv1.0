@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 
+from api_config import API_CONFIG_PATH, load_credentials
 from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
 
@@ -52,12 +53,14 @@ def analyze_scene(
         _resolve_python(), str(run_py), "scene",
         "--token", token.strip(),
         "--config", str(config),
+        "--api-config", str(API_CONFIG_PATH),
         "--run-name", run_name,
         "--run-dir", str(task.output),
     ]
     if resume:
         cmd.append("--resume")
 
+    load_credentials()
     proc = run_logged(
         cmd, cwd=str(WFA_ROOT), log_path=task.logs / "analysis.log", timeout=timeout, env=task.child_env(),
     )

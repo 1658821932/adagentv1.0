@@ -141,6 +141,17 @@ def main():
         if when:
             sections.append("")
             sections.append(f"**何时使用**：{when}")
+        handoff = desc.get("handoff", {})
+        if handoff:
+            sections.append("")
+            sections.append("**上下游衔接**")
+            for key, value in handoff.items():
+                sections.append(f"- {key}: {value}")
+        if desc.get("rules"):
+            sections.append("")
+            sections.append("**工具规则**")
+            for rule in desc["rules"]:
+                sections.append(f"- {rule}")
         sections.append("")
         for label, key, notes_key, model in (
                 ("输入", "input_schema", "inputs", schemas.Input),

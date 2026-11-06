@@ -17,6 +17,11 @@ from typing import Any
 import requests
 
 
+def load_prompt(name: str) -> str:
+    """Read this native component's task instructions without host dependencies."""
+    return (Path(__file__).resolve().parents[1] / "prompts" / name).read_text(encoding="utf-8").strip()
+
+
 def run(
     cmd: list[str],
     *,
@@ -95,7 +100,7 @@ def chat_completion(
     retry_delays: tuple[float, ...] = (2.0, 2.0),
 ) -> dict[str, Any]:
     if timeout is None:
-        from api_config import get_profile
+        from ..api_settings import get_profile
         timeout = get_profile("kimi")["timeout"]
     url = f"{base_url.rstrip('/')}/chat/completions"
     last_error: Exception | None = None
@@ -123,6 +128,6 @@ def chat_completion(
 
 def model_settings(model=None, base_url=None):
     """Non-retrieval text/visual tasks use the component Kimi profile, never DashScope credentials."""
-    from api_config import get_profile
+    from ..api_settings import get_profile
     profile = get_profile("kimi", require_key=True)
     return (model or profile["model"], base_url or profile["base_url"], profile["api_key"])

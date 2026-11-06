@@ -15,7 +15,8 @@ from mcp_servers.runtime import current_run, runtime_task
 
 
 
-def test_simulation_directs_backend_into_distinct_output_dirs(tmp_path):
+def test_simulation_directs_backend_into_distinct_output_dirs(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMENGINE_PYTHON", sys.executable)
     from mcp_servers.worldengine.adapter.config import WorldEngineConfig
     from mcp_servers.worldengine.adapter.service import run_simulation
     script = tmp_path / "simulate.sh"

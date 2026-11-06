@@ -11,8 +11,8 @@ from mcp_servers.configuration import runtime_path
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 COMPONENT_ROOT = Path(__file__).resolve().parents[1]
 AGENT_PYTHON = runtime_path(COMPONENT_ROOT, "agent_python", "AGENT_PYTHON", "environments/agent/.venv/bin/python")
-SIMENGINE_PYTHON = runtime_path(COMPONENT_ROOT, "simengine_python", "SIMENGINE_PYTHON", "environments/simengine/.conda/bin/python")
-ALGENGINE_PYTHON = runtime_path(COMPONENT_ROOT, "algengine_python", "ALGENGINE_PYTHON", "environments/algengine/.conda/bin/python")
+SIMENGINE_PYTHON = runtime_path(COMPONENT_ROOT, "simengine_python", "SIMENGINE_PYTHON", "environments/simengine/bin/python")
+ALGENGINE_PYTHON = runtime_path(COMPONENT_ROOT, "algengine_python", "ALGENGINE_PYTHON", "environments/algengine/bin/python")
 AGENT_FRAME_COUNT = 40
 
 

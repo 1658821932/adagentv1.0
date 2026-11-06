@@ -6,13 +6,15 @@
 ## 文件职责
 
 每个工具目录具有：
-- description.py：主 Agent 看到的用途和调用时机；参数说明从 Schema 生成。
+- description.py：主 Agent 看到的用途、调用时机、handoff 衔接和 rules 专属规则；字段说明从 Schema 生成。
 - schemas.py：Input、Response、Output，以及必要的输入规范化和业务校验。
 - prompt.md：工具内部模型的任务指令；不包含 API 密钥。
 - config.json：模型角色、提示词版本、超时、输出长度和校验重试上限。
 - real.py：声明 LLMTool，绑定上述契约及可选的上下文附加/业务校验函数。
 - mock.py：确定性结果，通过与 real 相同的输入、输出和业务校验。
 - __init__.py：包说明。
+
+提示词分层及各文件入口见 [PROMPTS.md](PROMPTS.md)。
 
 公共实现位于 tools/llm_runtime.py。工具字段只在 schemas.py 定义，description.py 生成
 inputs、outputs、input_schema 和 output_schema；不再手写第二份参数清单。
@@ -58,7 +60,7 @@ SDK 自身的传输重试策略独立于此计数。
 
 mock 同样要求合法输入。它只验证接口与执行路径，不证明场景、视觉或驾驶策略真实有效。
 
-恢复规则直接位于 agent/orchestrator.py 的主提示词中；不再提供独立 tool11 或兼容入口。流程与测试见 [架构文档](ARCHITECTURE.md)。
+恢复规则位于 agent/prompt.md 中；不再提供独立 tool11 或兼容入口。流程与测试见 [架构文档](ARCHITECTURE.md)。
 
 ## 配置与密钥
 

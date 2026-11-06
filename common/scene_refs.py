@@ -1,5 +1,5 @@
 """Shared dataset scene references used by retrieval and editing adapters."""
-from tools.contracts import OutputModel, NonEmptyStr
+from .models import OutputModel, NonEmptyStr
 
 class CameraReference(OutputModel):
     video_path: NonEmptyStr | None = None
