@@ -1,0 +1,6 @@
+{
+  "model_role": "planner",
+  "prompt_version": "v3",
+  "max_tokens": 2400,
+  "validation_retries": 1
+}

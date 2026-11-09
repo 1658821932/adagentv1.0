@@ -101,6 +101,7 @@ class LLMClient:
                 model=self.model,
                 messages=messages,
                 max_tokens=self.max_tokens,
+                extra_body={"thinking": {"type": "disabled"}},
             )
 
             usage = getattr(response, "usage", None)

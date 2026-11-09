@@ -1,0 +1,11 @@
+{
+  "time_samples": 6,
+  "initial_camera": "CAM_F0",
+  "frames_per_sheet": 4,
+  "columns": 2,
+  "tile_width": 320,
+  "tile_height": 180,
+  "label_height": 28,
+  "max_extra_rounds": 2,
+  "max_cameras_per_request": 2
+}
