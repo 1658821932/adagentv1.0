@@ -88,12 +88,19 @@ class ToolExecutor:
                 ) from exc
 
             if self.execution_timeout:
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(call_tool, tool_name, arguments, mode=mode)
-                    try:
-                        result = future.result(timeout=self.execution_timeout)
-                    except FuturesTimeoutError:
-                        return self._timeout_error(tool_name, self.execution_timeout)
+                # Do not use a context manager: its __exit__ waits for the
+                # worker to finish, which would defeat the timeout when the
+                # tool is truly stuck. shutdown(wait=False) lets the agent
+                # move on while the stuck thread finishes in the background.
+                pool = ThreadPoolExecutor(max_workers=1)
+                future = pool.submit(call_tool, tool_name, arguments, mode=mode)
+                try:
+                    result = future.result(timeout=self.execution_timeout)
+                except FuturesTimeoutError:
+                    pool.shutdown(wait=False)
+                    return self._timeout_error(tool_name, self.execution_timeout)
+                else:
+                    pool.shutdown(wait=True)
             else:
                 result = call_tool(
                     tool_name,
