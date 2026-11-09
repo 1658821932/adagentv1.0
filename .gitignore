@@ -91,3 +91,4 @@ mcp_servers/worldengine/core/logs/
 # Private AI handoffs and local research notes
 /docs/private/
 *.bak
+mcp_servers/worldengine_failure_analysis/core/configs/complete.json

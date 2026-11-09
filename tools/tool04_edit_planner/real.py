@@ -103,7 +103,7 @@ def enrich(data,response):
     summary,_,_=inspect_scene(data)
     result=dict(response,scene_id=data.scene_ref.scene_id,scene_token=data.scene_ref.scene_token,
         target_effect=data.target_effect,evidence=summary['evidence'],attack_input=None)
-    if result['suitability']=='ready':
+    if result['suitability']=='ready' and result['edit_plan'] is not None:
         plan=result['edit_plan']
         if plan['operation']=='add_vehicle' and not summary['evidence']['added_vehicle_asset_available']:
             result['suitability']='needs_information'

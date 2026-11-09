@@ -1,0 +1,9 @@
+{
+  "profile": "nuplan_case_study_v1",
+  "limit_source": "Explicit low-speed research experiment; not a universal vehicle capability or legal speed limit",
+  "required_checks": ["drivable_area", "drivable_area_official"],
+  "allow_safe_stop": true,
+  "minimum_progress_fraction": null,
+  "terminal_stop_duration_s": 1.0,
+  "history_policy": "reject"
+}

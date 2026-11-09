@@ -37,12 +37,10 @@ def get_profile(name="kimi", *, require_key=False, environ=None):
         load_credentials()
         environ = os.environ
     if name == "kimi":
-        result["base_url"] = environ.get("OPENAI_BASE_URL") or environ.get("LLM_BASE_URL") or result["base_url"]
-        result["model"] = environ.get("OPENAI_MODEL") or environ.get("LLM_MODEL") or result["model"]
+        result["base_url"] = result["base_url"]
+        result["model"] = result["model"]
     if require_key:
         key = environ.get(result["api_key_env"])
-        if not key and name == "kimi":
-            key = environ.get("LLM_API_KEY")
         if not key:
             raise RuntimeError(result["api_key_env"] + " is required for API profile " + name)
         result["api_key"] = key

@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from tools.registry import call_tool, REAL_TOOL_REGISTRY
-from tools.scripts.smoke_llm_tools import ANALYSIS
+from scripts.smoke_llm_tools import ANALYSIS
 
 CASES=[
     ("tool02_scene_instance_generator","scene_instance_generator",{"failure_analysis":ANALYSIS}),
@@ -127,7 +127,7 @@ def test_source_context_is_attached_by_code_and_upstream_errors_are_not_evidence
     }},mode="mock")
     assert json.loads((Path(requirement["meta"]["record_dir"])/"input.json").read_text())["failure_analysis"]==ANALYSIS
     assert set(requirement["result"])=={"scene_requirement","target_effect","candidates"}
-    from tools.tool04_video_retriever.schemas import Input
+    from tools.tool03_video_retriever.schemas import Input
     for candidate in requirement["result"]["candidates"]:
         Input.model_validate({"requirement":candidate["base_video_requirement"]})
     bad={"status":"error","tool":"failure_analyzer","error":{"message":"failed"}}

@@ -52,3 +52,24 @@ register_scene_video("/data/CAM_L0.mp4", "/data/dataset/samples/anchor", "CAM_L0
 
 这些路径对应完整底场景；`source_segment` 是检索命中的索引片段范围（原视频秒数），不等于最终导出片段边界，也不表示八路已经统一裁剪。
 mock 保留占位输出，不执行真实场景绑定。
+
+## 批量相机图像建库
+
+在项目根目录运行：
+
+```bash
+environments/video_retriever/.venv/bin/python scripts/index_scene_cameras.py
+```
+
+默认读取 data/navtrain_ep_per1/samples 下全部场景，为每路相机生成一个原分辨率 H.264/yuv420p MP4。
+帧顺序和时间间隔来自 metadata/frames.json，视频时间戳精度为毫秒，原始微秒时间戳保存在 .scene.json。
+生成后完整解码检查帧数；视频写入检索服务 data/navtrain_ep_per1_multicam/<token>/<camera>.mp4，并注册场景绑定。
+每个完整视频作为一条向量写入默认索引，不复制到其他视频目录，不依赖高斯资产下载是否完成。
+
+采用现有 retrieval API profile，默认四个工作线程、每分钟最多45次初始请求。
+源图片签名和已有索引元数据用于断点跳过；同一数据集通过文件锁避免重复启动。
+可先使用 --limit-scenes 1 验证一个场景，--encode-only 只合成视频；再次执行原命令继续未完成项。
+进度、逐视频记录及错误位于 data/navtrain_ep_per1/video_index/ 的 progress.json、events.jsonl、errors.json。
+这些视频、索引与运行记录均不进入 Git。
+
+训练集批量入库默认只处理前视 `CAM_F0`（525 个场景对应 525 个 MP4）；仍保留完整多相机场景绑定。运行：`environments/video_retriever/.venv/bin/python scripts/index_scene_cameras.py --workers 4 --rpm 25`。

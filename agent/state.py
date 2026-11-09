@@ -16,7 +16,8 @@ TOOL_STAGE_MAP = {
     "failure_analyzer": "failure_analysis",
     "scene_instance_generator": "requirement_generation",
     "video_retriever": "retrieval",
-    "scene_validator": "validation",
+    "edit_planner": "edit_planning",
+    "scene_replayer": "replay",
     "policy_runner": "simulation",
     "failure_case_filter": "failure_filtering",
     "policy_trainer": "training",
@@ -99,7 +100,22 @@ class AgentState:
             decision = entry.get("decision", {})
             arguments = decision.get("arguments", {})
             name = decision.get("tool_name")
-            if name == "attack_vehicle_editor":
+            if name == "edit_planner" and "retrieval_result" in arguments:
+                value = arguments.get("retrieval_result")
+                if isinstance(value, dict) and value.get("tool") == "video_retriever" and value.get("status") == "success":
+                    value = value.get("result")
+                for tool, payload, reference in reversed(references):
+                    if tool != "video_retriever" or not isinstance(value, dict):
+                        continue
+                    # Match full envelope, bare result, or {"scene_ref": X} subset
+                    if value in (payload, payload.get("scene_ref")):
+                        arguments["retrieval_result"] = reference
+                        break
+                    # LLM may pass just {"scene_ref": <scene_ref_dict>}
+                    if set(value.keys()) == {"scene_ref"} and value.get("scene_ref") == payload.get("scene_ref"):
+                        arguments["retrieval_result"] = reference
+                        break
+            elif name == "attack_vehicle_editor":
                 value = arguments.get("scene_ref")
                 for tool, payload, reference in reversed(references):
                     if tool == "video_retriever" and isinstance(value, dict) and value == payload.get("scene_ref"):
@@ -124,4 +140,15 @@ class AgentState:
             elif tool == "failure_analyzer":
                 # A duplicate of the native result; retain interpreted evidence/paths.
                 payload.pop("raw", None)
+            elif tool == "video_retriever":
+                # Compact scene_ref to keep LLM context small; cameras metadata
+                # is available via result_ref when tools load it.
+                scene_ref = payload.get("scene_ref")
+                if isinstance(scene_ref, dict) and "cameras" in scene_ref:
+                    cameras = scene_ref["cameras"]
+                    if isinstance(cameras, dict):
+                        scene_ref["cameras"] = {
+                            cam: {"video_path": info.get("video_path"), "frame_count": info.get("frame_count")}
+                            for cam, info in cameras.items()
+                        }
         return state

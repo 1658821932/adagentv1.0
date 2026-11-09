@@ -12,7 +12,7 @@ from unittest.mock import patch
 from mcp_servers.sentry_video_search.core.workspace import runtime_task
 from mcp_servers.sentry_video_search.core.config import SearchConfig
 from mcp_servers.sentry_video_search.core.service import _export_reranked_hits, _trim_hit, index_local
-from tools.tool04_video_retriever.real import run as retrieve_video
+from tools.tool03_video_retriever.real import run as retrieve_video
 
 
 class VideoLibraryTests(unittest.TestCase):

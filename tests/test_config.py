@@ -8,12 +8,12 @@ from agent.executor import ToolExecutor
 
 
 DEFAULT_MODES = {
-    "attack_vehicle_editor": "real",
-    "ego_trajectory_editor": "real",
+    "attack_vehicle_editor": "mock",
+    "ego_trajectory_editor": "mock",
     "failure_analyzer": "real",
     "scene_instance_generator": "real",
     "video_retriever": "real",
-    "scene_validator": "real",
+    "edit_planner": "real",
     "policy_runner": "real",
     "failure_case_filter": "real",
     "policy_trainer": "real",

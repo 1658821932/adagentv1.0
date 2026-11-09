@@ -153,7 +153,33 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
     }
 
 
+@runtime_task("worldengine", "pdm_closed_loop")
+def run_pdm(arguments):
+    from mcp_servers.scene_editing.core.adversarial.pdm_tool import run_pdm_challenge
+    task = current_run("worldengine")
+    result = run_pdm_challenge(arguments, task.output/'pdm', task.logs/'pdm.log')
+    summary = result['summary']
+    baseline, attack = summary['results'].get('baseline'), summary['results']['attack']
+    return dict(result_dir=str(task.root), reports=[summary], policy_result=str(task.output/'pdm/summary.json'),
+        rollout_dir=None, reward_dir=None, candidate_rewards_present=False,
+        pdm_challenge=dict(execution_mode='pdm_closed_loop', official_native_score=False,
+            pdm_defense_succeeded=result['pdm_defense_succeeded'],
+            traffic_light_policy=summary.get('traffic_light_policy'),
+            takeover_alignment=summary.get('takeover_alignment'),
+            background_geometry_policy=summary.get('background_geometry_policy'),
+            probe_reused=summary.get('probe_reused',False),
+            reuse_wall_seconds=summary.get('reuse_wall_seconds'),
+            baseline_diagnostic_ran=baseline is not None, baseline_is_acceptance_gate=False,
+            baseline=None if baseline is None else {key: baseline[key] for key in ('contact_samples', 'road_violation_samples', 'min_gap_m')},
+            attack={key: attack[key] for key in ('contact_samples', 'road_violation_samples', 'min_gap_m',
+                'min_target_gap_m', 'first_contact')}))
+
+
 # Canonical entry points consumed by AdAgent tools.
 from .client import run_policy
 from .evaluation import filter_failure_cases
 from .training import train_policy
+
+
+# Native trajectory replay bypasses policy inference.
+from .replay import run_replay

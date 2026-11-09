@@ -1,16 +1,16 @@
 """Stage-level JSON bridge; no real editor is bundled or simulated here."""
 from __future__ import annotations
 import csv
-import hashlib
 import json
 import math
 from pathlib import Path
 
 from pydantic import ValidationError
+from api_config import get_profile
 from mcp_servers.process import run_logged
 from mcp_servers.runtime import current_run, runtime_task, write_json
-from .config import PROJECT_ROOT, stage_command
-from .schemas import AttackInput, AttackOutput, EgoInput, EgoOutput
+from .config import PROJECT_ROOT, stage_command, public_pipeline_root
+from .schemas import AttackInput, AttackOutput, EgoInput, EgoOutput, AttackRefusal, DefenseNotFound
 
 class EditingError(RuntimeError):
     def __init__(self, code, message):
@@ -43,8 +43,14 @@ def _timeline(path):
 
 
 def _handoffs(output, task):
+    public_root = public_pipeline_root()
     for value in output.rendered_videos.values():
-        _inside(value, task.output)
+        try:
+            _inside(value, task.output)
+        except EditingError:
+            if public_root is None:
+                raise
+            _inside(value, public_root)
     if output.simulation_input is not None:
         s = output.simulation_input
         if Path(s.scenario_pkl_file_name).name != s.scenario_pkl_file_name:
@@ -81,6 +87,8 @@ def _validate_attack(data, result, task):
     for name in ("trajectory_path", "provenance_path", "submission_path"):
         _inside(getattr(result,name),task.output)
     _inside(result.checks.report_path,task.output)
+    if result.pdm_probe_result_path is not None:
+        _inside(result.pdm_probe_result_path,task.output)
     _handoffs(result,task)
     return result.model_dump()
 
@@ -119,6 +127,17 @@ def _validate_ego(data, result, task):
     return result.model_dump()
 
 
+def backend_api_env(command, environment):
+    """Inject project credentials only into the bundled backend, never persist them."""
+    result = dict(environment)
+    backend = Path(__file__).resolve().parents[1] / 'core/adversarial/editing_backend.py'
+    if any(Path(part).resolve() == backend for part in command):
+        profile = get_profile('kimi', require_key=True)
+        result.update(ADVERSARIAL_API_KEY=profile['api_key'],
+                      ADVERSARIAL_API_BASE_URL=profile['base_url'], ADVERSARIAL_API_MODEL=profile['model'])
+    return result
+
+
 def _execute(stage, arguments):
     task = current_run("scene_editing")
     command = stage_command(stage)
@@ -135,13 +154,22 @@ def _execute(stage, arguments):
             raise EditingError("editing_input_invalid", "Real ego editing cannot consume mock attack artifacts")
         _timeline(data.attack_result.frames_path)
     input_frames = Path(data.scene_ref.frames_path if stage=="attack_editing" else data.attack_result.frames_path)
-    input_digest = hashlib.sha256(input_frames.read_bytes()).hexdigest()
+    source_frames = _timeline(input_frames)
     payload = {"schema_version":"editing_stage.v1", "stage":stage,
                "arguments":data.model_dump(), "output_dir":str(task.output)}
     write_json(task.input / "stage_request.json",payload)
-    completed = run_logged(command,cwd=PROJECT_ROOT,env=task.child_env(),input=json.dumps(payload,ensure_ascii=False),json_stdout=True,log_path=task.logs/"backend.log",timeout=data.timeout)
-    if hashlib.sha256(input_frames.read_bytes()).hexdigest() != input_digest:
-        raise EditingError("editing_input_modified", "Backend modified the source/frozen frames.json instead of writing a new artifact")
+    completed = run_logged(command,cwd=PROJECT_ROOT,env=backend_api_env(command, task.child_env()),input=json.dumps(payload,ensure_ascii=False),json_stdout=True,log_path=task.logs/"backend.log",timeout=data.timeout)
+    try:
+        current_frames = _timeline(input_frames)
+    except EditingError as error:
+        raise EditingError("editing_input_modified", "Source frames became unreadable during backend execution") from error
+    if len(source_frames) != len(current_frames) or any(
+            before.get("timestamp") != after.get("timestamp") or before.get("token") != after.get("token")
+            or before.get("ego2global") != after.get("ego2global")
+            or before.get("ego2global_translation") != after.get("ego2global_translation")
+            or before.get("ego2global_rotation") != after.get("ego2global_rotation")
+            for before, after in zip(source_frames, current_frames)):
+        raise EditingError("editing_input_modified", "Backend changed source frame identity or ego poses")
     if completed.returncode:
         raise EditingError("editing_backend_failed", "Editing backend exited unsuccessfully; see backend.log")
     try:
@@ -149,6 +177,15 @@ def _execute(stage, arguments):
         if not isinstance(result,dict):
             raise ValueError("Backend response must be an object")
         write_json(task.logs/"stage_response.json",result)
+        business_type = AttackRefusal if stage == "attack_editing" else DefenseNotFound
+        if result.get("status") == ("unable_to_complete" if stage == "attack_editing" else "defense_not_found"):
+            result["mode"], result["run_dir"] = "real", str(task.root)
+            business = business_type.model_validate(result)
+            for path in business.evidence_paths:
+                _inside(path, task.output)
+            return business.model_dump()
+        if result.get("status") == "backend_error":
+            raise EditingError("editing_execution_failed", f"Backend execution failed ({result.get('error_type', 'unknown')}); see stage_response.json and backend.log")
         if result.get("status") != "completed":
             raise EditingError("editing_not_completed", f"Backend did not submit a candidate: {result.get('status')}; see stage_response.json")
         result["mode"], result["run_dir"] = "real", str(task.root)

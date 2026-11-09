@@ -1,12 +1,12 @@
 """Mode dispatch and rejection tests: do not launch GPU training."""
 import unittest
 from pydantic import ValidationError
-from tools.tool15_policy_trainer.schemas import Input, Output
-from tools.tool15_policy_trainer.mock import run
+from tools.tool10_policy_trainer.schemas import Input, Output
+from tools.tool10_policy_trainer.mock import run
 
 class TrainingModeTests(unittest.TestCase):
     def test_agent_description_exposes_both_modes(self):
-        from tools.tool15_policy_trainer.description import DESCRIPTION
+        from tools.tool10_policy_trainer.description import DESCRIPTION
         modes = DESCRIPTION["input_schema"]["properties"]["training_mode"]["enum"]
         self.assertEqual(set(modes), {"ilft", "rlft"})
 

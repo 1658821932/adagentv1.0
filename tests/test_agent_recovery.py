@@ -47,6 +47,9 @@ def test_registry_descriptions_and_configuration_expose_only_9_tools():
     assert len(names)==9
     assert names==set(MOCK_TOOL_REGISTRY)==set(REAL_TOOL_REGISTRY)==set(AgentConfig.load().tool_modes)
     assert "recovery_decider" not in names
+    assert "scene_validator" not in names
+    assert "edit_planner" in names
+    assert "scene_replayer" not in names
     assert "scene_instance_generator" in names
     assert "scene_requirement_generator" not in names
     assert not Path("tools/tool02_scene_requirement_generator").exists()
@@ -64,16 +67,6 @@ def test_removed_tool_mode_is_not_silently_accepted(tmp_path):
         AgentConfig.load(path)
 
 
-def test_failed_validation_can_stop_when_editor_backend_is_unavailable(tmp_path):
-    agent, client = make_agent(tmp_path, [
-        call("scene_validator", {"rendered_video": "/synthetic/old.mp4", "scene_requirement": "A grounded vehicle.", "mock_force_fail": True}),
-        {"action": "stop", "reason": "Validation failed; the new editor backend is not configured to repair it."},
-    ])
-    state = agent.run("Validate the supplied scene and repair it if possible.")
-    assert state["status"] == "error"
-    feedback = json.loads(client.messages[1][1]["content"])
-    assert feedback["current_state"]["history"][-1]["result"]["result"]["passed"] is False
-    assert "scene_editor" not in {t["name"] for t in feedback["available_tools"]}
 
 
 def test_repeated_transient_failure_stops_as_error_instead_of_success(tmp_path):
@@ -97,14 +90,6 @@ def test_repeated_transient_failure_stops_as_error_instead_of_success(tmp_path):
     assert json.loads(client.messages[-1][1]["content"])["current_state"]["history"][-1]["result"]["status"]=="error"
 
 
-def test_explicit_pass_finishes_without_recovery_or_unrequested_simulation(tmp_path):
-    agent,client=make_agent(tmp_path,[
-        call("scene_validator",{"rendered_video":"/synthetic/scene.mp4","scene_requirement":"Requested scene."}),
-        {"action":"finish","reason":"The requested scene passed validation."},
-    ])
-    state=agent.run("Generate a validated scene only; do not simulate or train.")
-    assert state["status"]=="finished"
-    assert [e["tool"] for e in state["history"] if "tool" in e]==["scene_validator"]
 
 
 def test_removed_recovery_tool_call_is_corrected_to_a_direct_action():
@@ -138,7 +123,7 @@ def test_invalid_stop_is_corrected_in_the_main_orchestrator():
     assert "stop format" in client.messages[-1][-1]["content"]
 
 
-def test_main_agent_passes_merged_candidate_directly_to_tool04(tmp_path, monkeypatch):
+def test_main_agent_passes_merged_candidate_directly_to_tool03(tmp_path, monkeypatch):
     from tools.tool02_scene_instance_generator import real as tool02
     monkeypatch.setattr(tool02, 'RECORDS_ROOT', tmp_path / 'tool02_records')
     analysis={'name':'Cross traffic', 'wrong_behavior':'Late yielding to cross traffic.'}

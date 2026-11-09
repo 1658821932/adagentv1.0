@@ -46,12 +46,13 @@ def test_native_cli_runs_from_extracted_core_without_adagent(tmp_path, service, 
 def test_agent_tools_use_only_canonical_adapter_service():
     expected = {
         "tool01_failure_analyzer": "worldengine_failure_analysis",
-        "tool04_video_retriever": "sentry_video_search",
+        "tool03_video_retriever": "sentry_video_search",
         "tool05_attack_vehicle_editor": "scene_editing",
         "tool06_ego_trajectory_editor": "scene_editing",
-        "tool13_policy_runner": "worldengine",
-        "tool14_failure_case_filter": "worldengine",
-        "tool15_policy_trainer": "worldengine",
+        "tool07_scene_replayer": "worldengine",
+        "tool08_policy_runner": "worldengine",
+        "tool09_failure_case_filter": "worldengine",
+        "tool10_policy_trainer": "worldengine",
     }
     for tool, service in expected.items():
         tree = ast.parse((ROOT / "tools" / tool / "real.py").read_text())

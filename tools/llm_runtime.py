@@ -1,4 +1,4 @@
-"""Shared execution contract for small, text-only LLM tools.
+"""Shared execution contract for small LLM tools.
 
 No credentials or model clients are loaded at import time. Tool descriptions,
 mock implementations and real implementations use the same typed schemas.
@@ -109,6 +109,7 @@ class LLMTool:
     payload_builder: Callable[[BaseModel], Any] | None = None
     enrich_result: Callable[[BaseModel, dict], dict] | None = None
     validate_result: Callable[[BaseModel, BaseModel], None] | None = None
+    client_adapter: Callable[[Any, BaseModel], Any] | None = None
 
     def _validate(self, data: BaseModel, response: dict) -> dict:
         parsed = self.response_model.model_validate(response)
@@ -184,12 +185,14 @@ class LLMTool:
                 client = LLMClient(overrides=overrides)
             meta["model"] = getattr(client, "model", "injected-client")
             payload = self.payload_builder(data) if self.payload_builder else data.model_dump(mode="json")
+            if self.client_adapter:
+                client = self.client_adapter(client, data)
             schema = self.response_model.model_json_schema()
             messages = [
                 {"role": "system", "content": prompt.strip()
                  + "\n\nReturn ONLY one JSON object matching this JSON Schema:\n"
                  + json.dumps(schema, ensure_ascii=False)},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                {"role": "user", "content": payload if isinstance(payload, list) else json.dumps(payload, ensure_ascii=False)},
             ]
         except (OSError, ValueError, TypeError, ImportError) as exc:
             return error("configuration_error", exc)

@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def model_environment(monkeypatch):
-    for key in ['OPENAI_MODEL','LLM_MODEL','OPENAI_BASE_URL','LLM_BASE_URL','SCENE_VALIDATOR_MODEL']:
+    for key in ['OPENAI_MODEL','LLM_MODEL','OPENAI_BASE_URL','LLM_BASE_URL']:
         monkeypatch.delenv(key,raising=False)
     monkeypatch.setenv('OPENAI_API_KEY','test-kimi-key')
     monkeypatch.setenv('DASHSCOPE_API_KEY','test-retrieval-key')
@@ -57,12 +57,10 @@ def test_reasoning_cannot_borrow_retrieval_key(monkeypatch):
         model_settings()
 
 
-def test_effective_agent_and_validator_default_to_kimi(model_environment):
+def test_effective_agent_defaults_to_kimi(model_environment):
     from agent.llm_client import LLMClient
-    from tools.tool10_scene_validator.real import vlm_settings
     with patch.dict('sys.modules', {'openai':SimpleNamespace(OpenAI=Mock())}):
         assert LLMClient().model=='kimi-k3'
-    assert vlm_settings().model=='kimi-k3'
 
 @pytest.fixture
 def root_profile_override(tmp_path,monkeypatch):
@@ -80,11 +78,10 @@ def root_profile_override(tmp_path,monkeypatch):
 def test_one_root_profile_controls_all_reasoning_clients(model_environment,root_profile_override):
     import api_config
     from agent.llm_client import LLMClient
-    from tools.tool10_scene_validator.real import vlm_settings
     from mcp_servers.sentry_video_search.core.pipeline.common import model_settings
     with patch.dict('sys.modules',{'openai':SimpleNamespace(OpenAI=Mock())}):
         client=LLMClient()
-    for config in [dict(model=client.model,base_url=client.base_url,api_key=client.api_key),vars(vlm_settings())]:
+    for config in [dict(model=client.model,base_url=client.base_url,api_key=client.api_key)]:
         assert config['model']=='root-test-model'
         assert config['base_url']=='https://root.invalid/v1'
         assert config['api_key']=='root-kimi-key'

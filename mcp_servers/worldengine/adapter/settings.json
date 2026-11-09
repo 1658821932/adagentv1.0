@@ -2,6 +2,11 @@
   "paths": {
     "agent_python": "environments/agent/.venv/bin/python",
     "simengine_python": "environments/simengine/bin/python",
-    "algengine_python": "environments/algengine/bin/python"
+    "algengine_python": "environments/algengine/bin/python",
+    "shared_library_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ly/external/system-libs/usr/lib/x86_64-linux-gnu",
+    "ffmpeg": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ly/.envs/carla-gs-py310/lib/python3.10/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2",
+    "replay_render_python": "environments/scene_render/bin/python",
+    "nuplan_source": "environments/simengine/lib/python3.9/site-packages/nuplan",
+    "gsplat_extension": "mcp_servers/scene_editing/runtime/case1_reliability_fix01/prebuilt-gsplat/gsplat_cuda.so"
   }
 }

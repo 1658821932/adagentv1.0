@@ -1,0 +1,14 @@
+{
+  "version": "defense_behavior.v1",
+  "scope": "Explicit research optimization preferences, not calibrated error bounds, physical safety guarantees or additional acceptance gates.",
+  "base_reserve_m": 2.0,
+  "geometry_allowance_m": 0.5,
+  "closing_response_s": 0.5,
+  "progress_weight": 1.0,
+  "reserve_shortfall_weight": 12.0,
+  "acceleration_weight": 0.08,
+  "jerk_weight": 0.02,
+  "reverse_weight": 2.0,
+  "path_offset_weight": 0.1,
+  "terminal_closing_weight": 2.0
+}

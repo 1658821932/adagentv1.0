@@ -29,7 +29,7 @@ class Input(ToolModel):
         description="Tool03 successful envelope, result object or absolute result_ref. Standalone scene_ref inputs are not accepted.")
     scene_requirement: NonEmptyStr = Field(description="Target scene from tool02.")
     target_effect: NonEmptyStr = Field(description="Unchanged global correct ego behavior from tool02.")
-    edit_strategy: NonEmptyStr = Field(description="Selected tool02 candidate editing idea.")
+    edit_strategy: NonEmptyStr | None = Field(default=None, description="Selected tool02 candidate editing idea; null means no other-vehicle editing needed.")
     vehicle: VehicleAsset | None = Field(default=None,description="Optional real added-vehicle PLY and length/width/height. Required for executable add_vehicle arguments; do not infer from images.")
 
     _retrieval_result_ref: str | None = PrivateAttr(default=None)
@@ -79,8 +79,7 @@ class Response(ToolModel):
 
     @model_validator(mode='after')
     def decision(self):
-        if self.suitability=='ready' and self.edit_plan is None:
-            raise ValueError('Ready decisions require a coarse edit plan')
+        # ready with edit_plan=null is allowed when no attack-vehicle editing is needed
         if self.suitability=='unsuitable' and (self.edit_plan is not None or not self.retrieval_suggestion):
             raise ValueError('Unsuitable scenes require a retrieval suggestion and no edit plan')
         return self
@@ -95,13 +94,18 @@ class Output(Response):
     @model_validator(mode='after')
     def handoff(self):
         if self.suitability=='ready':
-            if self.attack_input is None:raise ValueError('Ready output requires validated attack_input')
-            attack=AttackInput.model_validate(self.attack_input)
-            if (attack.scene_ref.scene_id,attack.scene_ref.scene_token)!=(self.scene_id,self.scene_token):
-                raise ValueError('Attack arguments belong to a different scene')
-            plan=self.edit_plan
-            if (attack.operation,attack.target_track,attack.maneuver,attack.instruction)!=(plan.operation,plan.target_track,plan.maneuver,plan.instruction):
-                raise ValueError('Attack arguments differ from the reviewed plan')
+            if self.edit_plan is None:
+                # No attack-vehicle editing needed; scene is ready for ego editing directly
+                if self.attack_input is not None:
+                    raise ValueError('attack_input must be null when edit_plan is null')
+            else:
+                if self.attack_input is None:raise ValueError('Ready with edit_plan requires validated attack_input')
+                attack=AttackInput.model_validate(self.attack_input)
+                if (attack.scene_ref.scene_id,attack.scene_ref.scene_token)!=(self.scene_id,self.scene_token):
+                    raise ValueError('Attack arguments belong to a different scene')
+                plan=self.edit_plan
+                if (attack.operation,attack.target_track,attack.maneuver,attack.instruction)!=(plan.operation,plan.target_track,plan.maneuver,plan.instruction):
+                    raise ValueError('Attack arguments differ from the reviewed plan')
         elif self.attack_input is not None:
             raise ValueError('Non-ready results cannot carry executable attack arguments')
         return self

@@ -1,8 +1,8 @@
 """
-LLM client for adagentv1.0.
+LLM client for AdAgent.
 
 This module only handles communication with an OpenAI-compatible LLM API.
-Agent orchestration and tool calling logic will be implemented separately.
+Agent orchestration is handled by agent/orchestrator.py.
 """
 
 import os
@@ -46,35 +46,19 @@ class LLMClient:
             raise ValueError("LLM overrides allow only model, timeout and max_tokens")
         self.last_usage = None
 
-        self.api_key = (os.getenv(file_config.get("api_key_env", "OPENAI_API_KEY")) or os.getenv("LLM_API_KEY"))
-        self.base_url = (
-            os.getenv("OPENAI_BASE_URL")
-            or os.getenv("LLM_BASE_URL")
-            or file_config.get("base_url")
-        )
-        self.model = (
-            overrides.get("model")
-            or os.getenv("OPENAI_MODEL")
-            or os.getenv("LLM_MODEL")
-            or file_config.get("model")
-        )
-        self.timeout = int(
-            overrides.get("timeout")
-            or os.getenv("LLM_TIMEOUT")
-            or os.getenv("OPENAI_TIMEOUT")
-            or file_config.get("timeout", 600)
-        )
-        self.max_tokens = int(
-            overrides.get("max_tokens") or os.getenv("OPENAI_MAX_TOKENS") or file_config.get("max_tokens", 1024)
-        )
+        self.api_key = os.getenv(file_config.get("api_key_env", "OPENAI_API_KEY"))
+        self.base_url = file_config.get("base_url")
+        self.model = overrides.get("model") or file_config.get("model")
+        self.timeout = int(overrides.get("timeout") or file_config.get("timeout", 600))
+        self.max_tokens = int(overrides.get("max_tokens") or file_config.get("max_tokens", 1024))
 
         missing = []
         if not self.api_key:
             missing.append("OPENAI_API_KEY")
         if not self.base_url:
-            missing.append("OPENAI_BASE_URL (or LLM_BASE_URL)")
+            missing.append("configs/api.json: base_url")
         if not self.model:
-            missing.append("OPENAI_MODEL (or LLM_MODEL)")
+            missing.append("configs/api.json: model")
 
         if missing:
             raise EnvironmentError(

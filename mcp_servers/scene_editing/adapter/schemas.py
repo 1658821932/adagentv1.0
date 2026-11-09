@@ -1,6 +1,6 @@
 """Public editing_stage.v1 contracts, based on the editing module report."""
 from typing import Any, Annotated, Literal
-from pydantic import Field, model_validator
+from pydantic import Field, RootModel, model_validator
 from common.models import InputModel, OutputModel, NonEmptyStr
 from common.scene_refs import SceneReference
 from common.artifacts import load_tool_result
@@ -31,6 +31,13 @@ class AttackInput(InputModel):
     vehicle: VehicleAsset | None = None
     constraints: AttackConstraints = Field(default_factory=AttackConstraints)
     timeout: PositiveInt = 3600
+    task_contract: dict | None = Field(default=None, description="Optional caller-owned attack_task.v2 contract with keyframes and provenance.")
+    acceptance_policy: dict | None = Field(default=None, description="Optional named research acceptance profile and explicit overrides.")
+    revision_feedback: dict | None = Field(default=None, description="Compact review of the previous attack: stage, outcome, guidance and measured evidence. Preserve the original instruction/contract; do not attach archived conversations or reasoning.")
+    pdm_self_check: bool = Field(default=False, description="Expose candidate PDM self-checks and require a tested PDM-failing candidate before submission.")
+    pdm_ignore_traffic_lights: bool = Field(default=False, description="Explicit signal-agnostic PDM experiment. Preserve source annotations, omit lights from PDM, and mark signal compliance not evaluated.")
+    pdm_probe_budget: PositiveInt = Field(default=2, description="Maximum candidate simulations per attack, shared across object reselection.")
+    pdm_defense_feedback: bool = Field(default=False, description="Include advisory braking estimates and a bounded defense-constructor search in each PDM probe. No new attack acceptance gate.")
 
     @model_validator(mode="before")
     @classmethod
@@ -45,6 +52,8 @@ class AttackInput(InputModel):
 
     @model_validator(mode="after")
     def operation_arguments(self):
+        if self.pdm_defense_feedback and not self.pdm_self_check:
+            raise ValueError("pdm_defense_feedback requires pdm_self_check")
         if self.operation == "edit_existing":
             if self.vehicle is not None or self.maneuver is not None:
                 raise ValueError("edit_existing rejects vehicle/maneuver; select a real annotated track internally when target_track is omitted")
@@ -82,6 +91,7 @@ class AttackOutput(OutputModel):
     source_scene_ref: SceneReference
     scene_id: NonEmptyStr
     scene_token: NonEmptyStr
+    operation: Literal["edit_existing", "add_vehicle"] | None = Field(default=None, description="Attack operation used to create the frozen scene.")
     target_track: NonEmptyStr
     selected_candidate_id: NonEmptyStr
     frozen_scene_path: NonEmptyStr
@@ -91,14 +101,17 @@ class AttackOutput(OutputModel):
     submission_path: NonEmptyStr
     checks: StageChecks
     annotation_changes: dict[str, Any]
-    simulation_input: SimulationInput | None = Field(default=None, description="Prepared native scene/asset paths for tool13; null until converted. A frozen metadata directory alone is not executable.")
+    simulation_input: SimulationInput | None = Field(default=None, description="Prepared exact edited native scene/asset paths for tool07 replay and tool08; null if export-report explains unavailable assets/conversion. A frozen metadata directory alone is not executable.")
     rendered_videos: dict[str, NonEmptyStr] = Field(default_factory=dict, description="Camera name to edited render path; empty until rendered. Original recordings must not be relabelled as edited renders.")
+    pdm_probe_result_path: NonEmptyStr | None = Field(default=None, description="Completed self-check bound to the submitted candidate; tool08 verifies it against the frozen scene before reuse.")
 
 class EgoInput(InputModel):
     attack_result: AttackOutput | NonEmptyStr = Field(description="Full attack result, successful envelope or saved attack-result JSON path.")
     target_effect: NonEmptyStr = Field(description="One correct ego behavior for the target scene.")
     allow_safe_stop: bool = True
     use_foci: bool = True
+    max_edit_candidates: Annotated[int, Field(ge=0)] | None = Field(default=None, description="Optional new-edit resource budget. Zero permits selecting, inspecting and submitting existing candidates only; acceptance checks stay unchanged.")
+    reuse_completed_from: NonEmptyStr | None = Field(default=None, description="Prior failed ego service run. Reuse only completed scene/policy-bound understanding and constructor; start a new editor request, preserving previous failures.")
     timeout: PositiveInt = 3600
 
     @model_validator(mode="before")
@@ -136,5 +149,35 @@ class EgoOutput(OutputModel):
     checks: StageChecks
     annotation_changes: dict[str, Any]
     simulation_input: SimulationInput | None = None
-    ilft_training_data: ILTrainingData | None = Field(default=None, description="Converted expert labels for tool15 ilft. CSV alone is not ann_file; null until export is implemented.")
+    ilft_training_data: ILTrainingData | None = Field(default=None, description="Converted expert labels for tool10 ilft. CSV alone is not ann_file; null until export is implemented.")
     rendered_videos: dict[str, NonEmptyStr] = Field(default_factory=dict)
+
+
+class BoundedSearchOutcome(OutputModel):
+    """Business no-solution result; never constructed from API or execution errors."""
+    schema_version: Literal["editing_stage.v1"] = "editing_stage.v1"
+    mode: Literal["real"] = "real"
+    run_dir: NonEmptyStr
+    reason: NonEmptyStr
+    stop_reason: NonEmptyStr
+    failed_requirements: list[str]
+    failed_requirements_scope: Literal["observed_in_attempted_candidates"] = "observed_in_attempted_candidates"
+    attempts: list[dict[str, Any]] = Field(min_length=1)
+    evidence_paths: list[NonEmptyStr] = Field(min_length=1)
+    scope: Literal["current_tools_and_budget"] = "current_tools_and_budget"
+    global_infeasibility_proven: Literal[False] = False
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+class AttackRefusal(BoundedSearchOutcome):
+    stage: Literal["attack_editing"] = "attack_editing"
+    status: Literal["unable_to_complete"] = "unable_to_complete"
+
+class DefenseNotFound(BoundedSearchOutcome):
+    stage: Literal["ego_editing"] = "ego_editing"
+    status: Literal["defense_not_found"] = "defense_not_found"
+
+class AttackResult(RootModel[Annotated[AttackOutput | AttackRefusal, Field(discriminator="status")]]):
+    pass
+
+class EgoResult(RootModel[Annotated[EgoOutput | DefenseNotFound, Field(discriminator="status")]]):
+    pass

@@ -123,15 +123,15 @@ def test_configured_json_bridge_keeps_identity_and_outputs_real_files(source,scr
 def test_mock_expert_csv_cannot_be_passed_as_il_labels(source):
     attack=call_tool("attack_vehicle_editor",attack_args(source),mode="mock")
     ego=call_tool("ego_trajectory_editor",{"attack_result":attack,"target_effect":"Stop."},mode="mock")
-    from tools.tool15_policy_trainer.schemas import Input
+    from tools.tool10_policy_trainer.schemas import Input
     with pytest.raises(ValueError):
         Input.model_validate({"training_mode":"ilft","training_data":{"expert_trajectory_path":ego["result"]["expert_trajectory_path"]},"base_checkpoint":"/base.pth"})
 
 
 def test_optional_handoff_blocks_match_existing_downstream_schemas():
     from mcp_servers.scene_editing.adapter.schemas import SimulationInput,ILTrainingData
-    from tools.tool13_policy_runner.schemas import Input as SimInput
-    from tools.tool15_policy_trainer.schemas import Input as TrainInput
+    from tools.tool08_policy_runner.schemas import Input as SimInput
+    from tools.tool10_policy_trainer.schemas import Input as TrainInput
     s=SimulationInput(scenario_data_folder_path="/native/scenes",asset_folder_path="/native/assets")
     SimInput.model_validate({**s.model_dump(),"config_path":"/cfg.py","checkpoint_path":"/base.pth","model_name":"base","data_type":"custom"})
     labels=ILTrainingData(ann_file="/labels/infos.pkl",token_file="/labels/tokens.yaml")

@@ -80,4 +80,4 @@ WorldEngine 默认使用 adapter/run_testing.sh 启动，算法源码仍从 WORL
 
 这些改动只规范文件布局，不改变训练算法；policy_trainer 支持 ILFT 与 RLFT。
 
-工具契约、服务配置、WorldEngine 参数与长任务管理见 [执行接口说明](../docs/EXECUTION_CONTRACTS.md)。
+工具契约、服务配置、WorldEngine 参数与长任务管理见 [执行接口说明](../docs/ARCHITECTURE.md)。

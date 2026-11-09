@@ -5,7 +5,7 @@ from .schemas import AttackInput, AttackOutput, EgoInput, EgoOutput
 def attack(arguments):
     data=AttackInput.model_validate(arguments)
     root=Path("/mock/scene_editing/attack")
-    result={"mode":"mock","run_dir":str(root),"source_scene_ref":data.scene_ref.model_dump(),
+    result={"mode":"mock","run_dir":str(root),"operation":data.operation,"source_scene_ref":data.scene_ref.model_dump(),
         "scene_id":data.scene_ref.scene_id,"scene_token":data.scene_ref.scene_token,
         "target_track":data.target_track or ("mock_existing_track" if data.operation=="edit_existing" else "synthetic_vehicle_01"),"selected_candidate_id":"candidate_001",
         "frozen_scene_path":str(root/"frozen_scene"),"frames_path":str(root/"frozen_scene/metadata/frames.json"),

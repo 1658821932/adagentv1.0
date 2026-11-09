@@ -6,7 +6,7 @@ import pytest
 from tools.tool02_scene_instance_generator import real, mock
 from tools.tool02_scene_instance_generator.schemas import Input
 from tools.registry import call_tool
-from tools.tool04_video_retriever.schemas import Input as RetrievalInput
+from tools.tool03_video_retriever.schemas import Input as RetrievalInput
 
 GROUP={'id':'G-cross','name':'Cross traffic','base_scene':'Urban intersection',
        'wrong_behavior':'Delayed yielding to cross traffic.',
@@ -69,8 +69,8 @@ def test_optional_hints_are_reflected_in_mock():
     assert 'dusk' in out['result']['scene_requirement']
 
 def test_legacy_qualitative_alias():
-    value=Input.model_validate({'failure_analysis':GROUP,'parameter_assignment':{'lighting':'dusk'}})
-    assert value.variation_hints=={'lighting':'dusk'}
+    with pytest.raises(ValueError):
+        Input.model_validate({'failure_analysis':GROUP,'parameter_assignment':{'lighting':'dusk'}})
 
 def test_exact_duplicate_corrected_once_with_previous_envelope():
     item=response();new=deepcopy(item);new['scene_requirement']='New cross-traffic requirement with an initially occluded crossing vehicle.'
@@ -80,9 +80,9 @@ def test_exact_duplicate_corrected_once_with_previous_envelope():
     assert client.calls==2
     assert out['result']==new
 
-def test_old_scene_instance_summary_is_still_accepted():
-    value=Input.model_validate({'failure_analysis':GROUP,'existing_instances':[{'status':'success','result':{'scene_instance':'legacy summary'}}]})
-    assert value.existing_instances==['legacy summary']
+def test_old_scene_instance_summary_is_rejected():
+    with pytest.raises(ValueError):
+        Input.model_validate({'failure_analysis':GROUP,'existing_instances':[{'status':'success','result':{'scene_instance':'legacy summary'}}]})
 
 def test_duplicate_exhausts_bounded_retries():
     item=response();client=Client(item,item)

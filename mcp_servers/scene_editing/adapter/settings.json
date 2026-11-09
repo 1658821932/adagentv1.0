@@ -1,3 +1,13 @@
 {
-  "commands": {"attack_editing": [], "ego_editing": []}
+  "commands": {
+    "attack_editing": [
+      "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/environments/scene_editing/bin/python",
+      "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/core/adversarial/editing_backend.py"
+    ],
+    "ego_editing": [
+      "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/environments/scene_editing/bin/python",
+      "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/core/adversarial/editing_backend.py"
+    ]
+  },
+  "public_pipeline_root": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/outputs/rendered"
 }

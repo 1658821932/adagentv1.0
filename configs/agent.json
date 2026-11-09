@@ -4,7 +4,7 @@
   },
   "llm": {
     "timeout": 600,
-    "max_tokens": 1024,
+    "max_tokens": 4096,
     "roles": {
       "planner": {}
     },
@@ -18,12 +18,12 @@
       "failure_analyzer": "real",
       "scene_instance_generator": "real",
       "video_retriever": "real",
-      "scene_validator": "real",
+      "edit_planner": "real",
+      "attack_vehicle_editor": "real",
+      "ego_trajectory_editor": "real",
       "policy_runner": "real",
       "failure_case_filter": "real",
-      "policy_trainer": "real",
-      "attack_vehicle_editor": "real",
-      "ego_trajectory_editor": "real"
+      "policy_trainer": "real"
     }
   },
   "logging": {

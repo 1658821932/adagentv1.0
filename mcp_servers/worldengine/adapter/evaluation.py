@@ -15,7 +15,7 @@ def filter_failure_cases(input_data: dict[str, Any]) -> EvaluationResult:
     result_dir = input_data.get("result_dir")
     if not isinstance(result_dir, str) or not result_dir.strip():
         raise ValueError("failure_case_filter requires result_dir containing official PDM scores")
-    source = input_data.get("scenario_pkl") or input_data.get("scenario_path")
+    source = input_data.get("scenario_pkl")
     if not isinstance(source, str) or not source.strip():
         raise ValueError("failure_case_filter requires scenario_pkl")
     scenario = Path(source).expanduser().resolve()
