@@ -6,7 +6,8 @@ implementation mode (mock or real), enforces an optional per-call timeout,
 and validates the standard result envelope.
 """
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+import queue
+import threading
 from typing import Any, Dict, Optional
 
 from agent.schemas import validate_tool_result
@@ -88,19 +89,29 @@ class ToolExecutor:
                 ) from exc
 
             if self.execution_timeout:
-                # Do not use a context manager: its __exit__ waits for the
-                # worker to finish, which would defeat the timeout when the
-                # tool is truly stuck. shutdown(wait=False) lets the agent
-                # move on while the stuck thread finishes in the background.
-                pool = ThreadPoolExecutor(max_workers=1)
-                future = pool.submit(call_tool, tool_name, arguments, mode=mode)
+                # Run the tool in a daemon thread so a stuck tool neither
+                # blocks the agent past the timeout nor prevents interpreter
+                # exit. Non-daemon threads (e.g. ThreadPoolExecutor workers)
+                # would keep the process alive until the stuck call returns.
+                result_queue: "queue.Queue" = queue.Queue(maxsize=1)
+
+                def _run() -> None:
+                    try:
+                        result_queue.put(
+                            (True, call_tool(tool_name, arguments, mode=mode))
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        result_queue.put((False, exc))
+
+                worker = threading.Thread(target=_run, daemon=True)
+                worker.start()
                 try:
-                    result = future.result(timeout=self.execution_timeout)
-                except FuturesTimeoutError:
-                    pool.shutdown(wait=False)
+                    ok, payload = result_queue.get(timeout=self.execution_timeout)
+                except queue.Empty:
                     return self._timeout_error(tool_name, self.execution_timeout)
-                else:
-                    pool.shutdown(wait=True)
+                if not ok:
+                    raise payload
+                result = payload
             else:
                 result = call_tool(
                     tool_name,
