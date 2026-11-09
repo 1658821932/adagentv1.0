@@ -87,3 +87,7 @@ mcp_servers/worldengine/core/logs/
 
 # Generated WorldEngine debug outputs
 /mcp_servers/worldengine/core/dbg/
+
+# Private AI handoffs and local research notes
+/docs/private/
+*.bak
