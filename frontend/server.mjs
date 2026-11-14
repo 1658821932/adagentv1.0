@@ -9,6 +9,7 @@
  * - /api/file?path=     GET  项目内文件代理（视频支持 Range）
  */
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { stat, readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -16,7 +17,7 @@ import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, extname, sep, join, basename, dirname } from 'node:path';
 import { resolveRunStatus } from './run-status.mjs';
 
-const ROOT = resolve(process.env.ADAGENT_PROJECT_ROOT || '/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent');
+const ROOT = resolve(process.env.ADAGENT_PROJECT_ROOT || fileURLToPath(new URL('..', import.meta.url)));
 const LOGS = join(ROOT, 'logs');
 const PYTHON = join(ROOT, 'environments/agent/.venv/bin/python');
 const FRONTEND_DIR = resolve(process.cwd());
