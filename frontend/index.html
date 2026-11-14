@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>World Corner Agent · 自动驾驶失败案例驱动的数据生成和闭环训练智能体</title><link rel="stylesheet" href="styles.css?v=50"></head>
+<body>
+<div class="chat-app">
+<header><div class="brand"><span class="logo" aria-label="ADagent"><svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 8a8.4 8.4 0 0 0-14.7-1.2M4.5 16a8.4 8.4 0 0 0 14.7 1.2"/><path d="m16.3 7.2 3.5 1.1.7-3.6M7.7 16.8l-3.5-1.1-.7 3.6"/><path d="m8 10 1.5-3h5L16 10M7.5 10h9v5h-9zM9 15v1M15 15v1M10 12.5h4"/></svg></span><div><strong>World Corner Agent <small>v0.1</small></strong><p>自动驾驶失败案例驱动的数据生成和闭环训练智能体</p></div></div><div class="header-right"><div class="history" id="history"><button id="history-btn" type="button" aria-haspopup="listbox" aria-expanded="false"><svg class="history-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.4 4.6v4.6h4.6"/><path d="M12 7.9V12l3 1.8"/></svg><span class="history-label">历史运行</span><span class="history-count" id="history-count"></span><span class="history-caret" aria-hidden="true"></span></button><div class="history-panel hidden" id="history-panel" role="listbox" aria-busy="false"><div id="history-feedback" class="hidden" aria-live="polite"></div><div id="history-items"></div></div></div><button id="replay-btn" class="hidden" title="按记录时间重放当前运行">▶ 重放</button><button id="demo-btn" title="演示示例">示例</button><button id="config-btn" title="运行配置">配置</button><button id="clear" title="清空对话">新对话</button></div></header>
+<div class="workbench-layout"><aside class="workflow-side"><div class="side-title"><span class="section-dot"></span><h2>工具调用流程</h2></div><div class="run-state"><span class="state-light"></span><div><b id="run-title">等待任务</b><small id="run-description">输入指令，开始智能体工作流</small></div></div><div class="flow-log" id="flow-log"></div></aside><section class="conversation"><div class="conversation-heading"><div><span class="section-dot"></span><b>智能体对话</b></div><span class="model-label" id="conversation-model" title="当前对话实际使用的主 Agent 模型">主 Agent</span></div><main id="messages" aria-label="对话内容"></main>
+<form id="composer"><div class="input-box"><textarea id="prompt" rows="2" placeholder="输入指令" aria-label="输入指令"></textarea><button id="stop" type="button" class="hidden" aria-label="停止任务" title="停止任务">■</button><button id="send" type="submit" aria-label="发送指令">↑</button></div><div class="input-footer"><span id="status"></span></div></form></section></div>
+</div>
+<div id="config-modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-title"><span class="section-dot"></span><b>运行配置</b><button id="config-close" title="关闭">✕</button></div>
+    <div id="cfg-loading" class="panel-load-container hidden" aria-live="polite"></div>
+    <div class="modal-body" id="cfg-fields">
+      <div class="cfg-section">
+        <h4>模型 API</h4>
+        <select id="cfg-profile"></select>
+        <p class="cfg-hint" id="cfg-profile-info"></p>
+        <div class="cfg-row"><label>思考程度</label><select id="cfg-effort">
+          <option value="profile">跟随模型配置</option>
+          <option value="low">低</option>
+          <option value="medium">中</option>
+          <option value="high">高</option>
+          <option value="max">最高</option>
+        </select></div>
+      </div>
+      <div class="cfg-section">
+        <h4>工具模型</h4>
+        <p class="cfg-hint">这些工具内部自己调用模型。选“跟随主 agent”就与上面一致。</p>
+        <div id="cfg-tool-profiles"></div>
+      </div>
+      <div class="cfg-section">
+        <h4>Agent 参数</h4>
+        <div class="cfg-row"><label>最大步数 max_steps</label><input id="cfg-max-steps" type="number" min="1" max="100" step="1"></div>
+        <div class="cfg-row"><label>决策修正次数</label><input id="cfg-corrections" type="number" min="0" max="5" step="1"></div>
+      </div>
+      <div class="cfg-section">
+        <h4>工具模式</h4>
+        <p class="cfg-hint">mock 不调用真实后端，不产出真实产物</p>
+        <div id="cfg-tools"></div>
+      </div>
+    </div>
+    <div class="modal-footer"><span id="cfg-msg" role="status" aria-live="polite"></span><button id="cfg-cancel">取消</button><button id="cfg-save" class="primary">保存</button></div>
+  </div>
+</div>
+<script type="module" src="app.js?v=50"></script>
+</body></html>

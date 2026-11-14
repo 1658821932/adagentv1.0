@@ -1,0 +1,718 @@
+{
+ "run_id": "run_20261112_081412_5f1c9a3e",
+ "task": "根据这个失败案例，为它专门造一些数据用来提升",
+ "status": "finished",
+ "error": null,
+ "started_at": "2026-11-12T08:14:12",
+ "duration_seconds": 1513.7,
+ "llm_model": "deepseek-flash",
+ "active": false,
+ "summary": {
+  "llm_seconds": 24.2,
+  "tool_seconds": 1489.5,
+  "steps": 9
+ },
+ "thinking": {
+  "elapsed_seconds": 6.4
+ },
+ "extra_decisions": [
+  {
+   "action": "finish",
+   "reason": "失败场景已复现并完成评测、筛选与一轮后训练。",
+   "llm": {
+    "elapsed_seconds": 2.6
+   }
+  }
+ ],
+ "steps": [
+  {
+   "step": 0,
+   "tool": "failure_analyzer",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:13",
+    "step": 0,
+    "action": "call_tool",
+    "tool_name": "failure_analyzer",
+    "reason": "先从仿真归档里读出这个场景的官方指标和图像证据，确认它到底是怎么失败的，再决定复现方向。"
+   },
+   "duration": 27.1,
+   "elapsed_seconds": null,
+   "evidence": [
+    {
+     "title": "失败证据 · 归档场景录像",
+     "src": "/api/eightcam?path=%2Finspire%2Fhdd3%2Fproject%2Fintelligent-driving-agent%2Fpublic%2Fworkspace%2Fghc%2FWorldEngine%2Fexperiments%2Fclosed_loop_exps%2Fe2e_vadv2_50pct_fullR_bev%2Fnavtest_failures_R_complete%2Fvisualizations%2Fcameras%2Fcamera_view_dd162898ecf351d4.mp4"
+    }
+   ],
+   "llm": {
+    "elapsed_seconds": 2.0,
+    "prompt_tokens": 12000,
+    "completion_tokens": 200
+   },
+   "input": {
+    "token": "dd162898ecf351d4",
+    "simulation": "navtest_failures_R_complete"
+   },
+   "output": {
+    "status": "success",
+    "tool": "failure_analyzer",
+    "result": {
+     "failure_analysis": {
+      "failure_type": [
+       "跟车未减速/追尾"
+      ],
+      "failure_reason": "自车在接近前方近乎静止车辆时持续加速，未减速避让并发生重叠接触。",
+      "key_scene_factors": [
+       "自车速度从 0.74 m/s 单调升到 4.82 m/s，纵向加速度全程为正，没有任何减速动作。",
+       "前方目标速度长期低于 0.3 m/s，间距由 0.89 m 降到 0 m 并出现重叠。",
+       "车角最小可行驶余量始终为正，说明不是出界，纯粹是没刹车。"
+      ],
+      "official_metrics": {
+       "step": 11.0,
+       "no_at_fault_collisions": 0.0,
+       "drivable_area_compliance": 1.0,
+       "ego_progress": 0.0,
+       "time_to_collision_within_bound": 0.0,
+       "comfort": 1.0,
+       "driving_direction_compliance": 1.0,
+       "score": 0.0,
+       "first_violation_step": 7.0
+      },
+      "uncertainty": "第 6 步右侧驶来的深色车未能唯一匹配，是否促成未确认。"
+     },
+     "token": "2021.09.16.15.47.30_veh-45_01199_01391-dd162898ecf351d4",
+     "simulation": "e2e_vadv2_50pct_fullR_bev/navtest_failures_R_complete",
+     "evidence_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine_failure_analysis/runtime/run_20261112_081405_7a51c0be9d33"
+    }
+   },
+   "artifacts": [],
+   "metrics": [
+    {
+     "key": "failure_analysis.official_metrics.score",
+     "value": 0
+    },
+    {
+     "key": "failure_analysis.official_metrics.first_violation_step",
+     "value": 7
+    }
+   ],
+   "log_tail": []
+  },
+  {
+   "step": 1,
+   "tool": "scene_instance_generator",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:14",
+    "step": 1,
+    "action": "call_tool",
+    "tool_name": "scene_instance_generator",
+    "reason": "把失败机制转成可执行场景需求：同车道前方有近乎静止的车辆，自车保持巡航速度接近。"
+   },
+   "duration": 7.8,
+   "elapsed_seconds": null,
+   "evidence": [],
+   "llm": {
+    "elapsed_seconds": 3.0,
+    "prompt_tokens": 12800,
+    "completion_tokens": 240
+   },
+   "input": {
+    "failure_analysis": {
+     "failure_type": [
+      "跟车未减速/追尾"
+     ],
+     "failure_reason": "自车接近近乎静止车辆时持续加速，未减速避让。"
+    }
+   },
+   "output": {
+    "status": "success",
+    "tool": "scene_instance_generator",
+    "result": {
+     "scene_requirement": "自车在直行城市道路上跟车，前方车辆近乎静止，自车未及时减速并追尾。",
+     "target_effect": "自车提前识别前方的静止车辆，在进入制动距离前果断减速，保持安全跟车距离。",
+     "edit_strategy": "在同车道前方 22-28 米放置一辆静止车辆，让自车在 7 秒内必须做出制动决策。",
+     "candidates": [
+      {
+       "id": "cand_01",
+       "focus": "same_lane_stationary",
+       "note": "同车道静止车，最贴近原失败机制"
+      },
+      {
+       "id": "cand_02",
+       "focus": "lead_vehicle_brake",
+       "note": "真实前车急刹，需要场景里存在前车"
+      },
+      {
+       "id": "cand_03",
+       "focus": "adjacent_cut_in",
+       "note": "相邻车道切入，需要多车道场景"
+      }
+     ]
+    }
+   },
+   "artifacts": [],
+   "metrics": [],
+   "log_tail": []
+  },
+  {
+   "step": 2,
+   "tool": "video_retriever",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:15",
+    "step": 2,
+    "action": "call_tool",
+    "tool_name": "video_retriever",
+    "reason": "在本地视频库里检索与'同车道前方有低速或静止车辆'最接近的真实场景，作为攻击编辑的底图。"
+   },
+   "duration": 18.2,
+   "elapsed_seconds": null,
+   "evidence": [
+    {
+     "title": "前视检索视频",
+     "src": "/api/video?path=%2Finspire%2Fhdd3%2Fproject%2Fintelligent-driving-agent%2Fpublic%2Fworkspace%2Fghc%2Fadagent%2Fdata%2Fnavtrain_ep_per1%2Fsamples%2F54c166c4ad5c5ad9%2Fpreview%2Foriginal_front_2hz.mp4"
+    }
+   ],
+   "llm": {
+    "elapsed_seconds": 2.2,
+    "prompt_tokens": 13600,
+    "completion_tokens": 280
+   },
+   "input": {
+    "requirement": "城市道路直行，同车道前方有低速或静止车辆，自车保持接近速度",
+    "library": "default"
+   },
+   "output": {
+    "status": "success",
+    "tool": "video_retriever",
+    "result": {
+     "video_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/sentry_video_search/runtime/run_20261112_081520_9c3f7a21d5be/output/clip_rank01_score0.809787_lossless.mp4",
+     "source_file": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/sentry_video_search/data/navtrain_ep_per1_multicam/2a217a228376536e/CAM_F0.mp4",
+     "source_segment": {
+      "start_time": 0.0,
+      "end_time": 11.5
+     },
+     "match_score": 0.809787,
+     "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
+     "scene_token": "54c166c4ad5c5ad9",
+     "library": "default",
+     "mode": "local_hit_reranked",
+     "local_search_seconds": 6.2,
+     "rerank_seconds": 5.4,
+     "export_seconds": 6.5
+    }
+   },
+   "artifacts": [],
+   "metrics": [],
+   "log_tail": []
+  },
+  {
+   "step": 3,
+   "tool": "edit_planner",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:16",
+    "step": 3,
+    "action": "call_tool",
+    "tool_name": "edit_planner",
+    "reason": "场景底图可用，失败机制明确了需要的阻碍物，因此选择新增一辆静止车辆，并把接触时间约束到评分窗口内。"
+   },
+   "duration": 44.2,
+   "elapsed_seconds": null,
+   "evidence": [],
+   "llm": {
+    "elapsed_seconds": 2.4,
+    "prompt_tokens": 14400,
+    "completion_tokens": 320
+   },
+   "input": {
+    "retrieval_result": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/logs/demo/step_02_video_retriever/output.json",
+    "scene_requirement": "城市道路直行，同车道前方车辆近乎静止，自车未及时减速。",
+    "target_effect": "自车提前发现静止前车，在制动距离内果断减速。",
+    "edit_strategy": "把同车道前方车辆调整为静止并保持在车道内。",
+    "vehicle": {
+     "asset_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/assets/vehicle_01.ply",
+     "size_m": [
+      4.432,
+      2.033,
+      1.637
+     ]
+    }
+   },
+   "output": {
+    "status": "success",
+    "tool": "edit_planner",
+    "result": {
+     "suitability": "ready",
+     "reasons": [
+      "直行路段视野通畅，前方车道无遮挡。",
+      "现有车流稀疏，新增一辆静止车不会与已有目标冲突。"
+     ],
+     "edit_plan": {
+      "operation": "add_vehicle",
+      "maneuver": "stationary",
+      "target_track": null,
+      "instruction": "在自车当前车道前方 22-28 米处放置一辆静止乘用车，保持其停止并留在该车道；自车必须在 t=7.0s 之前遇到这个阻挡，从而被迫做出制动或绕行决策。不要写死碰撞。"
+     },
+     "attack_input": {
+      "scene_ref": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/logs/demo/step_02_video_retriever/output.json",
+      "operation": "add_vehicle",
+      "maneuver": "stationary",
+      "vehicle": {
+       "asset_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/assets/vehicle_01.ply",
+       "size_m": [
+        4.432,
+        2.033,
+        1.637
+       ]
+      },
+      "instruction": "在自车当前车道前方 22-28 米处放置一辆静止乘用车，保持其停止并留在该车道；自车必须在 t=7.0s 之前遇到这个阻挡，从而被迫做出制动或绕行决策。不要写死碰撞。"
+     },
+     "target_effect": "自车提前发现静止前车，在制动距离内果断减速。",
+     "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
+     "scene_token": "54c166c4ad5c5ad9"
+    }
+   },
+   "artifacts": [],
+   "metrics": [],
+   "log_tail": []
+  },
+  {
+   "step": 4,
+   "tool": "attack_vehicle_editor",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:17",
+    "step": 4,
+    "action": "call_tool",
+    "tool_name": "attack_vehicle_editor",
+    "reason": "按规划在车道内 24.6 米处放置静止车辆，编辑结果通过了全部几何与任务检查，产出可仿真的冻结场景。"
+   },
+   "duration": 208.6,
+   "elapsed_seconds": null,
+   "evidence": [],
+   "llm": {
+    "elapsed_seconds": 4.3,
+    "prompt_tokens": 15200,
+    "completion_tokens": 360
+   },
+   "input": {
+    "scene_ref": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/logs/demo/step_02_video_retriever/output.json",
+    "operation": "add_vehicle",
+    "maneuver": "stationary",
+    "vehicle": {
+     "asset_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/assets/vehicle_01.ply",
+     "size_m": [
+      4.432,
+      2.033,
+      1.637
+     ]
+    },
+    "instruction": "在自车当前车道前方 22-28 米处放置一辆静止乘用车，保持其停止并留在该车道；自车必须在 t=7.0s 之前遇到这个阻挡，从而被迫做出制动或绕行决策。不要写死碰撞。"
+   },
+   "output": {
+    "status": "success",
+    "tool": "attack_vehicle_editor",
+    "result": {
+     "status": "completed",
+     "stage": "attack_editing",
+     "mode": "real",
+     "operation": "add_vehicle",
+     "run_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04",
+     "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
+     "scene_token": "54c166c4ad5c5ad9",
+     "target_track": "synthetic_vehicle_001",
+     "selected_candidate_id": "seed_000",
+     "frozen_scene_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04/output/attack/materialized/frozen_scene",
+     "frames_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04/output/attack/materialized/frozen_scene/metadata/frames.json",
+     "trajectory_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04/output/attack/trajectory_editing/candidates/seed_000/trajectory.csv",
+     "submission_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04/output/attack/output.json",
+     "simulation_input": {
+      "scenario_data_folder_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04/output/native_attack",
+      "asset_folder_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04/output/native_attack/assets",
+      "scenario_pkl_file_name": "all_scenarios.pkl",
+      "frame_count": 24
+     },
+     "rendered_videos": {},
+     "ilft_training_data": null,
+     "annotation_changes": {
+      "operation": "append_actor",
+      "fields": [
+       "anns.gt_boxes",
+       "anns.gt_velocity_3d",
+       "anns.gt_names",
+       "anns.instance_tokens",
+       "anns.track_tokens"
+      ],
+      "native_export_report_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04/output/native_attack/export-report.json"
+     },
+     "checks": {
+      "reference_screen": "passed",
+      "checks": {
+       "static_target": "passed",
+       "lane_keeping": "passed",
+       "no_ego_contact_until_s": "passed",
+       "road_compliance": "passed",
+       "initial_relation": "passed",
+       "target_clearance": "passed"
+      },
+      "physical_avoidance": "undetermined"
+     }
+    }
+   },
+   "artifacts": [],
+   "metrics": [
+    {
+     "key": "attack.target_track",
+     "value": "synthetic_vehicle_001"
+    },
+    {
+     "key": "attack.placement_forward_m",
+     "value": 24.6
+    }
+   ],
+   "log_tail": []
+  },
+  {
+   "step": 5,
+   "tool": "ego_trajectory_editor",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:18",
+    "step": 5,
+    "action": "call_tool",
+    "tool_name": "ego_trajectory_editor",
+    "reason": "攻击场景已冻结，接着为同一条车道生成一条安全的专家自车轨迹：正常接近，进入制动距离后平稳减速停住。"
+   },
+   "duration": 214.5,
+   "elapsed_seconds": null,
+   "evidence": [
+    {
+     "title": "专家轨迹回放",
+     "src": "/api/wevideo?path=%2Finspire%2Fhdd3%2Fproject%2Fintelligent-driving-agent%2Fpublic%2Fworkspace%2Fghc%2FWorldEngine%2Fexperiments%2Frender_demo%2F54c166_expert%2Fnew-camera-CAM_F0.mp4"
+    }
+   ],
+   "llm": {
+    "elapsed_seconds": 3.9,
+    "prompt_tokens": 16000,
+    "completion_tokens": 400
+   },
+   "input": {
+    "attack_result": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04/output/attack/output.json",
+    "target_effect": "自车保持合理接近速度，进入制动距离后平稳减速，在前车后方安全停住。",
+    "allow_safe_stop": true,
+    "use_foci": true
+   },
+   "output": {
+    "status": "success",
+    "tool": "ego_trajectory_editor",
+    "result": {
+     "status": "completed",
+     "stage": "ego_editing",
+     "mode": "real",
+     "run_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1",
+     "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
+     "scene_token": "54c166c4ad5c5ad9",
+     "attack_run_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081412_a7c3d9e15b04",
+     "target_track": "synthetic_vehicle_001",
+     "selected_candidate_id": "foci_00",
+     "selected_source": "foci",
+     "expert_trajectory_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/expert/expert_trajectory.csv",
+     "trajectory_metadata_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/expert/trajectory-metadata.json",
+     "conflict_brief_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/expert/conflict-brief.json",
+     "submission_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/expert/output.json",
+     "simulation_input": {
+      "scenario_data_folder_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/native_expert",
+      "asset_folder_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/native_expert/assets",
+      "scenario_pkl_file_name": "all_scenarios.pkl",
+      "frame_count": 24
+     },
+     "ilft_training_data": null,
+     "rendered_videos": {},
+     "checks": {
+      "reference_screen": "passed",
+      "checks": {
+       "max_speed": "passed",
+       "max_acceleration": "passed",
+       "max_reverse_speed": "passed",
+       "max_lateral_speed": "passed",
+       "observation_window": "passed",
+       "official_margin": "passed",
+       "road_tolerance": "passed",
+       "progress_fraction": "passed",
+       "target_clearance": "passed",
+       "interpolated_contacts": "passed",
+       "direction_compliance": "passed",
+       "comfort": "passed",
+       "map_coverage": "passed",
+       "manual_video": "not_checked"
+      },
+      "physical_avoidance": "passed"
+     }
+    }
+   },
+   "artifacts": [],
+   "metrics": [
+    {
+     "key": "expert.source",
+     "value": "foci"
+    },
+    {
+     "key": "expert.min_target_clearance_m",
+     "value": 5.96
+    }
+   ],
+   "log_tail": []
+  },
+  {
+   "step": 6,
+   "tool": "policy_runner",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:19",
+    "step": 6,
+    "action": "call_tool",
+    "tool_name": "policy_runner",
+    "reason": "用专家包跑原生闭环：前 1.5 秒用专家轨迹做历史，策略接管后自己开，同时采集 8192 条候选的稠密奖励用于后训练。"
+   },
+   "duration": 352.4,
+   "elapsed_seconds": null,
+   "evidence": [
+    {
+     "title": "仿真回放",
+     "src": "/api/video?path=%2Finspire%2Fhdd3%2Fproject%2Fintelligent-driving-agent%2Fpublic%2Fworkspace%2Fghc%2Fadagent%2Fmcp_servers%2Fworldengine%2Fcore%2Fprojects%2FSimEngine%2Fdbg%2Fvideo_visualizer%2Fnuplan_openscene_NR_expert_vadv2_50pct%2Fcamera_view_54c166c4ad5c5ad9.mp4"
+    }
+   ],
+   "llm": {
+    "elapsed_seconds": 2.1,
+    "prompt_tokens": 16800,
+    "completion_tokens": 440
+   },
+   "input": {
+    "execution_mode": "native",
+    "collision_target_track": "synthetic_vehicle_001",
+    "num_history": 4,
+    "max_frame_per_scene": 16,
+    "with_dense_reward_manager": true,
+    "scenario_data_folder_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/native_expert",
+    "asset_folder_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/native_expert/assets",
+    "scenario_pkl_file_name": "all_scenarios.pkl",
+    "config_path": "<默认>",
+    "checkpoint_path": "<默认>",
+    "model_name": "expert_vadv2_50pct",
+    "data_type": "nuplan_openscene"
+   },
+   "output": {
+    "status": "success",
+    "tool": "policy_runner",
+    "result": {
+     "result_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/simulation",
+     "policy_result": "completed",
+     "collision_report": {
+      "schema_version": "native_collision.v1",
+      "status": "completed",
+      "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
+      "target_track": "synthetic_vehicle_001",
+      "policy_takeover_step": 3,
+      "policy_takeover_time_s": 1.5,
+      "frame_count": 16,
+      "eligible_frame_count": 12,
+      "target_collision_detected": true,
+      "any_collision_detected": true,
+      "first_target_collision_time_s": 6.5,
+      "min_target_clearance_m": 0.0,
+      "initial_history_target_contact": false,
+      "target_contact_sample_count": 3
+     },
+     "evaluation_scope": {
+      "status": "completed",
+      "scope": "full_rollout_pdm",
+      "standard_4_second_benchmark": false,
+      "scenes": [
+       {
+        "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
+        "num_history": 4,
+        "max_frame_per_scene": 16,
+        "sampling_poses": 12,
+        "buffer_size": 13,
+        "start_step": 3,
+        "end_step": 15,
+        "start_time_s": 1.5,
+        "end_time_s": 7.5,
+        "interval_s": 0.5,
+        "status": "completed"
+       }
+      ]
+     },
+     "rollout_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/simulation/WE_output/openscene_format",
+     "reward_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/simulation/WE_output/openscene_format/pdms_pkl",
+     "candidate_rewards_present": true,
+     "rlft_training_data": {
+      "rollout_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/simulation/WE_output/openscene_format",
+      "token_file": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/rlft_annotations/tokens.json",
+      "vocab_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/core/data/alg_engine/test_8192_kmeans.npy",
+      "manifest_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/rlft_annotations/manifest.json"
+     }
+    }
+   },
+   "artifacts": [],
+   "metrics": [
+    {
+     "key": "pdm.score",
+     "value": 0.0
+    },
+    {
+     "key": "pdm.no_at_fault_collisions",
+     "value": 0.0
+    },
+    {
+     "key": "pdm.ego_progress",
+     "value": 0.0
+    },
+    {
+     "key": "collision.first_target_collision_time_s",
+     "value": 6.5
+    }
+   ],
+   "log_tail": []
+  },
+  {
+   "step": 7,
+   "tool": "failure_case_filter",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:20",
+    "step": 7,
+    "action": "call_tool",
+    "tool_name": "failure_case_filter",
+    "reason": "读回这次闭环的官方 PDM 分数，确认它确实是零分失败场景，可以进入训练集。"
+   },
+   "duration": 2.9,
+   "elapsed_seconds": null,
+   "evidence": [],
+   "llm": {
+    "elapsed_seconds": 1.8,
+    "prompt_tokens": 17600,
+    "completion_tokens": 480
+   },
+   "input": {
+    "scenario_pkl": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/native_expert/all_scenarios.pkl",
+    "result_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/simulation"
+   },
+   "output": {
+    "status": "success",
+    "tool": "failure_case_filter",
+    "result": {
+     "is_failure_case": true,
+     "failure_cases": [
+      {
+       "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
+       "scenario_pkl": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/run_20261112_081551_c4e8b27a60f1/output/native_expert/all_scenarios.pkl",
+       "pdm_score": 0.0
+      }
+     ],
+     "pdm_scores_file": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/simulation/WE_output/openscene_format/all_scenes_pdm_averages_NR.csv",
+     "scene_count": 1,
+     "scene_results": [
+      {
+       "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
+       "pdm_score": 0.0,
+       "is_failure_case": true,
+       "selection_rule": "official closed-loop PDM total score == 0"
+      }
+     ]
+    }
+   },
+   "artifacts": [],
+   "metrics": [
+    {
+     "key": "filter.is_failure_case",
+     "value": true
+    },
+    {
+     "key": "filter.pdm_score",
+     "value": 0.0
+    }
+   ],
+   "log_tail": []
+  },
+  {
+   "step": 8,
+   "tool": "policy_trainer",
+   "status": "success",
+   "decision": {
+    "timestamp": "2026-11-12T08:14:21",
+    "step": 8,
+    "action": "call_tool",
+    "tool_name": "policy_trainer",
+    "reason": "用这次的 rollout 和候选奖励做一轮 RLFT 微调，让策略在这个薄弱点上学会更早制动。"
+   },
+   "duration": 613.8,
+   "elapsed_seconds": null,
+   "evidence": [],
+   "llm": {
+    "elapsed_seconds": 2.5,
+    "prompt_tokens": 18400,
+    "completion_tokens": 520
+   },
+   "input": {
+    "training_mode": "rlft",
+    "training_data": {
+     "rollout_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/simulation/WE_output/openscene_format",
+     "token_file": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/rlft_annotations/tokens.json",
+     "vocab_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/core/data/alg_engine/test_8192_kmeans.npy",
+     "manifest_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_081932_51d0ae7c8f22/output/rlft_annotations/manifest.json"
+    },
+    "base_checkpoint": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/core/data/alg_engine/ckpts/e2e_vadv2_50pct_ep8.pth",
+    "epochs": 1,
+    "timeout": 3600
+   },
+   "output": {
+    "status": "success",
+    "tool": "policy_trainer",
+    "result": {
+     "checkpoint": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_082614_2b47c91de035/output/checkpoints/iter_1.pth",
+     "training_mode": "rlft",
+     "log_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/worldengine/runtime/run_20261112_082614_2b47c91de035/logs/training.log",
+     "training_audit": {
+      "iterations": 1,
+      "final_loss": 0.2841,
+      "finite_loss": true,
+      "parameters_updated": true,
+      "learning_rate": 2e-05,
+      "loss_trace": [
+       0.4126,
+       0.3518,
+       0.3047,
+       0.2841
+      ]
+     },
+     "data_preparation": {
+      "scene_count": 1,
+      "frame_count": 13,
+      "candidate_count": 8192,
+      "reward_horizon_poses": 40,
+      "vocabulary_sha256": "3f7c1a...9e2b",
+      "kept_scenes": [
+       "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9"
+      ],
+      "selection": "PDM total score == 0"
+     }
+    }
+   },
+   "artifacts": [],
+   "metrics": [
+    {
+     "key": "trainer.training_mode",
+     "value": "rlft"
+    },
+    {
+     "key": "trainer.final_loss",
+     "value": 0.2841
+    }
+   ],
+   "log_tail": []
+  }
+ ]
+}
