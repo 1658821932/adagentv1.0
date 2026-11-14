@@ -17,10 +17,12 @@ from mcp_servers.runtime import current_run, runtime_task
 
 def test_simulation_directs_backend_into_distinct_output_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("SIMENGINE_PYTHON", sys.executable)
+    monkeypatch.setenv('WORLDENGINE_LIBRARY_DIR',str(tmp_path))
+    monkeypatch.setenv('LD_LIBRARY_PATH','/fixture/existing')
     from mcp_servers.worldengine.adapter.config import WorldEngineConfig
     from mcp_servers.worldengine.adapter.service import run_simulation
     script = tmp_path / "simulate.sh"
-    script.write_text('mkdir -p "$WORLDENGINE_TEST_PATH"\nprintf \'[{"succeeded": true}]\' > "$WORLDENGINE_TEST_PATH/runner_report_0.json"\n')
+    script.write_text('test "$LD_LIBRARY_PATH" = "$WORLDENGINE_LIBRARY_DIR:/fixture/existing" || exit 7\nmkdir -p "$WORLDENGINE_TEST_PATH/WE_output"\nprintf \'[{"succeeded": true,"scenario_name":"scene_0"}]\' > "$WORLDENGINE_TEST_PATH/runner_report_0.json"\nprintf \'{"status":"completed","scope":"full_rollout_pdm","scenes":[{"scene_id":"scene_0","status":"completed"}]}\' > "$WORLDENGINE_TEST_PATH/WE_output/pdm_evaluation_scope.json"\n')
     config_file, checkpoint = tmp_path / "cfg.py", tmp_path / "model.pth"
     config_file.touch(); checkpoint.touch()
     scenes = tmp_path / "data/sim_engine/scenarios/original/same"
@@ -35,7 +37,8 @@ def test_simulation_directs_backend_into_distinct_output_dirs(tmp_path, monkeypa
         root = Path(result["run_dir"])
         assert Path(result["result_dir"]).is_relative_to(root / "output")
         assert Path(result["log_path"]).is_relative_to(root / "logs")
-        assert result["reports"] == [[{"succeeded": True}]]
+        assert result["reports"] == [[{"succeeded": True,"scenario_name":"scene_0"}]]
+        assert result['evaluation_scope']['scope']=='full_rollout_pdm'
     assert not (tmp_path / "experiments/closed_loop_exps").exists()
 
 def test_training_ignores_stale_checkpoints_and_keeps_export(tmp_path, stub_training_preparation):

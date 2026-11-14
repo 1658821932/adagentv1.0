@@ -1,6 +1,6 @@
-"""Auto wire mode preserves forced-phase functions and candidate enum gates."""
+"""Required wire mode preserves forced-phase functions and candidate enum gates."""
 import pytest
-from mcp_servers.scene_editing.core.adversarial.ego_tool_transport import constrained_auto,validate_exposed_call
+from mcp_servers.scene_editing.core.adversarial.ego_tool_transport import require_native_call,validate_exposed_call
 
 
 def tool(name,ids=None):
@@ -10,12 +10,31 @@ def tool(name,ids=None):
         required=['candidate_id'],additionalProperties=False)))
 
 
-def test_force_is_translated_to_one_declared_tool_with_auto():
+def test_force_is_translated_to_one_required_tool():
     tools=[tool('inspect',['a']),tool('submit',['b'])]
-    choice,exposed=constrained_auto(dict(function=dict(name='inspect')),tools)
-    assert choice=='auto' and exposed==[tools[0]]
+    choice,exposed=require_native_call(dict(function=dict(name='inspect')),tools)
+    assert choice=='required' and exposed==[tools[0]]
     exposed[0]['function']['parameters']['properties']['candidate_id']['enum'].append('other')
     assert tools[0]['function']['parameters']['properties']['candidate_id']['enum']==['a']
+
+
+def test_unforced_phases_also_require_a_native_call():
+    tools=[tool('inspect'),tool('submit')]
+    assert require_native_call('auto',tools)==('required',tools)
+    with pytest.raises(ValueError):require_native_call('none',tools)
+    with pytest.raises(ValueError):require_native_call('required',[])
+
+
+def test_auto_image_transport_requires_explicit_capability_and_retains_forced_gate():
+    messages=[dict(role='user',content=[dict(type='text',text='diagram'),
+        dict(type='image_url',image_url=dict(url='fixture'))])]
+    tools=[tool('inspect',['a']),tool('submit',['b'])]
+    assert require_native_call('auto',tools,messages=messages)[0]=='required'
+    choice,exposed=require_native_call(dict(function=dict(name='inspect')),tools,
+        messages=messages,image_tool_choice='auto')
+    assert choice=='auto' and exposed==[tools[0]]
+    assert messages[0]['content'][1]['type']=='image_url'
+    assert require_native_call('auto',tools,messages=[dict(role='user',content='text')],image_tool_choice='auto')[0]=='required'
 
 
 def test_other_tools_and_unreviewed_ids_are_rejected_locally():

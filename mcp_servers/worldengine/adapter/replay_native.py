@@ -63,6 +63,17 @@ def prepare(request):
     return scene,arguments
 
 
+def flush_replay_data(engine,scene):
+    """Persist the final episode even with WE's built-in visualizer disabled."""
+    manager=None if engine is None else engine.managers.get('data_manager')
+    if manager is None:
+        raise RuntimeError('Native replay has no data manager to persist rendered frames')
+    expected=int(scene.get('log_length',scene.get('length',0)))
+    if expected<2 or len(manager.episode_data)!=expected:
+        raise RuntimeError('Native replay did not collect the full requested time window')
+    manager.save_data()
+
+
 def export_videos(output,scene,ffmpeg='ffmpeg'):
     """Encode WE-rendered camera images, without the fixed eight-camera visualizer."""
     import cv2
@@ -127,8 +138,15 @@ def main():
         for item in rows:
             if not isinstance(item,dict) or item.get('succeeded') is not True:
                 raise RuntimeError('Native WE reported replay failure')
+            if item.get('scenario_name')!=request['scene_id']:
+                raise RuntimeError('Native WE report belongs to a different replay scene')
             reports.append(item)
     if not reports:raise RuntimeError('No native runner completion report was produced')
+    # WE only flushes its final episode automatically when visualize_video=true.
+    # This adapter encodes selected cameras itself and deliberately disables that
+    # visualizer, so persist the actual collected data before exporting videos.
+    from worldengine.engine.engine_utils import get_engine
+    flush_replay_data(get_engine(),scene)
     video_frames=export_videos(output,scene,request.get('ffmpeg','ffmpeg'))
     Path(request['report_path']).write_text(json.dumps(dict(status='completed',scene_id=request['scene_id'],
         frame_count=scene.get('log_length',scene.get('length',0)),cameras=list(scene['cameras']),videos=video_frames,runner_reports=reports),indent=2))

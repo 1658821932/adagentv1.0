@@ -12,11 +12,14 @@ import sys
 from typing import Any, Dict, Optional
 
 from mcp_servers.runtime import trace_context
+from agent import prewarm
 from agent.config import AgentConfig
 from agent.executor import ToolExecutor
 from agent.logger import RunLogger
 from agent.orchestrator import Orchestrator
 from agent.state import AgentState
+from agent.continuation import recover
+from mcp_servers.scene_editing.core.adversarial.llm_request_policy import effective_reasoning_effort
 
 
 class Agent:
@@ -39,6 +42,7 @@ class Agent:
         self,
         task: str,
         max_steps: Optional[int] = None,
+        *, resume_from: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute until completion, explicit stop, or the global step limit."""
 
@@ -54,15 +58,35 @@ class Agent:
         ):
             raise ValueError("max_steps must be a positive integer")
 
-        self.state = AgentState(task)
+        pending = None
+        lineage = None
+        if resume_from is not None:
+            self.state, lineage, pending = recover(self.config.logs_root, resume_from, task)
+        else:
+            self.state = AgentState(task)
+        # Validate the parent before starting any background preparation.
+        prewarm.start()
+        first_step = self.state.current_step + 1 if resume_from else 0
         self.logger = RunLogger(
             task=task,
             max_steps=run_max_steps,
             llm_model=self.orchestrator.llm_client.model,
             llm_base_url=self.orchestrator.llm_client.base_url,
             tool_modes=self.config.tool_modes,
+            llm_reasoning_effort=effective_reasoning_effort(getattr(self.orchestrator.llm_client, 'request_profile', {})),
             logs_root=self.config.logs_root,
+            lineage=lineage,
         )
+
+        self.state.execution_scope = self.state.execution_scope or self.logger.run_id
+        self.executor.scope = self.state.execution_scope
+        self.logger._write_json(self.logger.run_dir/'initial_state.json', self.state.to_dict())
+        self.logger.save_state(self.state.to_dict())
+        # 将模型流式输出接到当前运行的日志，供控制台实时展示思考过程
+        try:
+            self.orchestrator.llm_client.on_delta = self.logger.thinking_delta
+        except Exception:
+            pass
 
         print("=" * 60)
         print("Agent Start")
@@ -73,15 +97,38 @@ class Agent:
         print("=" * 60)
 
         try:
-            for step in range(run_max_steps):
+            for step in range(first_step, first_step + run_max_steps):
                 self.state.set_step(step)
 
                 print(f"\n===== Agent Step {step} =====")
 
-                decision = self.orchestrator.decide(
-                    task,
-                    self.state.to_orchestrator_dict(),
-                )
+                recovering = pending is not None
+                if recovering:
+                    arguments = dict(pending['arguments'])
+                    control = arguments.pop('_execution', {})
+                    job_id = control.get('job_id') or (self.state.pending_job or {}).get('job_id')
+                    if job_id is None:
+                        job_id = self.executor.jobs.lookup(pending['tool_name'],
+                            self.executor.tool_modes[pending['tool_name']], arguments, self.executor.scope)
+                    if job_id is None:
+                        raise RuntimeError('Unfinished parent call has no persistent job; refusing to repeat it automatically. '
+                                           'Inspect the parent logs before explicitly retrying this tool.')
+                    arguments['_execution'] = dict(job_id=job_id)
+                    decision = dict(action='call_tool', tool_name=pending['tool_name'], arguments=arguments,
+                                    reason='Reconnect to the previously submitted tool job and recover its real result.')
+                    pending = None
+                else:
+                    self.logger.open_thinking(step)
+                    try:
+                        with trace_context(agent_run_id=self.logger.run_id,
+                                           agent_log_dir=str(self.logger.run_dir.resolve()),
+                                           stage='main_agent', step=step):
+                            decision = self.orchestrator.decide(
+                                self.state.task,
+                                self.state.to_orchestrator_dict(),
+                            )
+                    finally:
+                        self.logger.close_thinking()
 
                 print("LLM Decision:")
                 print(decision)
@@ -93,6 +140,10 @@ class Agent:
                 self.logger.log_decision(
                     step,
                     decision,
+                    request_meta={"recovered_pending_job": True} if recovering else {
+                        "metrics":getattr(self.orchestrator.llm_client,"last_request_metrics",{}),
+                        "usage":getattr(self.orchestrator.llm_client,"last_usage",None),
+                    },
                 )
 
                 if decision.get("action") == "finish":
@@ -131,9 +182,12 @@ class Agent:
                     tool_name,
                     arguments,
                 )
+                self.logger.save_state(self.state.to_dict())
 
                 try:
                     with trace_context(agent_run_id=self.logger.run_id,
+                                       agent_log_dir=str(self.logger.run_dir.resolve()),
+                                       step=step, stage=tool_name,
                                        parent_run_id=self.logger.run_id,
                                        tool_call_id=f"{self.logger.run_id}:step_{step:02d}:{tool_name}"):
                         result = self.executor.execute(tool_name, arguments)
@@ -144,6 +198,16 @@ class Agent:
                         exc,
                     )
                     raise
+
+                while result.get("status") == "running":
+                    self.state.pending_job = result["job"]
+                    self.logger.save_state(self.state.to_dict())
+                    print("Tool still running; waiting for existing job:", result["job"]["job_id"])
+                    result = self.executor.query(
+                        result["job"]["job_id"],
+                        wait_timeout=self.executor.execution_timeout,
+                    )
+                self.state.pending_job = None
 
                 result_ref = self.logger.finish_tool_call(
                     step,
@@ -175,14 +239,19 @@ class Agent:
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='Run a task, optionally continuing an existing conversation.')
+    parser.add_argument('--resume-from', help='Parent run ID under the configured logs directory')
+    parser.add_argument('task', nargs='*')
+    args = parser.parse_args()
     agent = Agent()
 
-    if len(sys.argv) > 1:
-        task = " ".join(sys.argv[1:])
+    if args.task:
+        task = " ".join(args.task)
     else:
         task = "根据自动驾驶失败案例分析原因，并设计一个新的测试场景。"
 
-    result = agent.run(task)
+    result = agent.run(task, resume_from=args.resume_from)
 
     print("\nFinal State:")
     print(result)

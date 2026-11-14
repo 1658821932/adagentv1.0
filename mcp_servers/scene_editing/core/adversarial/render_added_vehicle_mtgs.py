@@ -9,39 +9,35 @@ import argparse
 import json
 import math
 from pathlib import Path
+from functools import lru_cache
 
 import numpy as np
 from PIL import Image
-from plyfile import PlyData
 import torch
 
 from experiment_runtime import ROOT, atomic_json
 from render_ego_mtgs import (asset_from_first_ego, camera_intrinsics, instantiate_models,
     load_checkpoint, matrix_from_rotation_translation, render_frame)
 from run_ego_reference import scene_from_frames
+from native_vehicle_asset import read_vehicle_ply, resize_gaussians
 
 CAMERAS = ('CAM_L0', 'CAM_F0', 'CAM_R0')
 
 
-def read_ply(path):
-    vertices = PlyData.read(str(path))['vertex']
-    names = set(vertices.data.dtype.names)
-    fields = (['x', 'y', 'z'] + [f'f_dc_{i}' for i in range(3)] +
-              [f'f_rest_{i}' for i in range(45)] + ['opacity'] +
-              [f'scale_{i}' for i in range(3)] + [f'rot_{i}' for i in range(4)])
-    if not set(fields) <= names or len(vertices) == 0:
-        raise ValueError('PLY must contain non-empty degree-3 Gaussian attributes')
-    values = np.column_stack([vertices[name] for name in fields]).astype(np.float32)
-    if not np.isfinite(values).all():
-        raise ValueError('PLY contains non-finite Gaussian parameters')
-    means = values[:, :3]
-    center = (means.min(axis=0)+means.max(axis=0))/2
-    quats = values[:, 55:59]
-    if np.any(np.linalg.norm(quats, axis=1) < 1e-8):
-        raise ValueError('PLY contains invalid Gaussian rotations')
-    return dict(means=means-center, center=center, dimensions=means.max(axis=0)-means.min(axis=0),
-                dc=values[:, 3:6], rest=values[:, 6:51].reshape(-1, 3, 15).transpose(0, 2, 1),
-                opacity=values[:, 51], scales=values[:, 52:55], quats=quats)
+@lru_cache(maxsize=8)
+def scaled_vehicle_ply(path, mtime_ns, file_size, size_m):
+    """Cache CPU geometry by asset version and requested dimensions, not pose."""
+    data = read_vehicle_ply(path)
+    means, log_scales, quats, axis_scale = resize_gaussians(data, size_m)
+    # Match the native checkpoint's float32 Gaussian parameter convention.
+    return dict(data, means=np.asarray(means, dtype=np.float32),
+                scales=np.asarray(log_scales, dtype=np.float32),
+                quats=np.asarray(quats, dtype=np.float32),
+                opacity=data['opacity'].reshape(-1),
+                dimensions=np.asarray(size_m, dtype=float),
+                original_dimensions=data['dimensions'].copy(),
+                axis_scale=axis_scale)
+
 
 
 class AddedVehicle:
@@ -94,20 +90,29 @@ def added_vehicle_model(info, anchor, plan_to_asset, road_map, global_yaw, flatn
     The road_height_map (reconstruction's own road, the visual ground truth)
     provides the center height and the pitch/roll of the fitted road plane under
     the footprint. Fails when the road is too non-planar under the footprint."""
-    ply = read_ply(info['asset_path'])
+    size = np.asarray(info['size_m'], dtype=float)
+    if size.shape != (3,) or not np.isfinite(size).all() or np.any(size <= 0):
+        raise ValueError('Vehicle size must contain positive finite length, width, height')
+    asset = Path(info['asset_path']).expanduser().resolve()
+    stat = asset.stat()
+    ply = scaled_vehicle_ply(str(asset), stat.st_mtime_ns, stat.st_size, tuple(size))
     position = plan_to_asset @ np.array([anchor['x'], anchor['y'], 0., 1.])
     plane = road_map.placement_plane(position[0], position[1],
-                                     info['size_m'][0], info['size_m'][1], global_yaw)
+                                     size[0], size[1], global_yaw)
     if plane['max_corner_residual_m'] > flatness_gate_m:
         raise ValueError(f"Road under the added vehicle is not planar: "
                          f"corner residual {plane['max_corner_residual_m']:.3f} m")
-    center = np.array([position[0], position[1], plane['z_center']+ply['dimensions'][2]/2])
+    center = np.array([position[0], position[1], plane['z_center']+size[2]/2])
     model = AddedVehicle(ply, center, plane['rotation'])
     placement = dict(road_z_asset_m=plane['z_center'], bottom_clearance_m=0.0,
                      pitch_rad=plane['pitch'], roll_rad=plane['roll'],
                      footprint_flatness_m=plane['max_corner_residual_m'],
                      target_asset_position=center.tolist(),
+                     original_asset_dimensions_m=ply['original_dimensions'].tolist(),
+                     requested_dimensions_m=size.tolist(),
+                     axis_scale=ply['axis_scale'].tolist(),
                      asset_dimensions_m=ply['dimensions'].tolist(),
+                     scaled_geometry_dimensions_m=(ply['means'].max(0)-ply['means'].min(0)).tolist(),
                      asset_point_count=len(ply['means']))
     return model, placement
 

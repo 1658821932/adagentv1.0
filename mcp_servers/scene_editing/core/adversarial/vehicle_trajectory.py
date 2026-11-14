@@ -50,7 +50,7 @@ def construct_trajectory(times, seed_xy, seed_yaw, points, end_velocity_mps, imm
     values = np.asarray(values, dtype=float)
     if abs(values[0, 0] - immutable_until_s) <= .001:
         values[0, 0] = immutable_until_s
-    if values[0, 0] >= immutable_until_s:
+    if values[0, 0] > times[0]+1e-9:
         values = np.vstack([np.r_[times[0], seed_xy[0]], values])
     for index, boundary in ((0, times[0]), (-1, times[-1])):
         if abs(values[index, 0] - boundary) <= .001:
@@ -60,16 +60,18 @@ def construct_trajectory(times, seed_xy, seed_yaw, points, end_velocity_mps, imm
     seed_at_points = sample_xy(times, seed_xy, values[:, 0])
     if np.linalg.norm(values[0, 1:] - seed_xy[0]) > 1e-6:
         raise ValueError('Initial position must equal the selected object initial position')
-    if not times[0] < immutable_until_s < times[-1]:
-        raise ValueError('Immutable prefix must end inside the scene')
+    if not times[0] <= immutable_until_s < times[-1]:
+        raise ValueError('Edit boundary must lie inside the scene')
     prefix = values[:, 0] <= immutable_until_s + 1e-9
     if np.any(np.linalg.norm(values[prefix, 1:] - seed_at_points[prefix], axis=1) > .02):
         raise ValueError('Control points may not change the immutable observation prefix')
     # Small transcription/rounding differences in prefix points do not become
     # edits. This interval comes directly from the selected motion seed.
     boundary = sample_xy(times, seed_xy, np.array([immutable_until_s]))[0]
-    values = np.vstack([np.r_[times[0], seed_xy[0]],
-                        np.r_[immutable_until_s, boundary], values[~prefix]])
+    anchors=[np.r_[times[0],seed_xy[0]]]
+    if immutable_until_s>times[0]:
+        anchors.append(np.r_[immutable_until_s,boundary])
+    values = np.vstack([*anchors,values[~prefix]])
     seed_at_points = sample_xy(times, seed_xy, values[:, 0])
     offsets = values[:, 1:] - seed_at_points
     offsets[0] = 0.
@@ -137,7 +139,9 @@ def screen_attack(times, ego_xy, ego_yaw, actors, target, seed_xy, seed_yaw,
     """Check native observations plus 0.1s interpolation; missing actor samples stay unknown."""
     effective = policy.resolve(constraints.get('acceptance_policy'))
     prefix_end = float(constraints.get('observation_end_s', policy.OBSERVATION_END_S))
-    values = (motion_samples(times, dense_times, dense_xy, prefix_end) if motion_times is None
+    editable=policy.edit_start(effective)
+    danger_end=policy.danger_start(effective)
+    values = (motion_samples(times, dense_times, dense_xy, editable) if motion_times is None
               else np.column_stack([motion_times, motion_xy]))
     initial_velocity = (seed_xy[1] - seed_xy[0]) / (times[1] - times[0])
     limits = dict(max_speed_mps=effective['max_speed_mps'], max_acceleration_mps2=effective['max_acceleration_mps2'],
@@ -147,7 +151,9 @@ def screen_attack(times, ego_xy, ego_yaw, actors, target, seed_xy, seed_yaw,
     motion['sampling_scope'] = ('Native recorded prefix plus boundary; all dense edited samples'
                                 if motion_times is None else 'Explicit native replay trajectory')
     prefix = dense_times <= prefix_end + 1e-9
-    prefix_error = float(np.linalg.norm(dense_xy[prefix] - sample_xy(times, seed_xy, dense_times[prefix]), axis=1).max())
+    fixed=dense_times<=editable+1e-9
+    prefix_error = float(np.linalg.norm(dense_xy[fixed] - sample_xy(times, seed_xy, dense_times[fixed]), axis=1).max()) if fixed.any() else 0.
+    history_change=float(np.linalg.norm(dense_xy[prefix]-sample_xy(times,seed_xy,dense_times[prefix]),axis=1).max()) if prefix.any() else 0.
     static = np.array_equal(dense_xy, np.tile(dense_xy[0], (len(dense_xy), 1))) and np.array_equal(dense_yaw, np.full(len(dense_yaw), dense_yaw[0]))
     road = check_drivable_area_official(dense_times[:1] if static else dense_times,
         dense_xy[:1] if static else dense_xy, dense_yaw[:1] if static else dense_yaw, official_road,
@@ -194,19 +200,25 @@ def screen_attack(times, ego_xy, ego_yaw, actors, target, seed_xy, seed_yaw,
             other_contacts.append(dict(time_s=float(dense_times[index]), track_id=track,
                 other_xy_m=pose[:2].tolist(), other_yaw_rad=float(pose[2]),
                 other_size_m=pose[3:].tolist(), target_xy_m=dense_xy[index].tolist()))
-    event_window = constraints.get('event_window_s', [prefix_end, float(times[-1])])
-    event_mask = (dense_times > max(prefix_end, event_window[0])) & (dense_times <= event_window[1] + .001)
+    event_window = constraints.get('event_window_s', [danger_end, float(times[-1])])
+    event_mask = (dense_times > max(danger_end, event_window[0])) & (dense_times <= event_window[1] + .001)
     if not event_mask.any():
         raise ValueError('Event window must include time after the observation period')
     event_gap = float(np.min(np.asarray(clearances)[event_mask]))
     travelled = float(np.linalg.norm(np.diff(dense_xy, axis=0), axis=1).sum())
     checks = dict(initial_position=np.linalg.norm(dense_xy[0] - seed_xy[0]) <= 1e-6,
                   observation_prefix=prefix_error <= 1e-5,
-                  no_contact_during_observation=all(dense_times[index] > prefix_end for index in contacts),
+                  no_contact_during_observation=all(dense_times[index] > danger_end for index in contacts),
                   motion=motion['status'] == 'passed', official_road=road['passed'],
                   observed_others=not other_contacts,
                   risk_in_event_window=event_gap <= float(constraints.get('max_ego_clearance_m', policy.ATTACK_EVENT_MAX_GAP_M)),
                   required_motion=travelled >= float(constraints.get('min_travel_m', 0.)))
+    if effective['policy_version']=='reference_acceptance.v2':
+        checks['no_contact_before_explicit_event_start']=checks.pop('no_contact_during_observation')
+    if effective['policy_version']=='reference_acceptance.v2' and danger_end>0:
+        early=dense_times<=danger_end+1e-9
+        threshold=float(constraints.get('max_ego_clearance_m',policy.ATTACK_EVENT_MAX_GAP_M))
+        checks['no_risk_before_danger_start']=bool(np.all(np.asarray(clearances)[early]>threshold))
     if constraints.get('stationary_target', False):
         checks['stationary_target'] = bool(np.max(np.linalg.norm(dense_xy-seed_xy[0], axis=1)) <= 1e-5 and
             np.max(np.abs(np.arctan2(np.sin(dense_yaw-seed_yaw[0]), np.cos(dense_yaw-seed_yaw[0])))) <= 1e-5)
@@ -242,6 +254,10 @@ def screen_attack(times, ego_xy, ego_yaw, actors, target, seed_xy, seed_yaw,
         interpolated_sample_count=int((~native_mask).sum()),
         max_sample_interval_s=float(np.diff(dense_times).max()),
         temporal_scope='Sampled positive-area overlap; linear observation interpolation; earlier between-sample events and physical collision remain unverified')
+    if effective['policy_version']=='reference_acceptance.v2':
+        feedback['time_contract']=dict(edit_start_s=editable,observation_end_s=prefix_end,danger_start_s=danger_end,
+            observation_trajectory_change_m=history_change,
+            scope='Observation history may be edited. No implicit 3-second event delay. Explicit task windows still apply; no new distance or TTC threshold.')
     return dict(geometry_feedback=feedback, acceptance_policy=effective, effective_constraints=constraints, reference_screen_passed=all(checks.values()), checks=checks,
         failed_checks=[key for key, passed in checks.items() if not passed],
         min_ego_clearance_m=float(min(clearances)), event_min_clearance_m=event_gap,

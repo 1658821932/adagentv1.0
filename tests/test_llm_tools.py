@@ -156,7 +156,7 @@ def test_description_fields_come_from_schemas_and_do_not_advertise_test_client(f
 def test_invalid_tool_configuration_fails_without_network(tmp_path):
     from dataclasses import replace
     from tools.tool02_scene_instance_generator.real import TOOL
-    (tmp_path/"config.json").write_text('{"model_role":"planner","prompt_version":"v1","validation_retries":99}')
+    (tmp_path/"config.json").write_text('{"prompt_version":"v1","validation_retries":99}')
     (tmp_path/"prompt.md").write_text("prompt")
     client=ScriptedClient()
     result=replace(TOOL,directory=tmp_path).execute({"failure_analysis":ANALYSIS,"_llm_client":client})
@@ -164,56 +164,40 @@ def test_invalid_tool_configuration_fails_without_network(tmp_path):
     assert not client.messages
 
 
-def test_llm_role_and_per_tool_limits_reach_actual_client():
-    from agent.llm_client import LLMClient
+def test_tools_use_shared_client_without_parameter_overrides():
     from tools.tool02_scene_instance_generator.real import run
-    valid=json.loads(response_for(CASES[0][0],CASES[0][2]))
-    client=ScriptedClient(json.dumps(valid))
-    with patch.object(LLMClient,"_load_llm_config",return_value={"roles":{"planner":{"model":"role-model"}}}):
-        with patch("agent.llm_client.LLMClient",return_value=client) as factory:
-            factory._load_llm_config.return_value={"roles":{"planner":{"model":"role-model"}}}
-            result=run({"failure_analysis":ANALYSIS})
-    assert result["status"]=="success"
-    assert factory.call_args.kwargs["overrides"]=={"model":"role-model","timeout":600,"max_tokens":8192}
-
-
-def test_llm_client_overrides_do_not_replace_global_config(monkeypatch):
-    from agent.llm_client import LLMClient
-    monkeypatch.setenv("OPENAI_API_KEY","test-only")
-    monkeypatch.setenv("OPENAI_BASE_URL","https://example.invalid/v1")
-    monkeypatch.setenv("OPENAI_MODEL","global-model")
-    sdk=Mock()
-    with patch.dict("sys.modules", {"openai":SimpleNamespace(OpenAI=sdk)}):
-        client=LLMClient(overrides={"model":"editor-model","timeout":25,"max_tokens":2000})
-    assert client.model=="editor-model"
-    assert client.timeout==25
-    assert client.max_tokens==2000
-    assert sdk.call_args.kwargs["timeout"]==25
-    assert LLMClient._load_llm_config()["model"]!="editor-model"
-
-
-
-
-def test_omitted_tool_limits_inherit_role_settings(tmp_path):
-    from dataclasses import replace
-    from tools.tool02_scene_instance_generator.real import TOOL
-    config={"model_role":"planner","prompt_version":"v1"}
-    (tmp_path/"config.json").write_text(json.dumps(config))
-    (tmp_path/"prompt.md").write_text("Use source evidence and return JSON.")
     client=ScriptedClient(response_for(CASES[0][0],CASES[0][2]))
     with patch("agent.llm_client.LLMClient",return_value=client) as factory:
-        factory._load_llm_config.return_value={
-            "roles":{"planner":{"model":"role-model","timeout":35,"max_tokens":2500}}}
-        result=replace(TOOL,directory=tmp_path).execute({"failure_analysis":ANALYSIS})
+        result=run({"failure_analysis":ANALYSIS})
     assert result["status"]=="success"
-    assert factory.call_args.kwargs["overrides"]=={
-        "model":"role-model","timeout":35,"max_tokens":2500}
+    factory.assert_called_once_with()
+
+
+def test_llm_client_inherits_root_limits(monkeypatch):
+    from agent.llm_client import LLMClient
+    monkeypatch.setenv("OPENAI_API_KEY","test-only")
+    profile={"model":"root-model","base_url":"https://example.invalid/v1",
+             "timeout":77,"max_tokens":3456}
+    sdk=Mock()
+    with patch.object(LLMClient,"_load_llm_config",return_value=profile), patch.dict(
+            "sys.modules",{"openai":SimpleNamespace(OpenAI=sdk)}):
+        client=LLMClient()
+    assert (client.model,client.timeout,client.max_tokens)==("root-model",77,3456)
+    assert sdk.call_args.kwargs["timeout"]==77
+    assert sdk.call_args.kwargs["max_retries"]==0
+
+
+def test_tool_configuration_rejects_duplicate_model_settings():
+    from tools.llm_runtime import LLMToolConfig
+    for field,value in [("model_role","planner"),("timeout",20),("max_tokens",100)]:
+        with pytest.raises(ValueError):
+            LLMToolConfig.model_validate({"prompt_version":"v1",field:value})
 
 
 def test_empty_prompt_is_a_configuration_error_without_model_call(tmp_path):
     from dataclasses import replace
     from tools.tool02_scene_instance_generator.real import TOOL
-    (tmp_path/"config.json").write_text('{"model_role":"planner","prompt_version":"v1"}')
+    (tmp_path/"config.json").write_text('{"prompt_version":"v1"}')
     (tmp_path/"prompt.md").write_text(" ")
     client=ScriptedClient()
     result=replace(TOOL,directory=tmp_path).execute({

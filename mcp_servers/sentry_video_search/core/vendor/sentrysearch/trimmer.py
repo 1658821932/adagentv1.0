@@ -56,7 +56,11 @@ def trim_clip(
         )
 
     if accurate:
-        pixel_format = ["-pix_fmt", "yuv420p"] if crf > 0 else []
+        # 浏览器只能解 H.264 High 4:2:0；无损导出也必须固定为 yuv420p，
+        # 否则 x264 会选 High 4:4:4 Predictive，网页里播放不出来。
+        # Lossless (crf 0) is incompatible with a forced high profile in x264, so
+        # the profile constraint only applies to lossy exports.
+        pixel_format = ["-pix_fmt", "yuv420p"] + ([] if crf == 0 else ["-profile:v", "high", "-level", "4.1"])
         result = subprocess.run(
             [
                 ffmpeg_exe, "-y", "-i", source_file,

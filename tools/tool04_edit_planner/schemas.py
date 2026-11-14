@@ -16,12 +16,25 @@ class RetrievalContext(OutputModel):
 
 
 def normalize_retrieval(value):
-    if isinstance(value,str):value=load_tool_result(value,'video_retriever')
+    from pathlib import Path
+    trusted=False
+    if isinstance(value,str):
+        value=load_tool_result(value,'video_retriever');trusted=True
     if isinstance(value,dict):
         if 'tool' in value or ('status' in value and 'result' in value):
             if value.get('tool')!='video_retriever' or value.get('status')!='success':
                 raise ValueError('Expected a successful video_retriever envelope')
-            value=value.get('result')
+            value=value.get('result');trusted=True
+        if not trusted:
+            scene=value.get('scene_ref')
+            if isinstance(scene,dict):
+                missing=[k for k in ('frames_path','cameras_path','scenario_pkl')
+                         if isinstance(scene.get(k),str) and not Path(scene[k]).exists()]
+                if missing:
+                    raise ValueError(
+                        'retrieval_result scene_ref paths do not exist on disk: '
+                        +', '.join(f'{k}={scene[k]}' for k in missing)
+                        +'. Do not retype the retrieval JSON by hand: pass the video_retriever result_ref string from history verbatim as retrieval_result.')
     return value
 
 class Input(ToolModel):

@@ -263,7 +263,8 @@ def evaluate_reference(times_s, ego_xy, ego_heading_rad, attack_xy, attack_headi
             effective = policy.resolve(task_policy)
             recorded_progress = float(np.linalg.norm(np.diff(baseline,axis=0),axis=1).sum())
             progress_ok, reason = policy.task_progress(times, ego, recorded_progress, effective)
-            required = (effective['minimum_progress_fraction'] or 0.)*recorded_progress
+            fraction = effective['minimum_progress_fraction']
+            required = None if fraction is None else fraction*recorded_progress
             progress_failed = not progress_ok
             progress_status = 'failed' if progress_failed else 'passed'
     progress_check = dict(status=progress_status, progress_m=progress,

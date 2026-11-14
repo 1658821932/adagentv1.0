@@ -1,10 +1,11 @@
 """Run a geometry-informed native-tool agent over constructor/FOCI candidates and parent edits."""
-from llm_profile import load_llm_profile
+from llm_profile import load_llm_profile,reasoning_effort
 from workflow_timing import timed_operation
 
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -16,18 +17,20 @@ from run_ego_reference import DEFAULT_TARGET_TRACK
 from streaming_requests import StreamingRequestArchive
 from model_context import compact_model_context
 from kimi_request_parameters import normalize_kimi_parameters
+from ego_tool_transport import (require_native_call, NativeToolProtocolError,
+    protocol_rejection, restore_protocol_feedback)
 
 PROMPT = """You edit driving trajectories by stating a concrete change, checking it, then comparing it with retained alternatives.
 For speed/route calls, read decision_summary before raw evidence. recommended_previews contain complete arguments and an explicit condition; they are options to preview, never automatic goal changes. When a recommendation matches the task and budget remains, preview it before deciding the modified behavior is unsuitable. create_candidate_call repeats a passed preview with preview_only=false. Candidate cards share identity, eligibility and failure fields; detailed numeric evidence remains available.
 Use edit_speed_profile for speed/timing changes. set_speed_targets takes a start time and timed signed speed states: positive forward, zero stop, negative reverse with body heading unchanged. Two zero states wait; zero then positive restarts. Explicitly stop before reversing. The final target speed is maintained to scene end; stopping is not mandatory. Default preserves the parent spatial route, including known rear geometry. Choose recorded_baseline explicitly when continuing past a stopped parent endpoint; no reference is extrapolated. Existing history through the edit start is preserved.
-For an explicit braking parent, retime_braking moves its original onset by braking_start_shift_s while preserving either stop_position or stop_time. The backend rebuilds from the earliest affected time; it does not retain the old braking before a later takeover. Omit transition_style to keep the parent braking style. For lateral avoidance use edit_route: signed left_offset_m, transition_duration_s, optional hold/return durations. preserve_speed keeps total parent speed while spending progress on lateral travel; preserve_progress may raise total speed. Return means the same spatial route, not the same-time parent pose. Check continuous total acceleration/normal component and intermediate progress before claiming improvement. Saved spatial routes are reused across speed edits; initial legacy routes are reconstructed from consistent position geometry. Inspect actual_motion for peak time and tangential/normal acceleration when a motion check fails. Sampled FOCI parents have no invented named braking phase: use set_speed_targets. Preview screens without creating a candidate; execute to create a submittable result. Do not specify mutually conflicting fields or infer all alternatives infeasible from one rejection.
-For broader search use optimize_defense_candidate with preserve_route, terminal_behavior, improvement_goal and optional speed_targets (the same signed speeds and absolute times, but explicitly soft sample-based FOCI preferences). Inspect speed_target_feedback rather than claiming those targets are met. A resulting candidate can be refined with edit_speed_profile for exact timed speed states. Use edit_route for lateral changes. Legacy coordinate/offset operations remain replayable but are not exposed in this tool set.
+To keep a stopped parent's parking position, use stop_at_position with an absolute start_time_s and stop_target=parent_stop_position. It starts braking from the actual inherited forward speed, preserves the prefix, and computes deceleration and stop time without speeding up first. This also supports sampled FOCI parents with an observed stationary tail; a moving parent has no inherited stop point. Check stop_position evidence and actual acceleration. To keep a stopping time instead, use set_speed_targets with a zero-speed target. For lateral avoidance use edit_route: signed left_offset_m, transition_duration_s, optional hold/return durations. preserve_speed keeps total parent speed while spending progress on lateral travel; preserve_progress may raise total speed. Return means the same spatial route, not the same-time parent pose. Check continuous total acceleration/normal component and intermediate progress before claiming improvement. Saved spatial routes are reused across speed edits; initial legacy routes are reconstructed from consistent position geometry. Inspect actual_motion for peak time and tangential/normal acceleration when a motion check fails. For sampled FOCI, choose timed targets or inherit a verified actual stopping position; do not invent a braking onset. Preview screens without creating a candidate; execute to create a submittable result. Do not specify mutually conflicting fields or infer all alternatives infeasible from one rejection.
+For broader search use optimize_defense_candidate with preserve_route, terminal_behavior, improvement_goal and optional speed_targets (the same signed speeds and absolute times, but explicitly soft sample-based FOCI preferences). Inspect speed_target_feedback rather than claiming those targets are met. A resulting candidate can be refined with edit_speed_profile for exact timed speed states. Use edit_route for lateral changes. Use only the currently exposed speed and route operations for direct edits.
 Generated braking parents use reconstructed continuous position/velocity at arbitrary takeover times; CSV-only parents use the reported sampled-state estimate. Inspect actual_start_state and actual generated curve bounds. max_lateral_speed_mps is body sideslip, not road-coordinate lateral travel. Geometry uses the ego rear axle. Planar acceleration includes road curvature, so a tangential braking cap alone does not ensure a motion pass. A failed local edit does not prove every alternative impossible. Keep a passing fallback while exploring within budget; a passed screen establishes eligibility, not optimality. Finish may report no passing candidate found and remaining uncertainties; no required attempt count.
 Return exactly one native tool call, then end the turn. Wait for real tool feedback before any next call; do not simulate tool execution or future turns. You are an ego trajectory editing agent. Use the input task, scene evidence and candidate feedback to choose a maneuver. Compare relevant alternatives (for example continued travel, speed adjustment, lateral movement, stopping or intentional reverse) when supported by the scene and available tools; there is no default maneuver or required order of alternatives. Explain the tradeoffs relevant to the task. Clearance, progress, comfort and evaluator scores are separate evidence, not objectives to maximize automatically. Keep a reasonable passing fallback while exploring within the remaining budget. A passed screen establishes eligibility for submission, not global optimality or a requirement to stop searching immediately.
-Read context.acceptance_policy for the effective reference-screen policy, including observation_end_s, motion limits, required checks, progress/stop rules and comfort_reference_mps2. Preserve observation history through that boundary. Treat the comfort reference as a diagnostic preference, distinct from hard acceleration limits. Scene/conflict recommendations are advisory; their suggested actions or thresholds do not add acceptance gates. Trace their claims to image or geometry evidence; a model recommendation alone does not establish road legality or available space. Tool argument constraints are described separately below.
+Read context.acceptance_policy for the effective reference-screen policy, including observation_end_s, motion limits, required checks, progress/stop rules and comfort_reference_mps2. Use edit_start_s as the earliest editable time; only the pose at edit_start_s must equal the parent, and everything after it is yours to author. observation_end_s is the WorldEngine input horizon, not an edit lock. The edited prefix is the setup the policy will inherit, so a firmer or tighter approach there is legitimate: you may close on the hazard earlier than the recorded ego did, as long as no body contact with any actor occurs before the policy takes over. Export the edited history consistently. Treat the comfort reference as a diagnostic preference, distinct from hard acceleration limits. Scene/conflict recommendations are advisory; their suggested actions or thresholds do not add acceptance gates. Trace their claims to image or geometry evidence; a model recommendation alone does not establish road legality or available space. Tool argument constraints are described separately below.
 Respect visible no-cross markings: do not cross a solid or double solid line that prohibits crossing. Use available images, geometry and their provenance to assess the proposed maneuver. Missing marking geometry does not itself forbid all lateral movement; state unknown compliance and avoid claiming permission from missing evidence. A drivable-area pass or zero lateral offset does not establish lane compliance.
 Check actual_edit, motion_evidence, reverse distance/intervals and declared motion_intent. Intentional reverse needs scene support, attention to rear-space uncertainty, feasible motion and a suitable terminal state; it is not a generic way to improve clearance. Inspect terminal_speed_mps and terminal_target_clearance_rate_mps alongside the scene: a final frame still closing on an obstacle does not demonstrate a safe stop. Report unresolved end-of-window risk for any maneuver. Sampled reference checks do not establish continuous-time collision avoidance, physical execution, complete lawfulness or unavoidability.
-The controller requires initial candidate selection; each edit or repair call screens one candidate. Only an existing reference_screen_passed candidate may be submitted. Within available calls, revise from feedback or submit with a task-based reason. The controller can force submission at its turn/edit limit when an eligible candidate exists; this is a budget rule, not an optimality judgment. FOCI candidates are precomputed candidates, not agent edits. If no candidate can be submitted, report the search limitation without claiming unavoidability."""
+The controller requires initial candidate selection; each edit or repair call screens one candidate. Only an existing reference_screen_passed candidate may be submitted. Within available calls, revise from feedback or submit with a task-based reason. The controller can force submission at its turn/edit limit when an eligible candidate exists; this is a budget rule, not an optimality judgment. Initial FOCI candidates are seeds; on-demand optimize_defense_candidate creates checked refinements. If no candidate can be submitted, report the search limitation without claiming unavoidability."""
 TOOLS = [
     {'type':'function','function':{'name':'select_constructor_candidate','description':'Choose an initial constructor or FOCI trajectory.','parameters':{'type':'object','properties':{'candidate_id':{'type':'string'},'reason':{'type':'string'}},'required':['candidate_id','reason'],'additionalProperties':False}}},
     {'type':'function','function':{'name':'edit_trajectory_points','description':'Apply 1-5 ordered forward/left/yaw edit points to a parent. One candidate is screened.','parameters':{'type':'object','properties':{'parent_candidate_id':{'type':'string'},'points':{'type':'array','items':{'type':'object','properties':{'time_s':{'type':'number'},'forward_m':{'type':'number'},'left_m':{'type':'number'},'yaw_rad':{'type':'number'}},'required':['time_s','forward_m','left_m','yaw_rad'],'additionalProperties':False},'minItems':1,'maxItems':5},'reason':{'type':'string'}},'required':['parent_candidate_id','points','reason'],'additionalProperties':False}}},
@@ -92,8 +95,8 @@ def _arguments(call):
 
 def _tool_contract(editor, turn, max_turns, max_edit_candidates, require_edit=False):
     passing = [key for key, node in editor.nodes.items() if node['result']['status'] == 'reference_screen_passed']
-    choice = 'auto'
-    if turn == 1:
+    choice = 'required'
+    if editor.current is None:
         choice = {'type':'function','function':{'name':'select_constructor_candidate'}}
     if (turn == max_turns or editor.edit_count >= max_edit_candidates) and passing \
             and (not require_edit or editor.edit_count > 0):
@@ -113,10 +116,20 @@ def _restore_progress(editor, run_dir, old_summary, profile, timeout_seconds,
         raise ValueError('Only an interrupted request can be explicitly resumed')
     actions = old_summary['model_actions']
     folders = sorted((run_dir/'tool-exchanges').glob('turn_*'))
-    if not folders or len(folders) != actions:
+    protocol_records = {int(p.stem.split('_')[1]): p for p in (run_dir/'protocol-errors').glob('turn_*.json')}
+    expected_folders = [f'turn_{i:02d}' for i in range(1, actions+1) if i not in protocol_records]
+    if [p.name for p in folders] != expected_folders or any(i < 1 or i > actions for i in protocol_records):
         raise ValueError('Recorded tool turns do not match the interrupted summary')
     invalid_calls = 0; invalid_signatures = {}; last_feedback = None
-    for expected, folder in enumerate(folders, 1):
+    for expected in range(1, actions+1):
+        if expected in protocol_records:
+            path = protocol_records[expected]
+            if json.loads(path.read_text()).get('turn') != expected:
+                raise ValueError('Archived protocol turn differs')
+            last_feedback = restore_protocol_feedback(path, run_dir, profile)
+            invalid_calls += 1
+            continue
+        folder = run_dir/'tool-exchanges'/f'turn_{expected:02d}'
         if folder.name != f'turn_{expected:02d}':
             raise ValueError('Recorded tool turns are not contiguous')
         attempts = list((run_dir/'requests').glob(f'turn_{expected:02d}_*/attempt_001'))
@@ -157,13 +170,14 @@ def _restore_progress(editor, run_dir, old_summary, profile, timeout_seconds,
         context = compact_model_context(context)
     messages = [{'role':'user','content':PROMPT+'\nCurrent geometry-informed state:\n'+json.dumps(context, ensure_ascii=False, separators=(',',':'))}]
     choice, available_tools = _tool_contract(editor, next_turn, max_turns, max_edit_candidates, require_edit)
+    choice, available_tools = require_native_call(choice, available_tools)
     failed = list((run_dir/'requests').glob(f'turn_{next_turn:02d}_*/attempt_001'))
     if not 1 <= len(failed) < 3:
         raise ValueError('Resume requires one or two failed requests for the next turn')
     for attempt in failed:
         request = json.loads((attempt/'request.json').read_text()); payload = request['payload']
         expected = normalize_kimi_parameters(profile['model'], dict(messages=messages,
-            tools=available_tools, tool_choice=choice, reasoning_effort='high', max_tokens=6144,
+            tools=available_tools, tool_choice=choice, reasoning_effort=reasoning_effort(), max_tokens=6144,
             extra_body={'thinking':{'type':'enabled'}}, parallel_tool_calls=False))
         if request.get('endpoint') != profile['base_url'] or payload.get('model') != profile['model'] \
                 or any(payload.get(field) != expected.get(field) for field in (
@@ -249,12 +263,13 @@ def run(input_dir, constructor_run, run_dir, timeout_seconds=240, max_turns=12,
         target_track=target_track, timeout_seconds=timeout_seconds, max_turns=max_turns,
         max_edit_candidates=max_edit_candidates, max_invalid_calls=max_invalid_calls,
         context_mode='rebuilt_geometry_informed_state_each_turn', require_edit=require_edit, carla_executed=False)
+    config['tool_transport_version']='required_native.v1'
     if context_view is not None:
         config['context_view_version'] = context_view
     if foci_run is not None:
         config['foci_run'] = str(Path(foci_run).resolve())
     if resume:
-        if stored.get('acceptance_policy'):
+        if 'acceptance_policy' in stored:
             config['acceptance_policy'] = stored['acceptance_policy']
         if json.loads(config_path.read_text()) != config or json.loads((run_dir/'tools.json').read_text()) != TOOLS:
             raise ValueError('Resume config or tool schema differs from the frozen run')
@@ -284,17 +299,24 @@ def run(input_dir, constructor_run, run_dir, timeout_seconds=240, max_turns=12,
                 context = compact_model_context(context)
             messages = [{'role':'user','content':PROMPT+'\nCurrent geometry-informed state:\n'+json.dumps(context, ensure_ascii=False, separators=(',',':'))}]
             choice, available_tools = _tool_contract(editor, turn, max_turns, max_edit_candidates, require_edit)
+            choice, available_tools = require_native_call(choice, available_tools)
             print('Editor turn', turn, 'started', flush=True)
             _, attempt = archive.complete(f'turn_{turn:02d}', messages, total_seconds=timeout_seconds,
-                max_tokens=6144, extra_body={'thinking':{'type':'enabled'}}, reasoning_effort='high',
+                no_output_seconds=min(60, timeout_seconds), retries=2,
+                max_tokens=6144, extra_body={'thinking':{'type':'enabled'}}, reasoning_effort=reasoning_effort(),
                 tools=available_tools, tool_choice=choice, parallel_tool_calls=False, allow_tool_calls=True)
             message = json.loads((attempt/'response.json').read_text())['choices'][0]['message']
             calls = message.get('tool_calls') or []; actions += 1
-            if not calls:
-                stop = 'model_stopped_without_submission'; break
             if len(calls) != 1:
-                stop = 'invalid_tool_call'; break
+                invalid_calls += 1
+                record = protocol_rejection(run_dir, attempt, turn, calls)
+                atomic_json(run_dir/'protocol-errors'/f'turn_{turn:02d}.json', record)
+                last_feedback = record['feedback']
+                if invalid_calls >= max_invalid_calls or turn == max_turns:
+                    raise NativeToolProtocolError('Native tool-call protocol correction budget exhausted; no text command was executed')
+                continue
             call = calls[0]; name = call['function']['name']
+            tool_started = time.perf_counter()
             try:
                 arguments = _arguments(call)
                 if name == 'select_constructor_candidate':
@@ -326,6 +348,8 @@ def run(input_dir, constructor_run, run_dir, timeout_seconds=240, max_turns=12,
                 result = {'status':'invalid','error':str(error)[:300]}
             folder = run_dir/'tool-exchanges'/f'turn_{turn:02d}'; folder.mkdir(parents=True, exist_ok=False)
             atomic_json(folder/'call.json', call); atomic_json(folder/'result.json', result)
+            from common.llm_audit import record_tool_exchange
+            record_tool_exchange(call, result, folder, elapsed_seconds=time.perf_counter()-tool_started)
             last_feedback = result
             print('Tool', name, 'returned', result['status'], flush=True)
             if result['status'] in {'invalid', 'rejected'}:
@@ -345,6 +369,9 @@ def run(input_dir, constructor_run, run_dir, timeout_seconds=240, max_turns=12,
                 stop = 'edit_candidate_budget_exhausted'; break
     except KeyboardInterrupt:
         stop = 'interrupted_by_operator'
+        raise
+    except NativeToolProtocolError:
+        stop = 'native_tool_protocol_failed'
         raise
     except Exception:
         stop = 'request_or_execution_failed'; raise

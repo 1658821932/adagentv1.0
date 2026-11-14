@@ -18,7 +18,8 @@ with contextlib.redirect_stdout(sys.stderr):
     from run_ego_visual_editor_agent import run as run_defense_edit
 
 BACKEND_ROOT = Path(__file__).resolve().parent
-SETTINGS = json.loads((BACKEND_ROOT/'backend_settings.json').read_text())
+from backend_configuration import load_settings
+SETTINGS = load_settings()
 
 
 def check_status(checks):
@@ -29,20 +30,26 @@ def attack_output(arguments, output_dir):
     source = arguments['scene_ref']
     scene = Path(source['sample_root'])
     constraints_input = arguments.get('constraints', {})
-    acceptance = policy.resolve(arguments.get('acceptance_policy'))
-    constraints = dict(observation_end_s=constraints_input.get('no_ego_contact_until_s', 3.),
+    acceptance = policy.for_new_run(arguments.get('acceptance_policy'))
+    if any(arguments.get(key) for key in ('pdm_self_check','pdm_defense_feedback','pdm_ignore_traffic_lights')):
+        raise ValueError('Attack editing does not run PDM. Main Agent evaluates with policy_runner(native) after expert editing.')
+    if acceptance['policy_version']=='reference_acceptance.v2':
+        acceptance['attack_danger_start_s']=float(constraints_input.get('no_ego_contact_until_s',acceptance['attack_danger_start_s']))
+    # 攻击车只锁起点（prefix_lock=0），危险必须落在显式窗口内；
+    # 这与自车历史无关，自车的历史由 policy_runner 的 num_history 决定。
+    constraints = dict(observation_end_s=acceptance['observation_end_s'],
+        attack_prefix_lock_s=acceptance['attack_prefix_lock_s'],
+        event_window_s=[acceptance['attack_window_start_s'], acceptance['attack_window_end_s']],
         official_margin_m=acceptance['official_margin_m'], max_ego_clearance_m=2., min_travel_m=0.,
         vehicle_motion_model='bicycle.v1', require_structured_objective=True,
         acceptance_policy=acceptance)
+    if arguments.get('vadv2_self_test',False):
+        constraints.update(vadv2_self_test=True,vadv2_probe_budget=arguments.get('vadv2_probe_budget',3),
+            vadv2_policy_config=SETTINGS['vadv2'],policy_source_scene_ref=source)
     if arguments.get('task_contract') is not None:
         constraints['task_contract'] = arguments['task_contract']
     if arguments.get('revision_feedback') is not None:
         constraints['revision_feedback'] = arguments['revision_feedback']
-    if arguments.get('pdm_self_check'):
-        constraints.update(pdm_self_check=True,pdm_probe_budget=arguments.get('pdm_probe_budget',2),
-            pdm_probe_root=str(output_dir/'pdm-probes'))
-        constraints['pdm_defense_feedback']=arguments.get('pdm_defense_feedback',False)
-        constraints['pdm_ignore_traffic_lights']=arguments.get('pdm_ignore_traffic_lights',False)
     if arguments.get('maneuver') == 'stationary':
         constraints['stationary_target'] = True
     assets = []
@@ -50,10 +57,46 @@ def attack_output(arguments, output_dir):
         vehicle = arguments['vehicle']
         assets.append(dict(asset_id='asset_001', path=vehicle['asset_path'], size_m=vehicle['size_m']))
     attack_dir = output_dir/'attack'
+    continue_from = None
+    reuse_source = arguments.get('reuse_completed_from')
+    if reuse_source:
+        candidate_dir = Path(reuse_source).resolve() / 'output/attack'
+        while (candidate_dir / 'output.json').is_file():
+            try:
+                prior_out = json.loads((candidate_dir / 'output.json').read_text())
+            except Exception:
+                break
+            if prior_out.get('status') == 'continued_in_object_revision' and prior_out.get('followup_run'):
+                candidate_dir = Path(prior_out['followup_run']).resolve()
+                continue
+            break
+        reuse_reason = None
+        try:
+            prior_input_path = candidate_dir / 'input.json'
+            prior_selection_path = candidate_dir / 'object_selection/output.json'
+            if not prior_input_path.is_file() or not prior_selection_path.is_file():
+                raise ValueError('Missing completed attack selection checkpoint')
+            prior_selection = json.loads(prior_selection_path.read_text())
+            if prior_selection.get('status') != 'completed':
+                raise ValueError('Prior object_selection did not complete')
+            prior_input = json.loads(prior_input_path.read_text())
+            if (Path(prior_input['scene']).resolve() != scene.resolve()
+                    or prior_input.get('instruction') != arguments['instruction']
+                    or prior_input.get('assets') != assets
+                    or prior_input.get('required_operation') != arguments['operation']
+                    or prior_input.get('required_track') != arguments.get('target_track')):
+                raise ValueError('Prior attack scene, instruction, assets or target requirement differs')
+            if prior_input.get('constraints') != constraints:
+                raise ValueError('Prior attack constraints differ')
+            continue_from = candidate_dir
+            atomic_json(output_dir/'attack-reuse.json', dict(status='reused', source=str(candidate_dir)))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            reuse_reason = str(exc)
+            atomic_json(output_dir/'attack-reuse.json', dict(status='recompute', reason=reuse_reason, source=str(candidate_dir)))
     result = run_attack(scene, attack_dir, arguments['instruction'], assets, constraints,
         timeout_seconds=min(300, arguments['timeout']), max_tokens=16384,
         max_turns=SETTINGS['defaults']['attack_max_turns'], required_operation=arguments['operation'],
-        required_track=arguments.get('target_track'))
+        required_track=arguments.get('target_track'), continue_from=continue_from)
     while result.get('status') == 'continued_in_object_revision':
         attack_dir = Path(result['followup_run'])
         result = json.loads((attack_dir/'output.json').read_text())
@@ -70,6 +113,13 @@ def attack_output(arguments, output_dir):
     trajectory_output = attack_dir/'trajectory_editing/output.json'
     from native_scene_export import export as export_native
     native=export_native(source,frozen,output_dir/'native_attack',attack_result=dict(operation=arguments['operation'],target_track=result['target']['track_id']))
+    policy_probe=None
+    if result.get('vadv2_probe_result_path'):
+        policy_probe=json.loads(Path(result['vadv2_probe_result_path']).read_text())
+        import hashlib
+        if (policy_probe['target_collision_detected'] is not True or
+                policy_probe['frozen_frames_sha256']!=hashlib.sha256((frozen/'metadata/frames.json').read_bytes()).hexdigest()):
+            raise RuntimeError('Submitted scene differs from its successful VADv2 collision test')
     return dict(schema_version='editing_stage.v1', stage='attack_editing',
         status='completed', mode='real', run_dir=str(output_dir.parent),
         source_scene_ref=source, scene_id=source['scene_id'], scene_token=source['scene_token'],
@@ -82,7 +132,9 @@ def attack_output(arguments, output_dir):
             independent_recomputation='passed'), report_path=str(output_dir/'attack-independent.json'),
             physical_avoidance='undetermined'),
         annotation_changes=dict(result['annotation_changes'],native_export_report_path=str(output_dir/'native_attack/export-report.json')), simulation_input=native['simulation_input'], rendered_videos={},
-        pdm_probe_result_path=result.get('pdm_probe_result_path'))
+        pdm_probe_result_path=result.get('pdm_probe_result_path'),
+        vadv2_probe_result_path=result.get('vadv2_probe_result_path'),
+        policy_collision_report=None if policy_probe is None else policy_probe['collision_report'])
 
 
 def ego_output(arguments, output_dir):
@@ -92,38 +144,89 @@ def ego_output(arguments, output_dir):
     attack_run_dir = Path(attack['submission_path']).parent.parent
     target_track = attack['target_track']
     attack_input = json.loads((attack_run_dir/'input.json').read_text())
-    acceptance = policy.resolve(attack_input['constraints']['acceptance_policy'])
-    acceptance['allow_safe_stop'] = arguments['allow_safe_stop']
+    acceptance = policy.for_new_run(attack_input['constraints']['acceptance_policy'])
+    acceptance, require_route_progress = policy.resolve_ego_progress_policy(
+        acceptance, target_effect=arguments['target_effect'],
+        allow_safe_stop=arguments['allow_safe_stop'],
+        require_route_progress=arguments.get('require_route_progress'))
+    atomic_json(output_dir/'effective-policy.json', acceptance)
     understanding_dir = output_dir/'defense_understanding'
     frames = json.loads((scene/'metadata/frames.json').read_text())
     times, _, _ = ego_path_from_frames(frames)
     visual_frame = min(range(len(times)), key=lambda i: abs(times[i]-acceptance['observation_end_s']))
-    if arguments.get('reuse_completed_from'):
-        from ego_stage_reuse import reuse_understanding
-        reuse_understanding(arguments['reuse_completed_from'],arguments,acceptance,
-            SETTINGS['defaults']['defense_constructor_candidates'],understanding_dir)
-    else:
-        run_understanding(scene, attack_run_dir/'trajectory_editing', attack['selected_candidate_id'],
-            target_track, understanding_dir, timeout_seconds=min(300, arguments['timeout']),
-            max_tokens=16384, acceptance=acceptance, visual_frame=visual_frame,
-            target_effect=arguments['target_effect'],
-            image_scene=(attack.get('source_scene_ref') or {}).get('sample_root'))
+    from ego_stage_reuse import (binding as stage_binding, restore as restore_stage, save_completed,
+        preparation_deadline, PreparationTimeout)
+    count = SETTINGS['defaults']['defense_constructor_candidates']
+    foci_count = SETTINGS['defaults'].get('defense_initial_foci_candidates', 2)
+    preparation_seconds = SETTINGS['defaults'].get('defense_preparation_timeout_seconds', 300)
+    def preparation_failure(stage, error):
+        detail = dict(status='not_submitted', stop_reason='preparation_timeout',
+            reason=str(error), preparation_stage=stage, timeout_seconds=preparation_seconds)
+        stage_dir = output_dir/stage
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        atomic_json(stage_dir/'summary.json', detail)
+        try:
+            from business_outcome import bounded_outcome
+        except ImportError:
+            from mcp_servers.scene_editing.core.adversarial.business_outcome import bounded_outcome
+        return bounded_outcome('ego_editing', detail, stage_dir)
+    reuse_source = arguments.get('reuse_completed_from')
+    reused_understanding = restore_stage('defense_understanding', reuse_source, arguments,
+        acceptance, count, foci_count, output_dir)
+    if not reused_understanding:
+        try:
+            with preparation_deadline('defense_understanding', preparation_seconds):
+                understanding_binding = stage_binding('defense_understanding', arguments, acceptance, count, foci_count, output_dir)
+                run_understanding(scene, attack_run_dir/'trajectory_editing', attack['selected_candidate_id'],
+                    target_track, understanding_dir, timeout_seconds=min(300, arguments['timeout']),
+                    max_tokens=16384, acceptance=acceptance, visual_frame=visual_frame,
+                    target_effect=arguments['target_effect'],
+                    image_scene=(attack.get('source_scene_ref') or {}).get('sample_root'))
+                if json.loads((understanding_dir/'summary.json').read_text()).get('status') == 'completed':
+                    save_completed('defense_understanding', arguments, acceptance, count, foci_count, output_dir, understanding_binding)
+        except PreparationTimeout as error:
+            return preparation_failure('defense_understanding', error)
     understanding = json.loads((understanding_dir/'summary.json').read_text())
     if understanding.get('status') != 'completed':
         return dict(status='defense_understanding_failed', detail=understanding)
     constructor_dir = output_dir/'defense_constructor'
     from defense_probe_feedback import reuse as reuse_defense_constructor
-    reused = reuse_defense_constructor(attack.get('pdm_probe_result_path'), scene, target_track, acceptance,
-        SETTINGS['defaults']['defense_constructor_candidates'], constructor_dir)
+    reused = restore_stage('defense_constructor', reuse_source, arguments, acceptance, count, foci_count, output_dir)
     if not reused:
-        run_constructor(scene, target_track, constructor_dir, acceptance,
-            SETTINGS['defaults']['defense_constructor_candidates'], 300)
+        try:
+            with preparation_deadline('defense_constructor', preparation_seconds):
+                constructor_start = stage_binding('defense_constructor', arguments, acceptance, count, foci_count, output_dir)
+                reused = reuse_defense_constructor(attack.get('pdm_probe_result_path'), scene, target_track, acceptance,
+                    count, constructor_dir)
+                if not reused:
+                    run_constructor(scene, target_track, constructor_dir, acceptance, count, preparation_seconds,
+                        resume=(constructor_dir/'reference_screen').exists())
+                save_completed('defense_constructor', arguments, acceptance, count, foci_count, output_dir, constructor_start)
+        except PreparationTimeout as error:
+            return preparation_failure('defense_constructor', error)
     foci_dir = None
-    if arguments['use_foci']:
+    from defense_generation import should_prepare_initial_foci
+    if should_prepare_initial_foci(arguments, default=SETTINGS['defaults'].get('defense_initial_foci_enabled', False)):
         from defense_generation import prepare_initial_foci
-        foci_dir=prepare_initial_foci(scene,constructor_dir,target_track,output_dir/'defense_foci',
-            acceptance['observation_end_s'],float(times[-1]),
-            candidate_limit=SETTINGS['defaults'].get('defense_initial_foci_candidates',2))
+        reused_foci = restore_stage('defense_foci', reuse_source, arguments, acceptance, count, foci_count, output_dir)
+        foci_stage_dir = output_dir/'defense_foci'
+        if reused_foci:
+            foci_state = json.loads((foci_stage_dir/'initial-stage.json').read_text())
+            atomic_json(output_dir/'foci-stage.json', foci_state)
+            foci_dir = foci_stage_dir if foci_state['status'] == 'completed' else None
+        else:
+            try:
+                with preparation_deadline('defense_foci', preparation_seconds):
+                    foci_start = stage_binding('defense_foci', arguments, acceptance, count, foci_count, output_dir)
+                    foci_dir=prepare_initial_foci(scene,constructor_dir,target_track,foci_stage_dir,
+                        policy.edit_start(acceptance),float(times[-1]), candidate_limit=foci_count)
+                    foci_stage_dir.mkdir(parents=True, exist_ok=True)
+                    atomic_json(foci_stage_dir/'initial-stage.json', json.loads((output_dir/'foci-stage.json').read_text()))
+                    save_completed('defense_foci', arguments, acceptance, count, foci_count, output_dir, foci_start)
+            except PreparationTimeout as error:
+                return preparation_failure('defense_foci', error)
+    elif arguments['use_foci']:
+        atomic_json(output_dir/'foci-stage.json',dict(status='on_demand'))
     else:
         atomic_json(output_dir/'foci-stage.json',dict(status='disabled_explicitly'))
     defense_dir = output_dir/'defense_agent'
@@ -160,6 +263,34 @@ def ego_output(arguments, output_dir):
     selected_source=accepted.get('generation_source',selected_source)
     from native_scene_export import export as export_native
     native=export_native(attack['source_scene_ref'],scene,output_dir/'native_expert',expert_trajectory=trajectory,attack_result=attack)
+    import csv, numpy as np
+    with trajectory.open(newline='') as stream:
+        traj_rows = list(csv.DictReader(stream))
+    ex_t = np.array([float(r['time_s']) for r in traj_rows])
+    ex_xy = np.array([[float(r['ego_x_m']), float(r['ego_y_m'])] for r in traj_rows])
+    ex_yaw = np.unwrap([float(r['ego_yaw_rad']) for r in traj_rows])
+    traveled_m = float(np.linalg.norm(np.diff(ex_xy, axis=0), axis=1).sum())
+    terminal_speed_mps = float(np.linalg.norm(ex_xy[-1] - ex_xy[-2]) / (ex_t[-1] - ex_t[-2])) if len(ex_t) > 1 else 0.0
+    _, rec_xy, rec_yaw = ego_path_from_frames(frames)
+    rec_yaw = np.unwrap(rec_yaw)
+    recorded_progress_m = float(np.linalg.norm(np.diff(rec_xy, axis=0), axis=1).sum())
+    _, progress_reason = policy.task_progress(
+        ex_t, ex_xy, recorded_progress_m, acceptance,
+        baseline_stopped=policy.is_terminal_stopped(times, rec_xy, acceptance))
+    expert_motion_summary = dict(
+        traveled_m=round(traveled_m, 3),
+        recorded_progress_m=round(recorded_progress_m, 3),
+        progress_ratio_of_recorded=(None if recorded_progress_m <= 1e-6 else round(traveled_m / recorded_progress_m, 4)),
+        yaw_change_deg=round(float(np.degrees(abs(ex_yaw[-1] - ex_yaw[0]))), 2),
+        recorded_yaw_change_deg=round(float(np.degrees(abs(rec_yaw[-1] - rec_yaw[0]))), 2),
+        terminal_speed_mps=round(terminal_speed_mps, 3),
+        terminal_stopped=policy.is_terminal_stopped(ex_t, ex_xy, acceptance),
+        progress_reason=progress_reason,
+        allow_safe_stop=acceptance['allow_safe_stop'],
+        minimum_progress_fraction=acceptance['minimum_progress_fraction'],
+        require_route_progress=require_route_progress,
+        task_goal_assessment='agent_review_required',
+    )
     return dict(schema_version='editing_stage.v1', stage='ego_editing',
         status='completed', mode='real', run_dir=str(output_dir.parent),
         scene_id=attack['scene_id'], scene_token=attack['scene_token'], attack_run_dir=attack['run_dir'],
@@ -169,18 +300,21 @@ def ego_output(arguments, output_dir):
         conflict_brief_path=str(understanding_dir/'conflict-brief.json'),
         submission_path=str(defense_dir/'summary.json'),
         checks=dict(reference_screen='passed', checks=dict(check_status(independent['checks']),
-            manual_video='passed'), report_path=str(output_dir/'defense-independent.json'),
+            manual_video=('passed' if render.get('pipeline_output_dir') else 'not_checked')),
+            report_path=str(output_dir/'defense-independent.json'),
             physical_avoidance='undetermined'),
         annotation_changes=dict(operation='export_ego_trajectory', frames_json_modified=False,native_export_report_path=str(output_dir/'native_expert/export-report.json')),
-        simulation_input=native['simulation_input'], ilft_training_data=None,
-        rendered_videos={'manual_explained': str(Path(render['pipeline_output_dir'])/'manual-explained.mp4')})
+        simulation_input=native['simulation_input'], expert_motion_summary=expert_motion_summary, ilft_training_data=None,
+        rendered_videos=({'manual_explained': str(Path(render['pipeline_output_dir'])/'manual-explained.mp4')}
+            if render.get('pipeline_output_dir') else {}))
 
 
 def main():
     payload = json.load(sys.stdin)
     output_dir = Path(payload['output_dir']).resolve()
     os.environ['ADVERSARIAL_EXPERIMENTS_ROOT'] = str(output_dir)
-    os.environ['ADVERSARIAL_FULL_PIPELINE_ROOT'] = SETTINGS['public_pipeline_root']
+    # The host adapter supplies the public path; standalone runs stay in output.
+    os.environ.setdefault('ADVERSARIAL_FULL_PIPELINE_ROOT', str(output_dir / 'rendered'))
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
         stage = payload['stage']
@@ -188,6 +322,10 @@ def main():
             result = (attack_output if stage == 'attack_editing' else ego_output)(payload['arguments'], output_dir)
     except Exception as error:
         result = dict(status='backend_error', error_type=type(error).__name__, error=str(error)[:300])
+        if getattr(error, 'code', None) == 'editing_configuration_error':
+            result.update(error_code=error.code, failure_stage='configuration', retryable=False,
+                error_details=error.details,
+                recovery_hint='Repair the backend configuration or conflicting arguments; changing the scene or attack instruction cannot fix this error. Do not retry unchanged.')
     print(json.dumps(result, ensure_ascii=False))
 
 

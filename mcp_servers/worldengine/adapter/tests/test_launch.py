@@ -1,6 +1,7 @@
 """Parameter forwarding tested without importing GPU models."""
 import argparse
 import json
+import pickle
 from pathlib import Path
 import subprocess
 import sys
@@ -11,11 +12,22 @@ def args():
     return argparse.Namespace(config="/cfg.py",checkpoint="/model.pth",model_name="test",
         data_type="demo",react_type="NR",asset_name="demo",added_name="test")
 
+def prepare_supervision_fixture(root):
+    # The real wrappers read scene metadata and import the monitor before
+    # forwarding to these lightweight process-supervision entry points.
+    scene=root/"data/sim_engine/scenarios/original/demo/all_scenarios.pkl"
+    scene.parent.mkdir(parents=True)
+    scene.write_bytes(pickle.dumps({"fixture":{"metadata":{}}}))
+    (root/"projects/AlgEngine/closed_loop/monitor.py").write_text("class AsyncFileMonitor: pass\n")
+    manager=root/'projects/SimEngine/worldengine/manager/metric_manager.py'
+    manager.parent.mkdir(parents=True)
+    manager.write_text('class MetricManager:\n    def compute_pdm_scores(self,*args): pass\n')
+
 def test_absolute_paths_and_all_effective_parameters(tmp_path):
     env={"WORLDENGINE_ROOT":str(tmp_path/"engine"),"WORLDENGINE_TEST_PATH":str(tmp_path/"out"),
          "SCENARIO_DATA_FOLDER_PATH":str(tmp_path/"external scenes"),
          "NUM_HISTORY":"4","NUM_FUTURE":"8","MAX_FRAME_PER_SCENE":"12",
-         "NUM_SCENARIOS":"1","SAMPLING_POSES":"3","WITH_DENSE_REWARD_MANAGER":"true",
+         "NUM_SCENARIOS":"1","WITH_DENSE_REWARD_MANAGER":"true",
          "SIMENGINE_PYTHON":"/custom/sim/python","ALGENGINE_PYTHON":"/custom/alg/python"}
     sim,alg,_,_,_,_,effective=build_commands(args(),env)
     assert sim[0]=="/custom/sim/python" and alg[0]=="/custom/alg/python"
@@ -23,7 +35,8 @@ def test_absolute_paths_and_all_effective_parameters(tmp_path):
     assert effective["simulator"]["num_history"]==4
     assert effective["simulator"]["num_future"]==8
     assert effective["simulator"]["+num_scenarios"]==1
-    assert effective["simulator"]["sampling_poses"]==3
+    assert effective["simulator"]["sampling_poses"]==8
+    assert effective["simulator"]["buffer_size"]==9
     assert "with_dense_reward_manager=true" in sim
     assert "sim.max_frame_per_scene=12" in alg
     assert "sim.maximum_step=12" in alg
@@ -32,7 +45,7 @@ def test_absolute_paths_and_all_effective_parameters(tmp_path):
 def test_defaults_derive_future_instead_of_retaining_eight(tmp_path):
     env={"WORLDENGINE_ROOT":str(tmp_path),"WORLDENGINE_TEST_PATH":str(tmp_path/"out")}
     *_,effective=build_commands(args(),env)
-    assert effective["num_history"]+effective["num_future"]==effective["max_frame_per_scene"]==40
+    assert effective["num_history"]+effective["num_future"]==effective["max_frame_per_scene"]==16
 
 def test_default_training_config_is_usable_without_explicit_override(tmp_path, stub_training_preparation):
     import shutil
@@ -50,9 +63,10 @@ def test_default_training_config_is_usable_without_explicit_override(tmp_path, s
 
 def test_launcher_runs_both_commands_and_records_effective_config(tmp_path,monkeypatch):
     from mcp_servers.worldengine.adapter import launch
-    root=tmp_path/"engine"
+    root=tmp_path/"engine with spaces"
     sim=root/"projects/SimEngine";alg=root/"projects/AlgEngine"
     (sim/"worldengine/runner").mkdir(parents=True);(alg/"closed_loop").mkdir(parents=True)
+    prepare_supervision_fixture(root)
     (sim/"worldengine/runner/run_simulation.py").write_text('import time\ntime.sleep(0.05)\n')
     (alg/"closed_loop/sim_test.py").write_text('import time\ntime.sleep(0.2)\n')
     out=tmp_path/"out"
@@ -62,7 +76,7 @@ def test_launcher_runs_both_commands_and_records_effective_config(tmp_path,monke
     monkeypatch.setenv("ALGENGINE_PYTHON",sys.executable)
     monkeypatch.setattr(sys,"argv",["launch","/cfg","/ckpt","test","demo","NR","demo","x"])
     launch.main()
-    assert json.loads((out/"effective_config.json").read_text())["max_frame_per_scene"]==40
+    assert json.loads((out/"effective_config.json").read_text())["max_frame_per_scene"]==16
 
 
 def test_planner_can_exit_after_completion_flag_before_simulator_cleanup(tmp_path,monkeypatch):
@@ -70,6 +84,7 @@ def test_planner_can_exit_after_completion_flag_before_simulator_cleanup(tmp_pat
     root=tmp_path/"engine"
     sim=root/"projects/SimEngine";alg=root/"projects/AlgEngine"
     (sim/"worldengine/runner").mkdir(parents=True);(alg/"closed_loop").mkdir(parents=True)
+    prepare_supervision_fixture(root)
     code = 'import sys,time\nfrom pathlib import Path\narg=next(x for x in sys.argv if x.startswith("output_dir=")); p=Path(arg.split("=",1)[1]);p.mkdir(parents=True,exist_ok=True);(p/"simulation_completed.flag").touch();time.sleep(0.4)\n'
     (sim/"worldengine/runner/run_simulation.py").write_text(code)
     (alg/"closed_loop/sim_test.py").write_text('import time\ntime.sleep(0.15)\n')

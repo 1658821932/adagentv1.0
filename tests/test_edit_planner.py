@@ -73,6 +73,23 @@ def test_saved_retrieval_reference_is_accepted(scene,tmp_path):
     assert run(value)['result']['scene_id']=='source'
 
 
+def test_scene_evidence_is_reused_only_for_identical_planning_input(scene,monkeypatch):
+    from tools.tool04_edit_planner import real
+    calls=[];precheck=real.initial_motion_precheck
+    def counted(frames,track):
+        calls.append(track)
+        return precheck(frames,track)
+    monkeypatch.setattr(real,'initial_motion_precheck',counted)
+    value=arguments(scene);value['_llm_client']=client(response())
+    assert run(value)['status']=='success'
+    assert calls==['vehicle-A']
+    changed=arguments(scene);changed['target_effect']='Ego yields without an unnecessary full stop.'
+    changed['_llm_client']=client(response())
+    result=run(changed)
+    assert result['status']=='success' and result['result']['target_effect']==changed['target_effect']
+    assert calls==['vehicle-A','vehicle-A']
+
+
 def test_source_keyframe_is_sent_as_image_not_as_a_json_string(scene):
     import base64
     path=Path(scene['sample_root'])/'frame.png'
@@ -144,6 +161,29 @@ def test_add_vehicle_uses_supplied_asset_and_size_verbatim(scene,tmp_path):
     assert arguments5['vehicle']==vehicle
     assert arguments5['maneuver']=='stationary' and 'target_track' not in arguments5
     assert call_tool('attack_vehicle_editor',arguments5,mode='mock')['status']=='success'
+
+
+def test_asset_supplement_reuses_only_matching_rough_plan(scene,tmp_path):
+    calls=[]
+    def chat(messages):
+        calls.append(messages)
+        return json.dumps(addition())
+    value=arguments(scene);value['_llm_client']=SimpleNamespace(model='offline',chat=chat)
+    first=run(value)
+    assert first['result']['suitability']=='needs_information'
+    asset=tmp_path/'car.ply';asset.write_text('ply\nformat ascii 1.0\nend_header\n')
+    vehicle=dict(asset_path=str(asset),size_m=[4.2,1.8,1.6])
+    supplemented=arguments(scene);supplemented.update(vehicle=vehicle,_llm_client=SimpleNamespace(model='offline',chat=chat))
+    second=run(supplemented)
+    assert second['status']=='success' and second['result']['suitability']=='ready'
+    assert second['meta']['attempts']==0 and second['meta']['reused']
+    assert second['result']['attack_input']['vehicle']==vehicle
+    assert len(calls)==1
+    changed=arguments(scene);changed['target_effect']='A different ego objective requires new planning.'
+    changed.update(vehicle=vehicle,_llm_client=SimpleNamespace(model='offline',chat=chat))
+    third=run(changed)
+    assert third['status']=='success' and third['meta']['attempts']==1
+    assert len(calls)==2
 
 
 def test_partial_track_is_not_accepted_as_a_full_scene_edit_target(scene):

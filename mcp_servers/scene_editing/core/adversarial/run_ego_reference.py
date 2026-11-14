@@ -33,15 +33,9 @@ def stop_source_times(times, start_s, duration_s):
 
 
 def progress_with_safe_stop(times, xy, recorded_progress, allow_safe_stop=False):
-    """Apply the progress gate or an explicitly enabled terminal-stop exception."""
-    times = np.asarray(times, dtype=float); xy = np.asarray(xy, dtype=float)
-    motion = np.linalg.norm(np.diff(xy, axis=0), axis=1)/np.diff(times)
-    traveled = float(np.linalg.norm(np.diff(xy, axis=0), axis=1).sum())
-    if traveled >= policy.MIN_PROGRESS_FRACTION*recorded_progress:
-        return True, 'minimum_progress_met'
-    if allow_safe_stop and len(motion) >= 2 and np.all(motion[-2:] <= policy.STOP_SPEED_MPS):
-        return True, 'terminal_stop_exception'
-    return False, 'minimum_progress_not_met'
+    """Legacy entry point using the same explicit task settings as the editor."""
+    effective = policy.resolve({'allow_safe_stop':bool(allow_safe_stop)})
+    return policy.task_progress(np.asarray(times), np.asarray(xy), recorded_progress, effective)
 
 
 def polygon(x, y, yaw, length, width):
@@ -132,7 +126,7 @@ def evaluate(times, baseline_xy, baseline_yaw, objects, source_times, target_tra
 
 def conflict_decisions(times, first_contact_s, effective, allow_stop=True):
     """A bounded, interleaved seed pool; Agent requests can refine all parameters."""
-    boundary = effective['observation_end_s']
+    boundary = policy.edit_start(effective)
     end = float(times[-1])
     if boundary >= end:
         raise ValueError('No editable constructor horizon')
@@ -189,19 +183,21 @@ def main():
                         help='Add smooth stop-and-hold candidates (default: enabled)')
     parser.add_argument('--acceptance-policy', type=Path, help='Named profile and task settings JSON')
     parser.add_argument('--max-candidates',type=int,help='Optional explicit numerical candidate cap; default preserves the full pool')
+    parser.add_argument('--resume',action='store_true',help='Resume only candidates missing from constructor-progress.json')
     args=parser.parse_args()
     if args.max_candidates is not None and args.max_candidates<1:
         raise ValueError('max-candidates must be positive')
     effective = policy.resolve(None if args.acceptance_policy is None else json.loads(args.acceptance_policy.read_text()))
     if args.acceptance_policy is None:
-        effective.update(allow_safe_stop=args.allow_stop, minimum_progress_fraction=.5)
+        effective.update(allow_safe_stop=args.allow_stop)
     folder=args.run/'reference_screen'
-    if folder.exists():raise FileExistsError('Refusing to overwrite existing reference screen')
-    folder.mkdir(parents=True)
+    if folder.exists() and not args.resume:raise FileExistsError('Refusing to overwrite existing reference screen')
+    folder.mkdir(parents=True,exist_ok=args.resume)
     frames=json.loads((args.input/'metadata/frames.json').read_text())
     road=load_scene_road(args.input,frames)
     official = None
-    if args.allow_stop:
+    allow_stop_seeds = bool(effective['allow_safe_stop']) if args.acceptance_policy is not None else bool(args.allow_stop)
+    if args.allow_stop or (args.input/'metadata/map_drivable_official.json').is_file():
         official_path = args.input/'metadata/map_drivable_official.json'
         if not official_path.is_file():
             raise ValueError('Safe-stop mode requires the official drivable map')
@@ -213,7 +209,7 @@ def main():
     from ego_edit_evidence import braking_diagnostic
     diagnostic = braking_diagnostic(times,xy,yaw,objects,args.target_track,effective)
     first_contact = diagnostic['baseline_first_contact']['time_s']
-    decisions = conflict_decisions(times,first_contact,effective,args.allow_stop)
+    decisions = conflict_decisions(times,first_contact,effective,allow_stop_seeds)
     generated_decision_count=len(decisions)
     if args.max_candidates is not None: decisions=decisions[:args.max_candidates]
     from ego_lane_markings import load_no_cross_lines
@@ -221,11 +217,18 @@ def main():
     from defense_behavior import DrivingObjective,adaptive_spec,preferences
     objective=DrivingObjective(times,xy,objects,args.target_track,effective)
     seed_count=max(1,int(len(decisions)*.75))
-    ledger=[]; construction_failures=[]
+    from ego_stage_reuse import constructor_signature, load_constructor_progress, save_constructor_progress
+    signature=constructor_signature(effective,decisions,args.target_track)
+    completed,ledger,construction_failures=load_constructor_progress(args.run,signature) if args.resume else (set(),[],[])
+    def checkpoint(status='in_progress'):
+        save_constructor_progress(args.run,signature,completed,ledger,construction_failures,status)
+    checkpoint()
     for idx,(mode,start,parameter) in enumerate(decisions,1):
+        if idx in completed:
+            continue
         adaptive=False
         if idx>seed_count:
-            proposal=adaptive_spec(ledger,decisions,effective['observation_end_s'],float(times[-1]))
+            proposal=adaptive_spec(ledger,decisions,policy.edit_start(effective),float(times[-1]))
             if proposal is not None:
                 mode,start,parameter=proposal;decisions[idx-1]=proposal;adaptive=True
         curve = operation = None
@@ -243,9 +246,10 @@ def main():
                 reason='Scene-timed constructor seed; Agent may refine its timing and speed',**parameter)
             try:
                 candidate_xy,candidate_yaw,curve=brake_along_path(times,xy,yaw,xy,yaw,operation,
-                    effective['observation_end_s'],with_details=True)
+                    policy.edit_start(effective),with_details=True)
             except ValueError as error:
-                construction_failures.append(dict(operation=operation,error=str(error),status='construction_rejected'))
+                construction_failures.append(dict(candidate_index=idx,operation=operation,error=str(error),status='construction_rejected'))
+                completed.add(idx);checkpoint()
                 continue
             duration=curve['transition_time_s']-start;delay=None;source_times=times.copy()
         elif mode == 'baseline':
@@ -294,6 +298,7 @@ def main():
             w=csv.writer(stream);w.writerow(['frame_index','time_s','source_ego_time_s','ego_x_m','ego_y_m','ego_yaw_rad','target_clearance_m','nearest_other_clearance_m','other_observed_count'])
             for i in range(len(times)):w.writerow([i,times[i],source_times[i],*result['xy'][i],result['yaw'][i],result['target_clearance_m'][i],result['other_min_m'][i],result['other_observed_counts'][i]])
         (target/'screen.json').write_text(json.dumps(record,indent=2,ensure_ascii=False)+'\n');ledger.append(record)
+        completed.add(idx);checkpoint()
     passing=[row['candidate_id'] for row in ledger if row['reference_screen_passed']]
     diagnostic['defense_search'].update(status='found_passing_candidate' if passing else 'searched_no_passing_candidate',verified_passing_candidate_ids=passing)
     (folder/'defense-difficulty.json').write_text(json.dumps(diagnostic,indent=2)+'\n')
@@ -306,6 +311,7 @@ def main():
         'candidates':ledger,'qualified_count':sum(c['reference_screen_passed'] for c in ledger),
         'limits':'Sampled 2 Hz actor checks and whole-body road checks densified to 0.1 s; no continuous collision proof or physical execution; ego timing edited, other actors recorded only; camera images not updated; progress metrics are cumulative traveled path length, not net forward displacement'}
     (folder/'summary.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False)+'\n')
+    checkpoint('completed')
     print(json.dumps({'status':summary['status'],'baseline_min_target_clearance_m':summary['baseline_min_target_clearance_m'],'qualified_count':summary['qualified_count'],'candidates':len(ledger)},ensure_ascii=False))
 
 

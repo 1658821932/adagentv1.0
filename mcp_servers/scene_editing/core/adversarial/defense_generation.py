@@ -1,4 +1,5 @@
 """Agent-controlled construction and FOCI reuse the editor's candidate graph/checks."""
+import acceptance_policy as policy
 import json
 import subprocess
 import sys
@@ -75,7 +76,7 @@ class DefenseGeneration:
     def execute(self,name,args):
         editor=self.editor
         args=normalize_request(name,args,float(editor.times[-1]),editor.effective_policy.get('time_rounding_s',.001))
-        validate_request(name,args,boundary=editor.effective_policy['observation_end_s'],
+        validate_request(name,args,boundary=policy.edit_start(editor.effective_policy),
                          end=float(editor.times[-1]),remaining=self.remaining())
         key=args.get('parent_trajectory_id',args.get('parent_candidate_id'))
         parent=self._parent(key)
@@ -120,7 +121,7 @@ class DefenseGeneration:
                 script=Path(__file__).with_name('run_ego_foci_probe.py')
                 cmd=[sys.executable,str(script),'--input',str(editor.input_dir),'--parent-run',str(editor.run_dir),
                      '--candidate',parent,'--run',str(run),'--target-track',editor.target_track,
-                     '--freeze-before',str(editor.effective_policy['observation_end_s']),
+                     '--freeze-before',str(policy.edit_start(editor.effective_policy)),
                      '--edit-window',*[str(x) for x in args['edit_window_s']],
                      '--max-candidates',str(args['max_candidates']),'--max-iterations',str(self.foci_iterations)]
                 if args.get('preserve_route',False):cmd.append('--preserve-route')
@@ -159,8 +160,12 @@ class DefenseGeneration:
                     evidence_path=str(self.path),scope='Bounded search results; failed candidates are editable and cannot be submitted until passing')
 
 
+def should_prepare_initial_foci(config, *, default=False):
+    return bool(config.get('use_foci', True) and config.get('initial_foci', default))
+
+
 def prepare_initial_foci(scene, constructor, target_track, output, boundary, end, *, candidate_limit=2, timeout=300):
-    """Shared default stage for registered and standalone loops; an empty pool is normal."""
+    """Explicit opt-in initial stage for registered and standalone loops; an empty pool is normal."""
     from defense_generation_contract import select_foci_parents
     constructor,output=Path(constructor),Path(output)
     pool=json.loads((constructor/'reference_screen/summary.json').read_text())
@@ -170,7 +175,7 @@ def prepare_initial_foci(scene, constructor, target_track, output, boundary, end
     if parent is None:
         atomic_json(stage,dict(status='no_parent',fallback_to_constructor=True))
         return None
-    if pool['target_track']!=target_track or pool['acceptance_policy']['observation_end_s']!=boundary:
+    if pool['target_track']!=target_track or policy.edit_start(pool['acceptance_policy'])!=boundary:
         raise ValueError('Initial FOCI scene/target/observation policy differs')
     script=Path(__file__).with_name('run_ego_foci_probe.py')
     command=[sys.executable,str(script),'--input',str(scene),'--parent-run',str(constructor),

@@ -1,5 +1,6 @@
 {
   "paths": {
-    "python": "environments/simengine/bin/python"
+    "python": "environments/simengine/bin/python",
+    "shared_library_dir": "/usr/lib/x86_64-linux-gnu"
   }
 }

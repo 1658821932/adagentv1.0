@@ -28,11 +28,23 @@ class ExportTests(unittest.TestCase):
         after=np.asarray(new['ego2global'])@np.r_[new['anns']['gt_boxes'][0][:3],1.]
         self.assertTrue(np.allclose(before,after));self.assertEqual(frames[-1]['anns']['gt_boxes'][0][0],12.)
         self.assertTrue(np.array_equal(expert['metadata']['digitaltwin_ego2globals'],[f['ego2global'] for f in frames]))
-    def test_history_and_nonuniform_times_are_rejected(self):
+    def test_initial_pose_and_nonuniform_times_are_rejected(self):
         np=self.np;frames=self.frames();t,x,y=self.exporter.ego_path_from_frames(frames);x[0,0]+=1
-        with self.assertRaisesRegex(ValueError,'immutable'):self.exporter.build(frames,{},'s','a',expert=(t,x,y))
+        with self.assertRaisesRegex(ValueError,'initial scene pose'):self.exporter.build(frames,{},'s','a',expert=(t,x,y))
         frames[-1]['timestamp']+=20000
         with self.assertRaisesRegex(ValueError,'Nonuniform'):self.exporter.build(frames,{},'s','a')
+
+    def test_edited_first_three_seconds_are_exported_with_consistent_actor_coordinates(self):
+        np=self.np;frames=self.frames();times,xy,yaw=self.exporter.ego_path_from_frames(frames)
+        edited=xy.copy();edited[times>0,0]-=.2*np.minimum(times[times>0],2.)
+        scene,checks=self.exporter.build(frames,{'CAM_F0':{}},'scene','asset',expert=(times,edited,yaw))
+        centres=scene['object_track']['ego']['state']['position'][:,:2]
+        self.assertTrue(np.allclose(centres-[1.461,0.],edited))
+        for original in frames:
+            generated=scene['metadata']['openscene_data_infos_dict'][original['token']]
+            before=np.asarray(original['ego2global'])@np.r_[original['anns']['gt_boxes'][0][:3],1.]
+            after=np.asarray(generated['ego2global'])@np.r_[generated['anns']['gt_boxes'][0][:3],1.]
+            self.assertTrue(np.allclose(before,after))
     def test_missing_assets_return_explicit_unavailable_instead_of_original_scene(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);(root/'metadata').mkdir();(root/'metadata/frames.json').write_text(json.dumps(self.frames()));(root/'metadata/cameras.json').write_text('{}')

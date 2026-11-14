@@ -7,7 +7,7 @@ import numpy as np
 
 
 LIMITS = dict(max_speed_mps=policy.ego_limits()['max_speed_mps'], max_acceleration_mps2=policy.ego_limits()['max_acceleration_mps2'],
-              max_lateral_acceleration_mps2=policy.ego_limits()['max_lateral_acceleration_mps2'], max_yaw_rate_radps=policy.ATTACK_MAX_YAW_RATE_RADPS,
+              max_lateral_acceleration_mps2=policy.ego_limits()['max_lateral_acceleration_mps2'], max_yaw_rate_radps=policy.MAX_YAW_RATE_RADPS,
               max_initial_velocity_error_mps=1.0, max_endpoint_error_m=0.25)
 
 

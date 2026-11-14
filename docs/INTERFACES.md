@@ -65,16 +65,16 @@ Generate one target scene, one global ego goal and three source-video/edit-strat
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `scene_requirement` | string | ✅ | — | ONE target scene with context, participant interaction and event progression. All three candidates construct this same target. |
-| `target_effect` | string | ✅ | — | What ego should do in the target scene. |
-| `candidates` | array<Candidate> | ✅ | — | Exactly three alternative base-video retrieval descriptions paired with corresponding editing strategies. |
+| `scene_requirement` | string | ✅ | — | Target scene = scene context + ego's WRONG behavior (the failure to reproduce). One short sentence. |
+| `target_effect` | string | ✅ | — | Ego's CORRECT behavior that would have avoided the failure. One short sentence. |
+| `candidates` | array<Candidate> | ✅ | — | Three variants of the same failure mechanism in slightly different road contexts. |
 
 **`Candidate` 对象字段：**
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `base_video_requirement` | string | ✅ | — | Natural-language description of the BASE video to retrieve. Pass this string verbatim to video_retriever.requirement. Describe visible road context and actors needed for THIS strategy; an empty road/intersection is valid when adding a vehicle. Do not require the final hazard to already exist. |
-| `edit_strategy` | string | ✅ | — | Qualitative strategy for this base video: add, delete or modify a vehicle and/or its trajectory; optionally adjust ego trajectory. Prefer changing at most one non-ego vehicle. No fixed object IDs or numeric trajectories are needed. |
+| `base_video_requirement` | string | ✅ | — | Source-video scene description for retrieval. Describe ONLY observable road layout and other vehicles present. Do NOT include ego behavior or editing instructions. |
+| `edit_strategy` | string \| null | — | null | Editing to apply to OTHER vehicles only (add/modify/delete a vehicle, change its trajectory). Set to null if no other-vehicle editing is needed. Do NOT edit ego's trajectory here. |
 
 
 ## tool03_video_retriever: `video_retriever`
@@ -144,7 +144,7 @@ Review a retrieved base scene and produce a coarse plan plus validated attack-ed
 
 **上下游衔接**
 - input: retrieval_result accepts the successful tool03 envelope, result or history result_ref; also supply tool02 scene_requirement, target_effect and the selected edit_strategy. Optional vehicle supplies a real added-car asset and dimensions.
-- output: ready: pass result.attack_input unchanged as attack_vehicle_editor arguments. Keep target_effect for tool06. unsuitable: retrieve again using retrieval_suggestion. needs_information: obtain the named resources, then review again.
+- output: ready: pass result.attack_input unchanged as attack_vehicle_editor arguments. Keep target_effect for tool06. unsuitable: retrieve again using retrieval_suggestion. needs_information: obtain the named resources, then review again. If only the vehicle asset is missing, a saved coarse add_vehicle plan may be revalidated without another model call when the scene, objective and prompt are unchanged.
 
 **工具规则**
 - Initial observation is 12 CAM_F0 frames in three chronological 2x2 contact sheets. The VLM may request other available cameras internally, up to two cameras per round and two extra rounds.
@@ -159,7 +159,7 @@ Review a retrieved base scene and produce a coarse plan plus validated attack-ed
 | `retrieval_result` | RetrievalContext | ✅ | — | Tool03 successful envelope, result object or absolute result_ref. Standalone scene_ref inputs are not accepted. |
 | `scene_requirement` | string | ✅ | — | Target scene from tool02. |
 | `target_effect` | string | ✅ | — | Unchanged global correct ego behavior from tool02. |
-| `edit_strategy` | string | ✅ | — | Selected tool02 candidate editing idea. |
+| `edit_strategy` | string \| null | — | null | Selected tool02 candidate editing idea; null means no other-vehicle editing needed. |
 | `vehicle` | VehicleAsset \| null | — | null | Optional real added-vehicle PLY and length/width/height. Required for executable add_vehicle arguments; do not infer from images. |
 
 **`RetrievalContext` 对象字段：**
@@ -218,7 +218,7 @@ Edit one attack vehicle and export the accepted frozen scene.
 - For edit_existing, supply an evidenced target_track or let the backend select it from annotations. For add_vehicle, provide the asset, dimensions and supported maneuver required by input_schema.
 - When PDM defended safely, call again on the original scene with unchanged instruction/task_contract and compact revision_feedback containing the prior placement and measured PDM outcome. Search a more challenging alternative within the attack-attempt budget; do not freeze an extra copy of the previous added vehicle.
 - On editing_backend_not_configured, stop: the stage has no configured algorithm backend.
-- Set pdm_self_check=true to expose probe_pdm inside editing. Geometry-passing candidates must be tested; safely defended candidates need revision or placement reselection. pdm_probe_budget is shared across branches. Return pdm_probe_result_path for verified tool08 reuse.
+- Set pdm_self_check=true to expose probe_pdm inside editing. Geometry-passing candidates must be tested; safely defended candidates need revision or placement reselection. pdm_probe_budget is shared across branches. Return pdm_probe_result_path for verified tool07 reuse.
 - pdm_defense_feedback=true adds advisory braking and bounded constructor witnesses to probe_pdm. Prefer preserving a tested defense witness while challenging PDM; no witness is not global infeasibility or a new attack gate.
 - A frozen scene without simulation_input is not an executable WorldEngine package.
 
@@ -294,7 +294,7 @@ Generate a correct ego expert trajectory for the frozen attack scene.
 - output: Use non-null simulation_input for policy_runner; non-null ilft_training_data for policy_trainer ILFT. Existing backend render paths remain artifacts, not visual acceptance.
 
 **工具规则**
-- FOCI is enabled by default. The internal editor can request structured construction or FOCI optimization; all new candidates share its bounded generation/edit budget and unchanged acceptance checks.
+- FOCI is enabled by default. The internal editor can request structured construction or FOCI optimization; all new candidates share its bounded generation/edit budget and unchanged acceptance checks. Candidate optimization runs at most two processes in parallel with independent timeouts and partial-result preservation; final acceptance remains serial and unchanged. Initial motion is prechecked before planning and backend search. Attack/defense stages have wall-clock limits, repeated-failure early stops, action preflight and compact decision feedback instead of repeated full JSON.
 - A success envelope with status=defense_not_found means completed bounded defense search: return compact feedback to attack editing on the original instruction and hard contract. An execution error does not justify lowering attack difficulty.
 - Preserve the frozen attack scene and its target vehicle.
 - An expert trajectory is a reference, not a policy closed-loop success. Its CSV is not ann_file training data; use the explicit converted handoff blocks.
@@ -307,9 +307,10 @@ Generate a correct ego expert trajectory for the frozen attack scene.
 | `attack_result` | AttackOutput \| string | ✅ | — | Full attack result, successful envelope or saved attack-result JSON path. |
 | `target_effect` | string | ✅ | — | One correct ego behavior for the target scene. |
 | `allow_safe_stop` | boolean | — | `true` | Allow Safe Stop |
+| `require_route_progress` | boolean \| null | — | null | Optional motion-goal hint for Agent review. Infer from target_effect when null; no automatic percentage or maneuver-completion gate. A temporary wait followed by driving is not a terminal-stop goal. |
 | `use_foci` | boolean | — | `true` | Use Foci |
 | `max_edit_candidates` | integer >=0 \| null | — | null | Optional new-edit resource budget. Zero permits selecting, inspecting and submitting existing candidates only; acceptance checks stay unchanged. |
-| `reuse_completed_from` | string \| null | — | null | Prior failed ego service run. Reuse only completed scene/policy-bound understanding and constructor; start a new editor request, preserving previous failures. |
+| `reuse_completed_from` | string \| null | — | null | Prior ego service run. Reuse completed understanding, constructor and initial FOCI stages only when content-bound checkpoints match task/scene/policy/code; recompute missing or stale stages and start a fresh editor request. |
 | `timeout` | integer >0 | — | `3600` | Timeout |
 
 **`AttackOutput` 对象字段：**
@@ -334,16 +335,16 @@ Generate a correct ego expert trajectory for the frozen attack scene.
 | `submission_path` | string | ✅ | — |  |
 | `checks` | StageChecks | ✅ | — |  |
 | `annotation_changes` | object | ✅ | — |  |
-| `simulation_input` | SimulationInput \| null | — | null | Prepared exact edited native scene/asset paths for tool07 replay and tool08; null if export-report explains unavailable assets/conversion. A frozen metadata directory alone is not executable. |
+| `simulation_input` | SimulationInput \| null | — | null | Prepared exact edited native scene/asset paths for tool07; null if export-report explains unavailable assets/conversion. A frozen metadata directory alone is not executable. |
 | `rendered_videos` | object | — | — | Camera name to edited render path; empty until rendered. Original recordings must not be relabelled as edited renders. |
-| `pdm_probe_result_path` | string \| null | — | null | Completed self-check bound to the submitted candidate; tool08 verifies it against the frozen scene before reuse. |
+| `pdm_probe_result_path` | string \| null | — | null | Completed self-check bound to the submitted candidate; tool07 verifies it against the frozen scene before reuse. |
 
 ### 输出
 
 （无字段）
 
 
-## tool08_policy_runner: `policy_runner`
+## tool07_policy_runner: `policy_runner`
 
 Run a policy in WorldEngine closed loop for evaluation or post-training data collection.
 
@@ -384,10 +385,10 @@ Run a policy in WorldEngine closed loop for evaluation or post-training data col
 | `scenario_data_folder_path` | string \| null | — | null | Prepared native scenario directory; may come from editor simulation_input. |
 | `asset_folder_path` | string \| null | — | null | Prepared native Gaussian/renderer asset directory. |
 | `scenario_pkl_file_name` | string \| null | — | null | Scenario pickle name within scenario_data_folder_path. |
-| `num_history` | integer >0 | — | `4` | Input history frame count. |
+| `num_history` | integer >0 | — | `4` | Normal native takeover is at 1.5s at 2Hz. |
 | `num_future` | integer >0 \| null | — | null | Future frame count; derived from the total budget when omitted. |
-| `max_frame_per_scene` | integer >=5 | — | `40` | Total frame budget; num_history + num_future must equal this value. |
-| `sampling_poses` | integer >0 | — | `8` | Native rollout timing override in 0.5-second units. |
+| `max_frame_per_scene` | integer >=5 | — | `16` | Normal native scoring and RL collection both evaluate 1.5–7.5s at 2Hz; num_history + num_future must equal this budget. Dense collection needs at least 24 real source frames. |
+| `sampling_poses` | integer >0 \| null | — | null | Omit: derived from rollout budget minus history (12 by default). Does not change VAD prediction horizon. |
 | `with_dense_reward_manager` | boolean | — | `false` | Collect native 8192-candidate PDM rewards for subsequent RLFT. |
 | `ego_policy` | string \| null | — | null | Optional native ego policy override. |
 | `ego_controller` | string \| null | — | null | Optional native ego controller override. |
@@ -411,7 +412,7 @@ Run a policy in WorldEngine closed loop for evaluation or post-training data col
 | `pdm_challenge` | object \| null | — | null | Independent baseline/attack PDM outcomes; not an official native PDM score. |
 
 
-## tool09_failure_case_filter: `failure_case_filter`
+## tool08_failure_case_filter: `failure_case_filter`
 
 Select zero-score failure scenes from official closed-loop PDM results.
 
@@ -445,7 +446,7 @@ Select zero-score failure scenes from official closed-loop PDM results.
 | `scene_results` | array<object> | — | — | Per-scene official score and failure selection. |
 
 
-## tool10_policy_trainer: `policy_trainer`
+## tool09_policy_trainer: `policy_trainer`
 
 Post-train a driving policy using imitation learning (ilft) or reinforcement learning (rlft).
 

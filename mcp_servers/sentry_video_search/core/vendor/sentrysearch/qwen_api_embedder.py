@@ -139,16 +139,17 @@ class QwenAPIEmbedder(BaseEmbedder):
         self._limiter.wait()
         t0 = time.monotonic()
 
+        audit_attempt = 0
         def send():
-            response = requests.post(self._api_url, headers=headers, data=json.dumps(payload), timeout=self._timeout)
-            try:
-                body = response.json()
-            except Exception:
-                body = {"message": response.text}
+            nonlocal audit_attempt
+            audit_attempt += 1
+            from common.llm_audit import audited_json_call
+            response, body = audited_json_call(
+                lambda: requests.post(self._api_url, headers=headers, data=json.dumps(payload), timeout=self._timeout),
+                payload, endpoint=self._api_url, label=f'retrieval_embedding/attempt_{audit_attempt}', secrets=[self._api_key], return_response=True)
             if response.status_code != 200 or body.get("code"):
                 raise QwenAPIError(
-                    f"DashScope embedding error: status={response.status_code}, "
-                    f"code={body.get('code')}, message={body.get('message')}"
+                    f"DashScope embedding error: status={response.status_code}; see request archive"
                 )
             return body
 

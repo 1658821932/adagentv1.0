@@ -2,14 +2,6 @@
   "agent": {
     "max_steps": 20
   },
-  "llm": {
-    "timeout": 600,
-    "max_tokens": 4096,
-    "roles": {
-      "planner": {}
-    },
-    "api_profile": "kimi"
-  },
   "orchestrator": {
     "decision_correction_attempts": 1
   },

@@ -35,8 +35,9 @@ def tool():
       'hold_duration_s':{'type':'number','minimum':0},'return_duration_s':{'type':'number','exclusiveMinimum':0},
       'speed_policy':{'type':'string','enum':['preserve_speed','preserve_progress'],'description':'Default preserve_speed spends some forward progress on lateral motion and rejects lateral rates above available speed. preserve_progress retains parent along-route travel and may raise total speed. No automatic slowing; edit_speed_profile can prepare/repair speed explicitly.'},
       'preview_only':{'type':'boolean'},'reason':{'type':'string'}}
-    description=('Smooth left/right avoidance and optional return, inheriting parent pose/velocity and unchanged observation history. '
-        'Specify offset and durations; heading/curvature are computed. Forward parent routes only. Preview spends no candidate slot. '
+    description=('Smooth left/right avoidance and optional return, inheriting parent pose/velocity and preserving the parent only through start_time_s. New runs permit edits from start_time_s (0s in current runs); observation_end_s is not an edit lock. '
+        'Specify offset and durations; heading/curvature are computed. A zero offset retains parent positions and body yaw exactly. '
+        'Forward parent routes only. Both speed policies reject changing offset while the parent is stopped; explicitly restart with edit_speed_profile first. Holding an already reached offset while stopped is allowed. Preview spends no candidate slot. '
         'Read decision_summary first; recommended_previews are conditional complete calls, not automatic changes. '
         'Minimal preview example: '+json.dumps(EXAMPLE,separators=(',',':')))
     return {'type':'function','function':{'name':'edit_route','description':description,'parameters':{'type':'object','properties':props,'required':sorted(REQUIRED),'additionalProperties':False}}}

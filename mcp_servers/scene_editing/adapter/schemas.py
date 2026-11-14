@@ -13,7 +13,7 @@ class VehicleAsset(InputModel):
     size_m: Annotated[list[Annotated[float, Field(gt=0)]], Field(min_length=3, max_length=3)] = Field(description="Length, width, height in metres; independently specified from the PLY asset.")
 
 class AttackConstraints(InputModel):
-    no_ego_contact_until_s: Annotated[float, Field(ge=0)] = 3.0
+    no_ego_contact_until_s: Annotated[float, Field(ge=0)] = Field(default=0.0,description='Optional explicit event-delay constraint, default 0 (no observation-period lock). Does not set the WE observation horizon or the earliest edit time.')
     target_window_s: Annotated[list[float], Field(min_length=2, max_length=2)] | None = None
 
     @model_validator(mode="after")
@@ -31,13 +31,12 @@ class AttackInput(InputModel):
     vehicle: VehicleAsset | None = None
     constraints: AttackConstraints = Field(default_factory=AttackConstraints)
     timeout: PositiveInt = 3600
+    vadv2_self_test: bool = Field(default=False, description='Enable the attack SubAgent native VADv2 collision loop. Off by default: the editor only guarantees geometric and task checks and returns a frozen scene; verify the attack afterwards with policy_runner(execution_mode=native). Does not call the legacy PDM planner.')
+    vadv2_probe_budget: Annotated[int, Field(ge=1,le=5)] = Field(default=3, description='Cumulative native policy tests across candidate edits and object reselection. Geometric/constructor checks happen before these expensive tests.')
     task_contract: dict | None = Field(default=None, description="Optional caller-owned attack_task.v2 contract with keyframes and provenance.")
     acceptance_policy: dict | None = Field(default=None, description="Optional named research acceptance profile and explicit overrides.")
-    revision_feedback: dict | None = Field(default=None, description="Compact review of the previous attack: stage, outcome, guidance and measured evidence. Preserve the original instruction/contract; do not attach archived conversations or reasoning.")
-    pdm_self_check: bool = Field(default=False, description="Expose candidate PDM self-checks and require a tested PDM-failing candidate before submission.")
-    pdm_ignore_traffic_lights: bool = Field(default=False, description="Explicit signal-agnostic PDM experiment. Preserve source annotations, omit lights from PDM, and mark signal compliance not evaluated.")
-    pdm_probe_budget: PositiveInt = Field(default=2, description="Maximum candidate simulations per attack, shared across object reselection.")
-    pdm_defense_feedback: bool = Field(default=False, description="Include advisory braking estimates and a bounded defense-constructor search in each PDM probe. No new attack acceptance gate.")
+    revision_feedback: dict | None = Field(default=None, description="Compact review of the previous attack: stage, outcome, guidance and measured evidence including policy_behavior_summary (stopped_detected, progress_ratio_vs_recorded, signed_yaw_change_deg and task-specific failure_goal_met) and expert motion when relevant. Preserve the original instruction/contract; do not attach archived conversations or reasoning.")
+    reuse_completed_from: NonEmptyStr | None = Field(default=None, description="Prior attack service run. Reuse verified completed object_selection and verified trajectory candidates only when scene, instruction, assets and constraints match; recompute cleanly if incomplete or stale.")
 
     @model_validator(mode="before")
     @classmethod
@@ -52,8 +51,6 @@ class AttackInput(InputModel):
 
     @model_validator(mode="after")
     def operation_arguments(self):
-        if self.pdm_defense_feedback and not self.pdm_self_check:
-            raise ValueError("pdm_defense_feedback requires pdm_self_check")
         if self.operation == "edit_existing":
             if self.vehicle is not None or self.maneuver is not None:
                 raise ValueError("edit_existing rejects vehicle/maneuver; select a real annotated track internally when target_track is omitted")
@@ -77,6 +74,8 @@ class SimulationInput(InputModel):
     scenario_data_folder_path: NonEmptyStr
     asset_folder_path: NonEmptyStr
     scenario_pkl_file_name: NonEmptyStr = "all_scenarios.pkl"
+    # The exported scene states its own horizon so a rollout never invents one.
+    frame_count: PositiveInt | None = None
 
 class ILTrainingData(InputModel):
     ann_file: NonEmptyStr
@@ -101,17 +100,20 @@ class AttackOutput(OutputModel):
     submission_path: NonEmptyStr
     checks: StageChecks
     annotation_changes: dict[str, Any]
-    simulation_input: SimulationInput | None = Field(default=None, description="Prepared exact edited native scene/asset paths for tool07 replay and tool08; null if export-report explains unavailable assets/conversion. A frozen metadata directory alone is not executable.")
+    simulation_input: SimulationInput | None = Field(default=None, description="Prepared exact edited native scene/asset paths for tool07; null if export-report explains unavailable assets/conversion. A frozen metadata directory alone is not executable.")
     rendered_videos: dict[str, NonEmptyStr] = Field(default_factory=dict, description="Camera name to edited render path; empty until rendered. Original recordings must not be relabelled as edited renders.")
-    pdm_probe_result_path: NonEmptyStr | None = Field(default=None, description="Completed self-check bound to the submitted candidate; tool08 verifies it against the frozen scene before reuse.")
+    pdm_probe_result_path: NonEmptyStr | None = Field(default=None, description="Completed self-check bound to the submitted candidate; tool07 verifies it against the frozen scene before reuse.")
+    vadv2_probe_result_path: NonEmptyStr | None = Field(default=None, description='Exact submitted candidate native VADv2 self-test evidence; reuse rather than repeating evaluation.')
+    policy_collision_report: dict[str, Any] | None = Field(default=None, description='Measured native contact with the selected attack track after VAD takeover, independently of PDM total or road compliance.')
 
 class EgoInput(InputModel):
     attack_result: AttackOutput | NonEmptyStr = Field(description="Full attack result, successful envelope or saved attack-result JSON path.")
     target_effect: NonEmptyStr = Field(description="One correct ego behavior for the target scene.")
     allow_safe_stop: bool = True
+    require_route_progress: bool | None = Field(default=None, description="Motion-goal hint for Agent review; null infers from target_effect, true means continue/proceed and false means a deliberate-stop goal. Does not impose any progress percentage, turn-angle threshold or automatic completion verdict. Temporary waiting can be part of a continued-driving task; allow_safe_stop controls explicit stop permission.")
     use_foci: bool = True
     max_edit_candidates: Annotated[int, Field(ge=0)] | None = Field(default=None, description="Optional new-edit resource budget. Zero permits selecting, inspecting and submitting existing candidates only; acceptance checks stay unchanged.")
-    reuse_completed_from: NonEmptyStr | None = Field(default=None, description="Prior failed ego service run. Reuse only completed scene/policy-bound understanding and constructor; start a new editor request, preserving previous failures.")
+    reuse_completed_from: NonEmptyStr | None = Field(default=None, description="Prior ego service run. Reuse completed understanding, constructor and initial FOCI stages only when content-bound checkpoints match task/scene/policy/code; recompute missing or stale stages and start a fresh editor request.")
     timeout: PositiveInt = 3600
 
     @model_validator(mode="before")
@@ -149,7 +151,8 @@ class EgoOutput(OutputModel):
     checks: StageChecks
     annotation_changes: dict[str, Any]
     simulation_input: SimulationInput | None = None
-    ilft_training_data: ILTrainingData | None = Field(default=None, description="Converted expert labels for tool10 ilft. CSV alone is not ann_file; null until export is implemented.")
+    expert_motion_summary: dict[str, Any] | None = Field(default=None, description="Measured kinematics and route/turn progress of the selected expert trajectory relative to the recorded trajectory.")
+    ilft_training_data: ILTrainingData | None = Field(default=None, description="Converted expert labels for tool09 ilft. CSV alone is not ann_file; null until export is implemented.")
     rendered_videos: dict[str, NonEmptyStr] = Field(default_factory=dict)
 
 

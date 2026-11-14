@@ -24,6 +24,7 @@ def test_effective_agent_prompt_describes_only_current_editing_entries():
     assert names=={'edit_speed_profile','edit_route'}
     assert all(name in prompt for name in names)
     assert 'decision_summary' in prompt and 'recommended_previews' in prompt
+    assert 'stop_at_position' in prompt and 'retime_braking' not in prompt
     hidden={'edit_trajectory_points','set_trajectory_offsets','replace_trajectory_positions',
             'edit_path_progress','brake_along_path','adjust_trajectory_speed'}
     assert not any(name in prompt for name in hidden)
@@ -45,8 +46,8 @@ def test_bad_or_conflicting_speed_requests_are_rejected(changes):
     with pytest.raises(ValueError):validate(request(**changes))
 
 
-def test_explicit_retime_and_reverse_states_do_not_need_redundant_intent_fields():
-    validate(dict(parent_candidate_id='p',operation='retime_braking',braking_start_shift_s=.2,preserve='stop_position',reason='Delay onset'))
+def test_position_stop_and_reverse_states_do_not_need_redundant_intent_fields():
+    validate(dict(parent_candidate_id='p',operation='stop_at_position',start_time_s=4.,stop_target='parent_stop_position',reason='Keep stopping position'))
     args=request(targets=[dict(time_s=6.,speed_mps=0.),dict(time_s=7.,speed_mps=-1.)])
     normalized=normalize_edit_call('edit_speed_profile',args)
     assert normalized['edit_mode']=='speed_schedule' and 'edit_mode' not in args
@@ -70,3 +71,20 @@ def test_foci_uses_signed_timed_target_semantics_and_preserves_input():
     assert normalized['speed_targets'][-1]['time_s']==11.499597 and args==before
     validate_request('optimize_defense_candidate',normalized,boundary=3.,end=11.499597,remaining=1)
     with pytest.raises(ValueError):validate_request('optimize_defense_candidate',dict(args,speed_targets=[dict(time_s=2.,speed_mps=0.)]),boundary=3.,end=11.5,remaining=1)
+
+
+@pytest.mark.parametrize('changes', [dict(stop_target='final_frame'), dict(targets=[dict(time_s=6.,speed_mps=0.)]),
+    dict(braking_start_shift_s=.1),dict(preserve='stop_time'),dict(start_time_s=True)])
+def test_position_stop_rejects_ambiguous_or_conflicting_goals(changes):
+    args=dict(parent_candidate_id='p',operation='stop_at_position',start_time_s=4.,
+              stop_target='parent_stop_position',reason='Keep actual parking position')
+    args.update(changes)
+    with pytest.raises(ValueError):validate(args)
+
+
+def test_public_schema_replaces_relative_retiming_with_absolute_position_goal():
+    properties=tool()['function']['parameters']['properties']
+    assert properties['operation']['enum']==['set_speed_targets','stop_at_position']
+    assert 'braking_start_shift_s' not in properties and 'preserve' not in properties
+    with pytest.raises(ValueError):
+        validate(dict(parent_candidate_id='p',operation='stop_at_position',start_time_s=4.,reason='Missing goal'))

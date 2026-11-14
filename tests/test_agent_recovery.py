@@ -23,6 +23,17 @@ class DecisionClient:
         self.decisions=list(decisions)
         self.messages=[]
 
+    def call_functions(self,messages,tools):
+        self.functions=tools
+        decision=json.loads(self.chat(messages))
+        name=decision["tool_name"] if decision["action"]=="call_tool" else decision["action"]
+        payload={"reason":decision["reason"]}
+        if decision["action"]=="call_tool":
+            payload["arguments"]=decision["arguments"]
+        return {"message":{"role":"assistant","content":None,"tool_calls":[{
+            "id":"test_call","type":"function","function":{"name":name,"arguments":json.dumps(payload)}}]},
+            "finish_reason":"tool_calls"}
+
     def chat(self,messages):
         self.messages.append(deepcopy(messages))
         return json.dumps(self.decisions.pop(0))
@@ -120,7 +131,7 @@ def test_invalid_stop_is_corrected_in_the_main_orchestrator():
     result=Orchestrator(llm_client=client).decide("Simulate the scene.",{"history":[]})
     assert result["action"]=="stop"
     assert "checkpoint" in result["reason"]
-    assert "stop format" in client.messages[-1][-1]["content"]
+    assert "finish/stop" in client.messages[-1][-1]["content"]
 
 
 def test_main_agent_passes_merged_candidate_directly_to_tool03(tmp_path, monkeypatch):
@@ -151,7 +162,7 @@ def test_main_agent_passes_merged_candidate_directly_to_tool03(tmp_path, monkeyp
     assert results[1]['result']['result']['requirement']==first['candidates'][0]['base_video_requirement']
     next_context=json.loads(client.messages[1][1]['content'])
     assert next_context['current_state']['current_stage']=='requirement_generation'
-    names={tool['name'] for tool in next_context['available_tools']}
+    names={tool['function']['name'] for tool in client.functions}
     assert 'scene_instance_generator' in names
     assert 'scene_conceiver' not in names
     assert 'scene_requirement_generator' not in names
@@ -171,3 +182,20 @@ def test_new_tool02_default_real_dispatch_and_old_name_is_unavailable(tmp_path, 
     assert AgentConfig.load().tool_modes['scene_instance_generator']=='real'
     with pytest.raises(ValueError,match='Unknown tool'):
         call_tool('scene_requirement_generator',{},mode='mock')
+
+
+def test_running_job_is_waited_without_another_llm_decision(tmp_path):
+    agent,client=make_agent(tmp_path,[
+        call("failure_analyzer",{"token":"example"}),
+        {"action":"finish","reason":"Analysis complete."},
+    ])
+    pending={"status":"running","tool":"failure_analyzer","job":{"job_id":"a"*32,"state":"running"}}
+    done={"status":"success","tool":"failure_analyzer","result":{"failure_analysis":{}}}
+    with patch.object(agent.executor,"execute",return_value=pending) as execute, patch.object(
+            agent.executor,"query",return_value=done) as query:
+        result=agent.run("Analyze one scene")
+    assert result["status"]=="finished"
+    execute.assert_called_once()
+    query.assert_called_once()
+    assert len(client.messages)==2
+    assert result["pending_job"] is None

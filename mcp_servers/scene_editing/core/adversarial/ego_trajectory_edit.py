@@ -134,18 +134,26 @@ def _speed_at(times, xy, time):
 
 
 def curve_evidence(spline, state, scope):
-    """Exact speed-norm and acceleration-norm maxima for each cubic polynomial piece."""
+    """Exact speed/acceleration norm extrema, including C2 quintic connections."""
     max_speed = max_accel = 0.
     for index, duration in enumerate(np.diff(spline.x)):
         coefficients = spline.c[:,index]
         if coefficients.ndim==1: coefficients = coefficients[:,None]
-        velocity = [np.polynomial.Polynomial([c[2],2*c[1],3*c[0]]) for c in coefficients.T]
+        velocity = ([np.polynomial.Polynomial([c[2],2*c[1],3*c[0]]) for c in coefficients.T]
+                    if coefficients.shape[0]==4 else
+                    [np.polynomial.Polynomial(c[::-1]).deriv() for c in coefficients.T])
         speed_squared = sum((v*v for v in velocity),np.polynomial.Polynomial([0.]))
         roots = speed_squared.deriv().roots()
         queries = [0.,float(duration)]+[float(v.real) for v in roots if abs(v.imag)<1e-8 and 0<v.real<duration]
         max_speed = max(max_speed,float(np.sqrt(max(0.,max(speed_squared(np.asarray(queries)))))))
-        for t in (0.,duration):
-            max_accel = max(max_accel,float(np.linalg.norm([v.deriv()(t) for v in velocity])))
+        if coefficients.shape[0]==4:
+            for t in (0.,duration):
+                max_accel=max(max_accel,float(np.linalg.norm([v.deriv()(t) for v in velocity])))
+        else:
+            acceleration_squared=sum((v.deriv()*v.deriv() for v in velocity),np.polynomial.Polynomial([0.]))
+            roots=acceleration_squared.deriv().roots()
+            queries=[0.,float(duration)]+[float(v.real) for v in roots if abs(v.imag)<1e-8 and 0<v.real<duration]
+            max_accel=max(max_accel,float(np.sqrt(max(0.,max(acceleration_squared(np.asarray(queries)))))))
     return dict(schema_version='generated_curve.v1',actual_start_state=state,
         max_speed_mps=max_speed,max_acceleration_mps2=max_accel,scope=scope)
 
@@ -343,6 +351,8 @@ def inherited_brake_state(times,xy,yaw,time,parent_curve=None):
 
 
 def modern_edit(times, lookup, operation, boundary, *, parent_curve=None, acceptance=None, parent_context=None):
+    if acceptance is not None and 'edit_start_s' in acceptance:
+        boundary=float(acceptance['edit_start_s'])
     parent_xy,parent_yaw = lookup(operation['parent_candidate_id'])
     if operation['edit_mode']=='route_edit':
         if operation.get('route_edit_version','state_continuity.v2') != 'state_continuity.v2':

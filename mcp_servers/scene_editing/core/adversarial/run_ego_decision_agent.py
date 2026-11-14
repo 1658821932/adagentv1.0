@@ -1,5 +1,5 @@
 """Prepare video/state evidence and run one budgeted ego defense-decision agent."""
-from llm_profile import load_llm_profile
+from llm_profile import load_llm_profile,reasoning_effort
 import argparse
 import base64
 import json
@@ -180,7 +180,7 @@ def request_decision(run_dir,text_only=False,compact_visual=False):
             image_part(run_dir/'decision-input/attack-video-contact-sheet.jpg')])]
     try:
         content,attempt=archive.complete('decision',messages,total_seconds=300,max_tokens=16384,
-            extra_body=dict(thinking=dict(type='enabled')),reasoning_effort='high')
+            extra_body=dict(thinking=dict(type='enabled')),reasoning_effort=reasoning_effort())
         decision=accept_decision_response(run_dir,content,attempt,profile['model'],visual_input_used=not text_only)
     finally:client.close()
     return decision

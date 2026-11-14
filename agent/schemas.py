@@ -9,7 +9,7 @@ from typing import Any, Iterable, List, Tuple
 
 
 VALID_ACTIONS = {"call_tool", "finish", "stop"}
-VALID_TOOL_STATUSES = {"success", "error"}
+VALID_TOOL_STATUSES = {"success", "error", "running"}
 
 
 def validate_decision(
@@ -59,7 +59,7 @@ def validate_tool_result(
 
     status = tool_result.get("status")
     if status not in VALID_TOOL_STATUSES:
-        errors.append("status must be one of: success, error")
+        errors.append("status must be one of: success, error, running")
 
     tool_name = tool_result.get("tool")
     if not isinstance(tool_name, str) or not tool_name.strip():
@@ -68,6 +68,11 @@ def validate_tool_result(
         errors.append(
             f"tool mismatch: expected {expected_tool_name}, got {tool_name}"
         )
+
+    if status == "running":
+        job = tool_result.get("job")
+        if not isinstance(job, dict) or not isinstance(job.get("job_id"), str) or not job["job_id"]:
+            errors.append("running result must contain job.job_id")
 
     if status == "success" and "result" not in tool_result:
         errors.append("success result must contain result")

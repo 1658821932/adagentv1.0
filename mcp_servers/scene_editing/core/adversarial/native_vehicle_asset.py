@@ -23,7 +23,7 @@ def resize_gaussians(data,size):
     size=np.asarray(size,float)
     if size.shape!=(3,) or np.any(size<=0) or not np.isfinite(size).all():raise ValueError('Added size must be positive finite length/width/height')
     scale=size/data['dimensions'];means=data['means']*scale
-    local_quat=np.asarray(data['quats'],float);local_quat/=np.linalg.norm(local_quat,axis=1)[:,None]
+    local_quat=np.array(data['quats'],dtype=float,copy=True);local_quat/=np.linalg.norm(local_quat,axis=1)[:,None]
     rotations=Rotation.from_quat(local_quat[:,[1,2,3,0]]).as_matrix()
     radii=np.exp(np.asarray(data['scales'],float))
     if not np.isfinite(radii).all():raise ValueError('Added Gaussian scales overflow')

@@ -6,6 +6,8 @@ import signal
 import subprocess
 import threading
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 
 class ProcessCancelled(KeyboardInterrupt):
     """The current process received an explicit termination request."""
@@ -34,6 +36,13 @@ def run_logged(command, *, cwd, log_path, env=None, timeout=86400, input=None,
     if type(timeout) not in (int, float) or timeout <= 0:
         raise ValueError("timeout must be positive")
     env = {**(os.environ if env is None else env), "PYTHONUNBUFFERED": "1"}
+    # Adapter entry points run from their own directory, so project-level
+    # packages must stay importable without per-script path juggling. Appending
+    # keeps the child's own roots ahead of ours.
+    entries = [entry for entry in (env.get("PYTHONPATH") or "").split(os.pathsep) if entry]
+    if str(PROJECT_ROOT) not in entries:
+        entries.append(str(PROJECT_ROOT))
+    env["PYTHONPATH"] = os.pathsep.join(entries)
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     stdout_path = log_path.with_suffix(".stdout.json") if json_stdout else log_path
@@ -57,6 +66,15 @@ def run_logged(command, *, cwd, log_path, env=None, timeout=86400, input=None,
                     stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
                     stdout=output, stderr=errors, start_new_session=True)
                 try:
+                    if os.getenv("ADAGENT_JOB_DIR"):
+                        from agent.jobs import locked, write, process_identity
+                        import json
+                        job_dir = Path(os.environ["ADAGENT_JOB_DIR"])
+                        with locked(job_dir / "children.lock"):
+                            children_file = job_dir / "children.json"
+                            children = json.loads(children_file.read_text()) if children_file.exists() else []
+                            children.append(dict(pid=process.pid, process_start=process_identity(process.pid)))
+                            write(children_file, children)
                     process.communicate(input=input, timeout=timeout)
                 except BaseException:
                     stop_group(process)

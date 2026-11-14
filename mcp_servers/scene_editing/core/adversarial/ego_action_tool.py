@@ -42,7 +42,7 @@ def _assess_full_window(times, baseline_xy, baseline_yaw, actors, candidate_xy, 
     effective = policy.resolve(acceptance)
     if acceptance is None:
         effective['official_margin_m'] = official_min_margin_m
-        effective.update(allow_safe_stop=allow_safe_stop, minimum_progress_fraction=policy.MIN_PROGRESS_FRACTION)
+        effective.update(allow_safe_stop=allow_safe_stop)
     official_min_margin_m = effective['official_margin_m']
     v = evaluate(times, candidate_xy, candidate_yaw, actors, times, target_track=target_track)
     dt = np.diff(times); delta = np.diff(candidate_xy, axis=0); motion = delta/dt[:,None]
@@ -74,7 +74,7 @@ def _assess_full_window(times, baseline_xy, baseline_yaw, actors, candidate_xy, 
     checks['interpolated_contacts'] = not contacts
     if effective['road_speed_limit_mps'] is not None:
         checks['road_speed_rule'] = v['max_speed_mps'] <= effective['road_speed_limit_mps']
-    prefix = times <= effective['observation_end_s']+1e-8
+    prefix = times <= policy.edit_start(effective)+1e-8
     checks['observation_prefix'] = not prefix.any() or bool(np.max(np.linalg.norm(candidate_xy[prefix]-baseline_xy[prefix], axis=1)) <= policy.POSE_TOLERANCE and
         np.max(np.abs(np.arctan2(np.sin(candidate_yaw[prefix]-baseline_yaw[prefix]), np.cos(candidate_yaw[prefix]-baseline_yaw[prefix])))) <= policy.POSE_TOLERANCE)
     if mode == 'reverse': checks['reverse_observed_in_candidate'] = bool(np.any(signed < -0.05))
@@ -87,8 +87,10 @@ def _assess_full_window(times, baseline_xy, baseline_yaw, actors, candidate_xy, 
             times, candidate_xy, candidate_yaw, road_official, min_margin_m=official_min_margin_m)
         checks['drivable_area_official'] = road_official_result['passed']
     from run_ego_reference import progress_with_safe_stop
+    baseline_stopped = policy.is_terminal_stopped(times, baseline_xy, effective)
     progress_ok, progress_reason = policy.task_progress(times, candidate_xy,
-        float(np.linalg.norm(np.diff(baseline_xy, axis=0), axis=1).sum()), effective)
+        float(np.linalg.norm(np.diff(baseline_xy, axis=0), axis=1).sum()), effective,
+        baseline_stopped=baseline_stopped)
     checks['progress'] = progress_ok
     lane_markings = None
     if no_cross_lines is not None:
@@ -162,7 +164,7 @@ def assess(times, baseline_xy, baseline_yaw, actors, candidate_xy, candidate_yaw
     result['editing_coverage'] = None if future is None else future['coverage']
     result['editing_checks'] = None if future is None else future['checks']
     result['editing_status'] = 'unknown' if future is None else future['status']
-    if effective['history_policy']=='report_existing' and future is not None:
+    if effective['history_policy']=='report_existing' and future is not None and policy.edit_start(effective)>=boundary:
         result['checks'] = dict(future['checks'], observation_prefix=result['checks']['observation_prefix'],
                                 progress=result['checks']['progress'])
         if history_contact:

@@ -42,7 +42,7 @@ class VideoLibraryTests(unittest.TestCase):
 
     def test_final_clip_is_ten_seconds_without_padding(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            config = SearchConfig.for_library("waymo")
+            config = SearchConfig(chunk_duration=10, preprocess_index_chunks=True, import_source_videos=False)
             config.output_dir = Path(temp_dir)
             hit = {"source_file": "/video.mp4", "start_time": 10.0, "end_time": 19.8}
             with patch("mcp_servers.sentry_video_search.core.vendor.sentrysearch.chunker._get_video_duration", return_value=19.8), patch(
@@ -56,28 +56,17 @@ class VideoLibraryTests(unittest.TestCase):
             self.assertTrue(trim_clip.call_args.kwargs["accurate"])
             self.assertEqual(trim_clip.call_args.kwargs["crf"], 0)
 
-    def test_waymo_uses_independent_paths_and_ten_second_chunks(self):
-        default = SearchConfig.for_library("default")
-        waymo = SearchConfig.for_library("waymo")
-
-        self.assertNotEqual(default.runtime_home, waymo.runtime_home)
-        self.assertEqual(default.library_dir, waymo.library_dir)
-        self.assertEqual(default.logs_dir, waymo.logs_dir)
-        self.assertEqual(default.output_dir, waymo.output_dir)
-        self.assertEqual(waymo.chunk_duration, 10)
-        self.assertTrue(waymo.preprocess_index_chunks)
-        self.assertFalse(waymo.import_source_videos)
-        self.assertFalse(default.preprocess_index_chunks)
+    def test_unknown_library_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unknown video library"):
             SearchConfig.for_library("unknown")
 
-    def test_waymo_index_references_existing_video_without_copying(self):
+    def test_index_references_existing_video_without_copying(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             video = root / "videos" / "front.mp4"
             video.parent.mkdir()
             video.write_bytes(b"test video")
-            config = SearchConfig.for_library("waymo")
+            config = SearchConfig(chunk_duration=10, preprocess_index_chunks=True, import_source_videos=False)
             config.library_dir = root / "common-data"
             config.runtime_home = root / "runtime"
 
@@ -102,11 +91,11 @@ class VideoLibraryTests(unittest.TestCase):
             "stderr": "",
         })()
         with patch("mcp_servers.sentry_video_search.adapter.client.VIDEO_RETRIEVER_PYTHON", Path(sys.executable)), patch("mcp_servers.sentry_video_search.adapter.client.run_logged", return_value=completed) as subprocess_run:
-            result = retrieve_video({"requirement": "highway", "library": "waymo"})
+            result = retrieve_video({"requirement": "highway", "library": "default"})
 
         self.assertEqual(result["result"]["video_path"], response["result"]["video_path"])
         self.assertIn("run_dir", result["result"])
-        self.assertEqual(json.loads(subprocess_run.call_args.kwargs["input"])["library"], "waymo")
+        self.assertEqual(json.loads(subprocess_run.call_args.kwargs["input"])["library"], "default")
         with self.assertRaisesRegex(ValueError, "library must be"):
             retrieve_video({"requirement": "highway", "library": "unknown"})
 

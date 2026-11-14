@@ -7,7 +7,7 @@ PositiveFloat = Annotated[float, Field(gt=0)]
 
 class Input(InputModel):
     requirement: NonEmptyStr = Field(description='Natural-language source-video search description.')
-    library: Literal['default', 'waymo'] = Field(default='default', description='Local index selection: default library or the separate Waymo library.')
+    library: Literal['default'] = Field(default='default', description='Local index selection; only the default library is available.')
     timeout: PositiveInt = Field(default=1800, description='Retrieval process timeout in seconds.')
     mock_video_path: NonEmptyStr | None = Field(default=None, description='Mock-only video path; it does not provide a real indexed scene.')
 

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from agent.executor import ToolExecutor
+from agent.job_worker import execute_request
 from agent.schemas import validate_tool_result
 
 
@@ -44,7 +45,7 @@ class ToolResultSchemaTests(unittest.TestCase):
         valid, errors = validate_tool_result(result, "policy_runner")
 
         self.assertFalse(valid)
-        self.assertIn("status must be one of: success, error", errors)
+        self.assertIn("status must be one of: success, error, running", errors)
 
     def test_tool_name_mismatch(self):
         result = {
@@ -93,7 +94,7 @@ class ToolExecutorTests(unittest.TestCase):
             }
         )
 
-    @patch("agent.executor.call_tool")
+    @patch("tools.registry.call_tool")
     def test_executor_passes_through_valid_result(self, mock_call_tool):
         mock_call_tool.return_value = {
             "status": "success",
@@ -101,10 +102,7 @@ class ToolExecutorTests(unittest.TestCase):
             "result": {"scene_plan": "ok"},
         }
 
-        result = self.executor.execute(
-            "scene_instance_generator",
-            {"scene_requirement": {}},
-        )
+        result = execute_request(dict(tool="scene_instance_generator", mode="mock", arguments={"scene_requirement": {}}))
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["tool"], "scene_instance_generator")
@@ -115,17 +113,14 @@ class ToolExecutorTests(unittest.TestCase):
             mode="mock",
         )
 
-    @patch("agent.executor.call_tool")
+    @patch("tools.registry.call_tool")
     def test_executor_normalizes_invalid_result(self, mock_call_tool):
         mock_call_tool.return_value = {
             "success": True,
             "data": {},
         }
 
-        result = self.executor.execute(
-            "policy_runner",
-            {},
-        )
+        result = execute_request(dict(tool="policy_runner", mode="mock", arguments={}))
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["tool"], "policy_runner")
@@ -135,14 +130,11 @@ class ToolExecutorTests(unittest.TestCase):
         )
         self.assertTrue(result["error"]["validation_errors"])
 
-    @patch("agent.executor.call_tool")
+    @patch("tools.registry.call_tool")
     def test_executor_normalizes_tool_exception(self, mock_call_tool):
         mock_call_tool.side_effect = RuntimeError("backend failed")
 
-        result = self.executor.execute(
-            "policy_runner",
-            {},
-        )
+        result = execute_request(dict(tool="policy_runner", mode="mock", arguments={}))
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["tool"], "policy_runner")

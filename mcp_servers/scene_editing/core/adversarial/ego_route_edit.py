@@ -6,10 +6,38 @@ from scipy.optimize import brentq
 from route_edit_contract import validate
 
 
+def _identity_edit(times,xy,yaw,args,parent_curve,state,arrival,end):
+    """A zero offset changes neither delivered poses nor body orientation."""
+    from edit_continuity import restrict_curve
+    from ego_trajectory_edit import curve_evidence
+    from ego_speed_schedule import acceleration_peak
+    cont=parent_curve['continuous_state'];knots=np.asarray(cont['times_s'])
+    p=restrict_curve(PPoly(np.asarray(cont['xy_coefficients']),knots),float(state['time_s']))
+    a=restrict_curve(PPoly(np.asarray(cont['yaw_coefficients']),knots),float(state['time_s']))
+    evidence=curve_evidence(p,state,'Unchanged parent delivery; reported parent reconstruction extrema are still checked.')
+    peak=acceleration_peak(p)
+    evidence.update(profile='lateral_route_edit.v2',edit_contract_version='trajectory_edit.v2',
+        numerical_revision='route_integrity.v1',
+        body_heading=dict(method='unchanged_parent_body_heading'),
+        parent_motion_source=parent_curve.get('parent_motion_source'),
+        continuous_state=dict(version='continuous.v2',times_s=p.x.tolist(),xy_coefficients=p.c.tolist(),yaw_coefficients=a.c.tolist()),
+        terminal_velocity_xy_mps=p(times[-1],1).tolist(),terminal_body_yaw_rad=float(a(times[-1])),
+        acceleration_peak=peak,
+        route_edit_summary=dict(identity_edit=True,preserved_until_s=float(state['time_s']),left_offset_m=0.,
+            arrival_time_s=float(arrival),return_completed_at_s=float(end) if args['end_behavior']=='return_to_route' else None,
+            end_behavior=args['end_behavior'],speed_policy=args.get('speed_policy','preserve_speed'),
+            target_offset_error_m=0.,actual_arrival_offset_m=0.,max_speed_change_at_construction_knots_mps=0.,
+            reference_progress_difference_m=0.,route_initialization=dict(method='identity_parent_motion',reconstructed=False),
+            return_offset_error_m=0. if args['end_behavior']=='return_to_route' else None,
+            actual_motion=dict(peak_acceleration=peak),scope='Zero offset retains the parent position and body yaw exactly; all reference and task checks still apply.'))
+    if parent_curve.get('speed_route') is not None:evidence['speed_route']=parent_curve['speed_route']
+    if parent_curve.get('hold_starts_at_s') is not None:evidence['hold_starts_at_s']=max(float(state['time_s']),float(parent_curve['hold_starts_at_s']))
+    return np.asarray(xy).copy(),np.asarray(yaw).copy(),evidence
+
+
 def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,parent_context=None):
-    from ego_speed_profile import continuous_parent
     from ego_speed_schedule import Route,acceleration_peak
-    from ego_trajectory_edit import inherited_brake_state,curve_evidence
+    from ego_trajectory_edit import curve_evidence
     validate({k:v for k,v in args.items() if k not in {'mode','candidate_id','generation_source','route_edit_version'}})
     parent_id=args['parent_candidate_id'];px,py=lookup(parent_id);start=float(args['start_time_s'])
     if not boundary<=start<times[-1]:
@@ -18,7 +46,6 @@ def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,pare
     from edit_continuity import parent_motion,state_at,body_heading
     parent_curve=parent_motion(times,lookup,parent_id,parent_curve,boundary,start,parent_context)
     state=state_at(times,px,py,start,parent_curve,parent_context)
-    route=Route(times,lookup,parent_id,state,parent_curve,'parent')
     cont=(parent_curve or {}).get('continuous_state');pc=PPoly(np.asarray(cont['xy_coefficients']),np.asarray(cont['times_s'])) if cont else None
     native_v=np.diff(px,axis=0)/np.diff(times)[:,None];mid=(times[:-1]+times[1:])/2
     signed=np.sum(native_v*np.column_stack([np.cos((py[:-1]+py[1:])/2),np.sin((py[:-1]+py[1:])/2)]),axis=1)
@@ -36,9 +63,23 @@ def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,pare
         if hold>0:knots.append(arrival+hold);offsets.append(offsets[-1])
         end=arrival+hold+args['return_duration_s'];knots.append(end);offsets.append(0.)
     if end>times[-1]+1e-8:raise ValueError(f'target_unreachable: route transition ends at {end:.3f}s beyond scene end {times[-1]:.3f}s; shorten durations or start earlier')
+    if float(args['left_offset_m'])==0.:
+        return _identity_edit(times,px,py,args,parent_curve,state,arrival,end)
     if knots[-1]<times[-1]:knots.append(float(times[-1]));offsets.append(offsets[-1])
     lateral=BPoly.from_derivatives(knots,[[v,0.,0.] for v in offsets])
     policy=args.get('speed_policy','preserve_speed')
+    def require_forward_motion(time):
+        rate=float(lateral(time,1));v=speed(time)
+        if abs(rate)>1e-7 and v<=1e-7:
+            from edit_feedback import EditFeasibilityError
+            raise EditFeasibilityError('stationary_lateral_motion',
+                'The parent is stopped while the lateral offset changes. Finish the transition before stopping or explicitly restart with edit_speed_profile.',
+                time_s=float(time),parent_speed_mps=v,lateral_rate_mps=rate,speed_policy=policy)
+        return rate,v
+    preflight=np.unique(np.r_[knots,(np.asarray(knots[:-1])+np.asarray(knots[1:]))/2,
+        pc.x[(pc.x>=start)&(pc.x<=times[-1])]])
+    for time in preflight:require_forward_motion(float(time))
+    route=Route(times,lookup,parent_id,state,parent_curve,'parent')
     def geometry(parameter):
         if parameter<route.path.x[0]-1e-7 or parameter>route.path.x[-1]+1e-7:raise ValueError(f'route_exhausted: requested route parameter {parameter:.7f}, known range [{route.path.x[0]:.7f},{route.path.x[-1]:.7f}]; speed_policy={policy}. Use a smaller offset or an earlier return, or a parent with more known route. No extrapolation')
         parameter=float(np.clip(parameter,route.path.x[0],route.path.x[-1]));d=route.path(parameter,1);dd=route.path(parameter,2);norm=float(np.linalg.norm(d))
@@ -47,7 +88,7 @@ def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,pare
         curvature=float((d[0]*dd[1]-d[1]*dd[0])/norm**3)
         return tangent,normal,curvature,norm
     def motion(time,parameter):
-        tangent,normal,k,norm=geometry(parameter);offset=float(lateral(time));rate=float(lateral(time,1));v=speed(time)
+        tangent,normal,k,norm=geometry(parameter);offset=float(lateral(time));rate,v=require_forward_motion(time)
         scale=1-k*offset
         if scale<=.1:raise ValueError('target_unreachable: requested offset folds the reference route; reduce offset or use a different route')
         if policy=='preserve_speed':
@@ -104,10 +145,12 @@ def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,pare
     yaw_curve,heading_evidence=body_heading(spline,query,state,parent_context)
     xy=np.asarray(px).copy();yaw=np.asarray(py).copy();m=times>start;xy[m]=spline(times[m]);yaw[m]=yaw_curve(times[m])
     evidence=curve_evidence(spline,state,'Exact extrema of delivered route-edit cubic; whole-body road/contact checks retain their existing scope.')
-    evidence.update(profile='lateral_route_edit.v2',edit_contract_version='trajectory_edit.v2',body_heading=heading_evidence,parent_motion_source=parent_curve.get('parent_motion_source'),
+    evidence.update(profile='lateral_route_edit.v2',edit_contract_version='trajectory_edit.v2',numerical_revision='route_integrity.v1',body_heading=heading_evidence,parent_motion_source=parent_curve.get('parent_motion_source'),
         continuous_state=dict(version='continuous.v2',times_s=query.tolist(),xy_coefficients=spline.c.tolist(),yaw_coefficients=yaw_curve.c.tolist()),
         terminal_velocity_xy_mps=spline(times[-1],1).tolist(),terminal_body_yaw_rad=float(yaw_curve(times[-1])),
         acceleration_peak=acceleration_peak(spline))
+    hold=parent_curve.get('hold_starts_at_s')
+    if hold is not None and hold>=end-1e-8:evidence['hold_starts_at_s']=float(hold)
     # A child speed edit receives the edited geometric route, never the old route.
     edited_route=Route(times,lambda _: (xy,yaw),parent_id,state,evidence,'parent')
     evidence['speed_route']=edited_route.evidence()

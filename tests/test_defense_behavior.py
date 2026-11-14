@@ -78,4 +78,30 @@ class BehaviorTests(unittest.TestCase):
         assert select_foci_parents(rows,2)==['later','early']
         assert [r['candidate_id'] for r in rows]==['early','later','same']
 
+    def test_active_pairs_use_percentage_points_and_matching_acceleration_scope(self):
+        rows=[]
+        for cid,percent,native in [('fallback',47.5,2.45),('unrelated',80.,1.),('parent',48.,2.4),('new',49.9,2.26)]:
+            rows.append(dict(candidate_id=cid,status='reference_screen_passed',native_max_acceleration_mps2=native,
+                max_acceleration_mps2=9. if cid=='new' else native,
+                clearance_periods=dict(editable=dict(min_clearance_m=4. if cid=='new' else 6.)),
+                behavior_metrics=dict(reference_progress_percent=percent,max_reserve_shortfall_m=0.)))
+        before=[r['candidate_id'] for r in rows]
+        differences=self.behavior.candidate_differences(rows,fallback_id='fallback',latest_id='new',parent_id='parent')
+        assert [(r['candidate_a'],r['candidate_b']) for r in differences]==[('fallback','new'),('parent','new')]
+        assert differences[0]['b_minus_a_reference_progress_percentage_points']==2.4
+        assert differences[0]['b_minus_a_native_peak_acceleration_mps2']==-.19
+        assert differences[0]['b_minus_a_editable_clearance_m']==-2.
+        assert differences[0]['b_minus_a_jerk_rms_mps3'] is None
+        assert [r['candidate_id'] for r in rows]==before
+        assert len(self.behavior.candidate_differences(rows,fallback_id='parent',latest_id='new',parent_id='parent'))==1
+
+    def test_progress_display_is_percentage_without_a_gate_or_optimizer_score(self):
+        metrics=dict(net_reference_progress_fraction=.4748,net_reference_progress_m=49.196,
+            reference_available_after_history_m=103.613,optimization_cost=.5,max_reserve_shortfall_m=0.)
+        public=self.behavior.agent_evidence(metrics)
+        assert public['reference_progress_percent']==47.5
+        assert 'net_reference_progress_m' not in public and 'optimization_cost' not in public
+        assert 'passed' not in public
+        assert self.behavior.agent_evidence({})['reference_progress_percent'] is None
+
 if __name__=='__main__':unittest.main()

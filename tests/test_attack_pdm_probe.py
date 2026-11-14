@@ -8,6 +8,8 @@ import types
 import numpy as np
 import pytest
 
+from mcp_servers.scene_editing.core.adversarial.attack_tool_contract import revision_evidence
+
 CORE=Path(__file__).resolve().parents[1]/'mcp_servers/scene_editing/core/adversarial'
 
 
@@ -21,6 +23,7 @@ def probe_module(monkeypatch):
         'pdm_tool':dict(run_pdm_challenge=lambda *args:None),
         'run_ego_reference':dict(EGO_FRONT=4.,EGO_REAR=1.,EGO_WIDTH=2.,polygon=lambda *args:None),
         'workflow_timing':dict(timed_operation=lambda *args:lambda function:function),
+        'attack_tool_contract':dict(revision_evidence=revision_evidence),
     }
     for name,values in exports.items():
         module=types.ModuleType(name)
@@ -37,6 +40,14 @@ def editor(tmp_path):
     return types.SimpleNamespace(scene=tmp_path/'scene',run_dir=tmp_path/'editor',
         constraints=dict(pdm_probe_root=str(tmp_path/'shared'),pdm_probe_budget=2),
         target=dict(operation='add_vehicle',track_id='target'),nodes={'seed_000':node})
+
+
+def test_archive_path_revision_evidence_initializes_probe(probe_module,tmp_path):
+    e=editor(tmp_path)
+    previous=tmp_path/'previous.json';previous.write_text(json.dumps(dict(status='not_submitted')))
+    e.constraints['revision_feedback']=dict(stage='attack_editing',outcome='unable_to_complete',evidence=str(previous))
+    manager=probe_module.PDMProbe(e)
+    assert manager.context()['remaining']==2
 
 
 def prepare(module,monkeypatch,manager,calls,safe=True):

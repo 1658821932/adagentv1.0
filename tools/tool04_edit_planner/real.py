@@ -1,14 +1,67 @@
 """Quick source-scene review with a direct, validated handoff to tool05."""
 from contextvars import ContextVar
+import hashlib
 import json
 import math
 from pathlib import Path
+
+# A vehicle is only worth editing if it is close to the ego path and ahead of it once.
+ELIGIBLE_MAX_DISTANCE_M = 30.0
+ELIGIBLE_BEHIND_TOLERANCE_M = 10.0
 from mcp_servers.scene_editing.adapter.schemas import AttackInput
 from tools.llm_runtime import LLMTool, validation_details
 from .schemas import Input, Decision, Output
 from .observations import settings, sample_indices, Observation, ViewClient, ACTIVE_OBSERVATION
+from . import observations
+from .initial_motion import initial_motion_precheck
 
 _INSPECTION=ContextVar('edit_planner_inspection',default=None)
+_CACHE_VERSION='asset_supplement.v1'
+
+
+def _plan_cache_path(data):
+    request=data.model_dump(mode='json');request.pop('vehicle',None)
+    evidence=dict(request=request,version=_CACHE_VERSION,
+        prompt=hashlib.sha256(Path(__file__).with_name('prompt.md').read_bytes()).hexdigest())
+    for name,path in [('frames',data.scene_ref.frames_path),('manifest',data.scene_ref.manifest_path),
+            ('cameras',data.scene_ref.cameras_path)]:
+        file=Path(path)
+        evidence[name]=hashlib.sha256(file.read_bytes()).hexdigest() if file.is_file() else None
+    key=hashlib.sha256(json.dumps(evidence,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+    return observations.LOG_ROOT/'plan-cache'/f'{key}.json'
+
+
+def _cached_asset_supplement(data):
+    if data.vehicle is None:
+        return None
+    path=_plan_cache_path(data)
+    if not path.is_file():
+        return None
+    try:
+        cached=json.loads(path.read_text())
+        response=cached['response']
+        if (cached.get('version')!=_CACHE_VERSION or response.get('suitability')!='needs_information'
+                or response.get('attack_input') is not None
+                or (response.get('edit_plan') or {}).get('operation')!='add_vehicle'):
+            return None
+        result=enrich(data,dict(response,suitability='ready'))
+        Output.model_validate(result)
+        return dict(status='success',tool='edit_planner',result=result,
+            meta=dict(mode='real',model='asset_supplement_cache',attempts=0,reused=True,elapsed_seconds=0.0))
+    except (OSError,ValueError,TypeError,KeyError):
+        return None
+
+
+def _save_asset_supplement(data,result):
+    response=result.get('result') or {}
+    if (data.vehicle is not None or response.get('suitability')!='needs_information'
+            or response.get('attack_input') is not None
+            or (response.get('edit_plan') or {}).get('operation')!='add_vehicle'):
+        return
+    path=_plan_cache_path(data);path.parent.mkdir(parents=True,exist_ok=True)
+    temporary=path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(dict(version=_CACHE_VERSION,response=response),ensure_ascii=False,indent=2))
+    temporary.replace(path)
 
 
 def inspect_scene(data):
@@ -31,7 +84,7 @@ def inspect_scene(data):
     if not assets:missing.append('No available Gaussian scene asset')
     visual_settings=settings()
     indices=sample_indices(len(frames),visual_settings['time_samples']) if frames else []
-    catalog={};eligible=None
+    catalog={};eligible=None;positions={}
     for frame in frames:
         anns=frame.get('anns',{})
         ids,names,boxes=[anns.get(key,[]) for key in ['track_tokens','gt_names','gt_boxes']]
@@ -41,9 +94,26 @@ def inspect_scene(data):
             track=str(track)
             entry=catalog.setdefault(track,dict(track_id=track,label=name,observed_frames=0));entry['observed_frames']+=1
             valid=(isinstance(box,list) and len(box)>=7 and all(isinstance(v,(int,float)) and math.isfinite(v) for v in box[:7]) and all(v>0 for v in box[3:6]))
-            if name=='vehicle' and valid:observed.add(track)
+            if name=='vehicle' and valid:
+                observed.add(track)
+                # Boxes are scene-local per frame, so this is the distance to the ego.
+                positions.setdefault(track,[]).append((float(box[0]),float(box[1])))
         eligible=observed if eligible is None else eligible & observed
     eligible=eligible or set()
+    # Being visible in every frame is not the same as being edit-relevant: a track
+    # parked on another road can be fully observed and still useless. Keep only
+    # vehicles that come near the ego path and are ahead of it at least once.
+    relevant=set()
+    for track in eligible:
+        points=positions.get(track) or []
+        distances=[math.hypot(x,y) for x,y in points]
+        catalog[track]['nearest_ego_distance_m']=round(min(distances),1) if distances else None
+        if any(d<=ELIGIBLE_MAX_DISTANCE_M and x>-ELIGIBLE_BEHIND_TOLERANCE_M for (x,y),d in zip(points,distances)):
+            relevant.add(track)
+        else:
+            catalog[track]['edit_relevance']='too_far_or_behind'
+    for track in relevant: catalog[track]['edit_relevance']='relevant'
+    eligible=relevant
     for track,entry in catalog.items():entry['editable_existing']=track in eligible
     binding={};manifest=Path(ref.manifest_path).expanduser()
     if manifest.is_file():
@@ -100,12 +170,24 @@ def payload(data):
 
 
 def enrich(data,response):
-    summary,_,_=inspect_scene(data)
+    summary,eligible,_=inspect_scene(data)
     result=dict(response,scene_id=data.scene_ref.scene_id,scene_token=data.scene_ref.scene_token,
         target_effect=data.target_effect,evidence=summary['evidence'],attack_input=None)
     if result['suitability']=='ready' and result['edit_plan'] is not None:
         plan=result['edit_plan']
-        if plan['operation']=='add_vehicle' and not summary['evidence']['added_vehicle_asset_available']:
+        if plan['operation']=='edit_existing' and plan['target_track'] not in eligible:
+            raise ValueError('Existing target must be a valid vehicle observed in every source frame, as required by tool05')
+        if plan['operation']=='edit_existing':
+            frames=json.loads(Path(data.scene_ref.frames_path).read_text())
+            precheck=initial_motion_precheck(frames,plan['target_track'])
+            result['evidence']=dict(result['evidence'],initial_motion_precheck=precheck)
+            if not precheck['passed']:
+                result.update(suitability='unsuitable',edit_plan=None,attack_input=None,
+                    retrieval_suggestion='Use add_vehicle with a verified asset or retrieve a different source scene; the selected existing track fails initial-motion checks.')
+                result['reasons']=[*result['reasons'],*precheck['errors']]
+        if result['suitability']!='ready':
+            pass
+        elif plan['operation']=='add_vehicle' and not summary['evidence']['added_vehicle_asset_available']:
             result['suitability']='needs_information'
             result['reasons']=[*result['reasons'],'Provide a real added-vehicle PLY and length/width/height before tool05.']
         else:
@@ -131,13 +213,20 @@ def run(input_data):
     try:data=Input.model_validate({k:v for k,v in input_data.items() if k!='_llm_client'})
     except (AttributeError,ValueError,TypeError,KeyError) as error:
         return dict(status='error',tool='edit_planner',error=dict(type='input_validation_error',message='Tool input does not match its schema',validation_errors=validation_details(error)))
-    try:inspection=inspect_scene(data)
+    try:
+        cached=_cached_asset_supplement(data)
+        if cached is not None:
+            return cached
+        inspection=inspect_scene(data)
     except (OSError,ValueError,TypeError,KeyError) as error:
         return dict(status='error',tool='edit_planner',error=dict(type='scene_inspection_error',message='Cannot inspect the retrieved scene',validation_errors=validation_details(error)))
     token=_INSPECTION.set((data.model_dump(mode='json'),inspection))
     observation_token=ACTIVE_OBSERVATION.set(None)
     try:
-        return TOOL.execute(input_data)
+        result=TOOL.execute(input_data)
+        if result.get('status')=='success':
+            _save_asset_supplement(data,result)
+        return result
     finally:
         ACTIVE_OBSERVATION.reset(observation_token)
         _INSPECTION.reset(token)

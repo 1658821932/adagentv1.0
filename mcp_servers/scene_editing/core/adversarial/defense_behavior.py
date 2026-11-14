@@ -5,6 +5,7 @@ Preferences guide generation, never replace unchanged road/contact/motion checks
 import json
 from pathlib import Path
 import numpy as np
+import acceptance_policy as policy
 from shapely.geometry import Polygon
 
 VERSION='defense_behavior.v1'
@@ -17,7 +18,8 @@ def preferences():
 class DrivingObjective:
     def __init__(self,times,reference_xy,actors,target_track,effective):
         self.times=np.asarray(times,float);self.reference=np.asarray(reference_xy,float)
-        self.boundary=float(effective['observation_end_s'])
+        self.boundary=policy.edit_start(effective)
+        self.projection_scope=('Net route projection from edit_start_s over the full editable horizon; ' if self.boundary<float(effective['observation_end_s']) else 'Net route projection after observation; ')
         self.comfort=float(effective.get('comfort_reference_mps2',2.4))
         self.settings=preferences()
         segments=np.diff(self.reference,axis=0);length=np.linalg.norm(segments,axis=1)
@@ -103,7 +105,7 @@ class DrivingObjective:
             jerk_rms_mps3=float(np.sqrt(jerk_cost)*self.comfort),
             path_offset_rms_m=float(np.sqrt(np.mean(offset[self.mask]**2))),
             optimization_cost=float(total),cost_components=costs,
-            scope='Net route projection after observation; no credit for lateral detours/backtracking. Reserve shortfall saturates at zero: no reward for excess gap. Uniform-grid derivative diagnostics; native checks/analytic bounds remain authoritative. Research preferences, not calibrated robustness proof.')
+            scope=self.projection_scope+'no credit for lateral detours/backtracking. Reserve shortfall saturates at zero: no reward for excess gap. Uniform-grid derivative diagnostics; native checks/analytic bounds remain authoritative. Research preferences, not calibrated robustness proof.')
 
 
 def adaptive_spec(ledger, decisions, boundary, end):
@@ -127,19 +129,50 @@ def adaptive_spec(ledger, decisions, boundary, end):
     return proposed
 
 
-AGENT_FIELDS=('version','net_reference_progress_m','reference_available_after_history_m',
-    'net_reference_progress_fraction','reverse_reference_distance_m','max_reserve_shortfall_m',
+AGENT_FIELDS=('version','reverse_reference_distance_m','max_reserve_shortfall_m',
     'worst_reserve_time_s','min_reserve_surplus_m','terminal_closing_speed_mps',
     'acceleration_rms_mps2','jerk_rms_mps3','path_offset_rms_m','scope')
 
 
 def agent_evidence(metrics):
-    return {key:(round(value,3) if isinstance(value,float) else value)
+    result = {key:(round(value,3) if isinstance(value,float) else value)
             for key,value in metrics.items() if key in AGENT_FIELDS}
+    fraction = metrics.get('net_reference_progress_fraction')
+    result['reference_progress_percent'] = None if fraction is None else round(100*float(fraction), 1)
+    return result
 
 
-def candidate_differences(catalog):
+def candidate_differences(catalog, *, fallback_id=None, latest_id=None, parent_id=None):
     """Compute pair differences, without sorting/recommending the candidate list."""
+    if fallback_id is not None or latest_id is not None:
+        lookup={r['candidate_id']:r for r in catalog}
+        pairs=[]
+        for anchor in (fallback_id,parent_id):
+            if anchor in lookup and latest_id in lookup and anchor != latest_id and (anchor,latest_id) not in pairs:
+                pairs.append((anchor,latest_id))
+        def difference(a,b,key):
+            av,bv=a.get(key),b.get(key)
+            return None if av is None or bv is None else round(float(bv)-float(av),3)
+        result=[]
+        for aid,bid in pairs:
+            a,b=lookup[aid],lookup[bid]
+            am,bm=a.get('behavior_metrics',{}),b.get('behavior_metrics',{})
+            def editable_gap(row):
+                return ((row.get('clearance_periods') or {}).get('editable') or {}).get('min_clearance_m')
+            result.append(dict(candidate_a=aid,candidate_b=bid,
+                a_status=a.get('status'),b_status=b.get('status'),
+                a_failed_checks=a.get('failed_checks',[]),b_failed_checks=b.get('failed_checks',[]),
+                b_minus_a_reference_progress_percentage_points=difference(am,bm,'reference_progress_percent'),
+                b_minus_a_editable_clearance_m=difference({'gap':editable_gap(a)},{'gap':editable_gap(b)},'gap'),
+                b_minus_a_native_peak_acceleration_mps2=difference(a,b,'native_max_acceleration_mps2'),
+                b_minus_a_acceleration_rms_mps2=difference(am,bm,'acceleration_rms_mps2'),
+                b_minus_a_jerk_rms_mps3=difference(am,bm,'jerk_rms_mps3'),
+                b_minus_a_path_offset_rms_m=difference(am,bm,'path_offset_rms_m'),
+                a_reserve_shortfall_m=am.get('max_reserve_shortfall_m'),
+                b_reserve_shortfall_m=bm.get('max_reserve_shortfall_m'),
+                a_reserve_surplus_m=am.get('min_reserve_surplus_m'),
+                b_reserve_surplus_m=bm.get('min_reserve_surplus_m')))
+        return result
     rows=[r for r in catalog if r.get('status')=='reference_screen_passed' and r.get('behavior_metrics')]
     result=[]
     for i,a in enumerate(rows):

@@ -99,22 +99,23 @@ def chat_completion(
     retries: int = 2,
     retry_delays: tuple[float, ...] = (2.0, 2.0),
 ) -> dict[str, Any]:
-    if timeout is None:
-        from ..api_settings import get_profile
-        timeout = get_profile("kimi")["timeout"]
+    from common.llm_audit import audited_json_call
+    from ..api_settings import get_profile
+    profile = get_profile("kimi")
+    timeout = profile["timeout"]
+    payload = {**payload, "max_tokens": profile["max_tokens"]}
     url = f"{base_url.rstrip('/')}/chat/completions"
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            response = requests.post(
+            response, body = audited_json_call(lambda: requests.post(
                 url,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 data=json.dumps(payload, ensure_ascii=False),
                 timeout=timeout,
-            )
-            body = response.json()
+            ), payload, endpoint=url, label=f'retrieval_chat/attempt_{attempt+1}', secrets=[api_key], return_response=True)
             if response.status_code != 200 or body.get("error"):
-                raise RuntimeError(f"Model API error: status={response.status_code}, body={body}")
+                raise RuntimeError(f"Model API error: status={response.status_code}; see request archive")
             return body
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.SSLError) as exc:
             last_error = exc

@@ -7,7 +7,7 @@ from attack_objective import objective_evidence, validate_objective
 from run_ego_reference import EGO_FRONT, EGO_REAR
 
 
-def validate_task_contract(contract, times, prefix):
+def validate_task_contract(contract, times, prefix, edit_start_s=None):
     if not isinstance(contract, dict) or 'objective' not in contract or set(contract)-{'objective', 'path_corridor', 'schema_version', 'provenance'}:
         raise ValueError('task_contract requires objective; path_corridor and provenance are optional fields')
     if not isinstance(contract['objective'], dict):
@@ -25,7 +25,8 @@ def validate_task_contract(contract, times, prefix):
         for name, value in fields:
             if name == 'objective.keyframes' and value == []:
                 continue
-            if name == 'objective.interaction_window_s' and value == [float(np.nextafter(prefix, np.inf)), float(times[-1])]:
+            earliest=float(prefix) if prefix==0 and edit_start_s==0 else float(np.nextafter(prefix,np.inf))
+            if name == 'objective.interaction_window_s' and value == [earliest, float(times[-1])]:
                 continue
             evidence = provenance.get(name, {})
             if (evidence.get('kind') not in ('user_requirement', 'research_policy', 'measurement_definition') or
@@ -35,7 +36,7 @@ def validate_task_contract(contract, times, prefix):
                 raise ValueError('Provenance must display the exact enforced value: '+name)
     objective = deepcopy(contract['objective'])
     validate_objective(dict(parent_candidate_id='seed_000', objective=objective,
-                            max_candidates=1, reason='Caller task'), times, prefix)
+                            max_candidates=1, reason='Caller task'), times, prefix,edit_start_s=edit_start_s)
     contract['objective'].setdefault('interaction_window_s', objective['interaction_window_s'])
     contract['objective'].setdefault('keyframes', [])
     corridor = contract.get('path_corridor')
@@ -45,7 +46,7 @@ def validate_task_contract(contract, times, prefix):
         raise ValueError('path_corridor requires start_s, max_offset_m and max_heading_difference_rad')
     if any(type(v) not in (int, float) or not np.isfinite(v) for v in corridor.values()):
         raise ValueError('Path corridor limits must be finite numbers')
-    if not prefix <= corridor['start_s'] < times[-1] or corridor['max_offset_m'] <= 0 or not 0 < corridor['max_heading_difference_rad'] <= np.pi:
+    if not (prefix if edit_start_s is None else edit_start_s) <= corridor['start_s'] < times[-1] or corridor['max_offset_m'] <= 0 or not 0 < corridor['max_heading_difference_rad'] <= np.pi:
         raise ValueError('Invalid path corridor time or geometric limits')
 
 

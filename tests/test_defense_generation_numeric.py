@@ -53,7 +53,7 @@ class DefenseNumericTests(unittest.TestCase):
         self.assertTrue(any(isinstance(item[2],dict) and item[2].get('lateral_offset_m',0)!=0 for item in seed))
 
 
-    def test_micro_timestamp_geometry_fix_preserves_history_and_legacy_replay(self):
+    def test_default_and_explicit_micro_timestamp_geometry_preserve_history_and_recompute(self):
         np=self.np
         times=np.arange(0.,12.,.5);times[5]=2.499733;times[6]=3.000015
         xy=np.column_stack([times*12.,np.zeros(len(times))]);yaw=np.full(len(times),.01)
@@ -62,7 +62,8 @@ class DefenseNumericTests(unittest.TestCase):
         old_xy,old_yaw,old_curve=self.trajectory.brake_along_path(times,xy,yaw,xy,yaw,operation,3.,with_details=True)
         new_op=dict(operation,path_geometry_version='merge_micro_knots.v1')
         new_xy,new_yaw,new_curve=self.trajectory.brake_along_path(times,xy,yaw,xy,yaw,new_op,3.,with_details=True)
-        self.assertLess(new_curve['max_acceleration_mps2'],old_curve['max_acceleration_mps2'])
+        # Current default already uses merge_micro_knots.v1; both calls must agree.
+        self.assertEqual(new_curve['max_acceleration_mps2'],old_curve['max_acceleration_mps2'])
         self.assertTrue(np.array_equal(new_xy[times<=3.],xy[times<=3.]))
         self.assertTrue(np.array_equal(new_yaw[times<=3.],yaw[times<=3.]))
         repeated=self.trajectory.verify_braking_candidate(times,xy,yaw,old_xy,old_yaw,operation,3.)
@@ -93,6 +94,69 @@ class DefenseNumericTests(unittest.TestCase):
         self.assertTrue(np.array_equal(changed[outside],parent[outside]))
         cost=problem.objective(delta.reshape(-1),1.,.03,1.,1.,0.)
         self.assertTrue(np.isfinite(cost))
+
+    def test_hybrid_gradient_matches_full_objective_and_central_differences(self):
+        np=self.np
+        from defense_behavior import DrivingObjective
+        from ego_road_checks import OfficialDrivableMap
+        from shapely.geometry import Point, Polygon
+        times=np.linspace(0,12,25)
+        parent=np.column_stack([times*1.5,np.sin(times/4)])
+        yaw=np.arctan2(np.gradient(parent[:,1]),np.gradient(parent[:,0]))
+        actors=[[dict(track='target',x=30.,y=1.,yaw=.2,length=4.5,width=2.)] for _ in times]
+        behavior=DrivingObjective(times,parent,actors,'target',dict(observation_end_s=3.,comfort_reference_mps2=2.4))
+        road=OfficialDrivableMap([Polygon([[-20,-.2],[80,-.2],[80,.2],[-20,.2]])],{})
+        problem=self.problem(times,parent,yaw,actors,target_track='target',official_road=road,
+            freeze_before_s=3.,edit_window_s=[3.,12.],observation_end_s=3.,behavior_objective=behavior)
+        bounds=np.asarray(problem.bounds());active=np.flatnonzero(bounds[:,0]!=bounds[:,1])
+        delta=np.zeros(problem.initial_control.size);delta[active]=np.linspace(-.02,.03,len(active))
+        value,gradient=problem.objective_and_gradient(delta,1.,.03,1.,10.,300.)
+        reference=problem.objective(delta,1.,.03,1.,10.,300.)
+        self.assertAlmostEqual(value,reference,places=10)
+        numeric=[]
+        for index in active:
+            step=1e-6;plus=delta.copy();minus=delta.copy();plus[index]+=step;minus[index]-=step
+            numeric.append((problem.objective(plus,1.,.03,1.,10.,300.)-
+                problem.objective(minus,1.,.03,1.,10.,300.))/(2*step))
+        np.testing.assert_allclose(gradient[active],numeric,rtol=2e-3,atol=2e-3)
+        xy,angles=problem.trajectory(delta.reshape(problem.initial_control.shape))
+        vectorized=problem.road_penalty(xy,angles);total=0.
+        from ego_road_checks import ego_corners_xy
+        for i in range(len(times)):
+            for corner in ego_corners_xy(xy[i,0],xy[i,1],angles[i]):
+                point=Point(corner)
+                margin=road.union.boundary.distance(point) if road.union.covers(point) else -road.union.distance(point)
+                total+=max(problem.road_margin_m-margin,0.)**2
+        self.assertAlmostEqual(vectorized,total/(4*len(times)),places=12)
+
+    def test_preserve_route_limits_controls_to_progress(self):
+        np=self.np;times=np.linspace(0,12,25)
+        parent=np.column_stack([times*2.,np.zeros(len(times))]);yaw=np.zeros(len(times))
+        actors=[[dict(track='target',x=60.,y=0.,yaw=0.,length=4.5,width=2.)] for _ in times]
+        problem=self.problem(times,parent,yaw,actors,target_track='target',freeze_before_s=3.,
+            edit_window_s=[3.,12.],observation_end_s=3.,edit_goals=dict(preserve_route=True))
+        bounds=np.asarray(problem.bounds()).reshape(problem.initial_control.shape+(2,))
+        self.assertTrue(np.all(bounds[:,1:]==0.))
+        self.assertTrue(np.any(bounds[~problem.frozen,0,0]<0.))
+        self.assertFalse(problem.supports_hybrid_gradient())
+
+    def test_staged_optimization_stops_on_measured_plateau(self):
+        np=self.np;times=np.linspace(0,12,25)
+        parent=np.column_stack([times*2.,np.zeros(len(times))]);yaw=np.zeros(len(times))
+        actors=[[dict(track='target',x=60.,y=0.,yaw=0.,length=4.5,width=2.)] for _ in times]
+        problem=self.problem(times,parent,yaw,actors,target_track='target',freeze_before_s=3.,
+            edit_window_s=[3.,12.],observation_end_s=3.)
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        def result(value):
+            return SimpleNamespace(x=np.zeros(problem.initial_control.size),success=False,status=1,
+                message='iteration limit',nit=60,nfev=60,fun=value)
+        with patch('run_ego_foci_probe.minimize',side_effect=[result(1.),result(1.)]):
+            _,_,optimization=problem.optimize(1.,.03,1.,1.,max_iterations=250)
+        self.assertEqual(optimization['stop_reason'],'stage_plateau')
+        self.assertEqual(optimization['iterations'],120)
+        self.assertEqual(len(optimization['iteration_stages']),2)
+        self.assertEqual(optimization['gradient_method'],'hybrid_analytic_finite_difference')
 
 
 if __name__=='__main__':unittest.main()

@@ -28,9 +28,11 @@ def test_prompt_compression_is_bounded_and_keeps_recovery_and_contracts():
     messages = planner._build_prompt("test", AgentState("test").to_orchestrator_dict())
     assert sum(len(m["content"]) for m in messages) < 60000
     assert "revise the earliest affected retrieval or editing step" in messages[0]["content"]
-    schema = next(t for t in json.loads(messages[1]["content"])["available_tools"] if t["name"] == "attack_vehicle_editor")["input_schema"]
+    parameters = next(t["function"]["parameters"] for t in planner.functions if t["function"]["name"] == "attack_vehicle_editor")
+    schema = parameters["properties"]["arguments"]
     assert schema["properties"]["operation"]["enum"] == ["edit_existing", "add_vehicle"]
-    assert "VehicleAsset" in schema["$defs"]
+    assert "VehicleAsset" in parameters["$defs"]
+    assert "available_tools" not in json.loads(messages[1]["content"])
 
 
 def test_history_references_keep_exact_revision_not_latest_scene():

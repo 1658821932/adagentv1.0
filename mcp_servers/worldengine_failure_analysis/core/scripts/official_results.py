@@ -1,11 +1,13 @@
 """Reuse official per-scene outputs; supplemental geometry never overwrites them."""
 import csv,hashlib,math
+from pathlib import Path
+from official_metrics import official_metrics_csv
 
 FIELDS=('step','no_at_fault_collisions','drivable_area_compliance','ego_progress',
         'time_to_collision_within_bound','comfort','driving_direction_compliance','score','first_violation_step')
 
-def load_official(root,index_row):
-    path=root/'WE_output/openscene_format/all_scenes_pdm_averages_R.csv'
+def load_official(root,index_row,path=None):
+    path=Path(path) if path else official_metrics_csv(root)
     with path.open() as f:matches=[r for r in csv.DictReader(f) if r['token']==index_row['token']]
     if len(matches)!=1:raise ValueError('Official metric row must exist exactly once')
     raw=matches[0];values={k:float(raw[k]) if raw[k] else None for k in FIELDS}

@@ -8,7 +8,10 @@ def bounded_outcome(stage, detail, search_dir):
     archive = directory / ((detail.get('search_stage','trajectory_editing')+'/output.json') if stage == 'attack_editing' else 'summary.json')
     stored = json.loads(archive.read_text())
     stop = detail.get('stop_reason') or stored.get('stop_reason')
-    if detail.get('status') != 'not_submitted' or not stop or stop == 'request_or_execution_failed':
+    execution_stops = {'request_or_execution_failed', 'native_tool_protocol_failed',
+        'invalid_or_missing_tool_call', 'invalid_tool_call', 'model_stopped_without_submission',
+        'invalid_call_budget_exhausted', 'repeated_invalid_tool_call', 'interrupted_by_operator'}
+    if detail.get('status') != 'not_submitted' or not stop or stop in execution_stops:
         raise RuntimeError('Search did not complete normally; cannot report business refusal')
     root = directory
     while (root.parent/'output.json').is_file():

@@ -127,12 +127,15 @@ def run_pdm(config, attack_scene, output, history_s, target_track, target_is_new
     return result
 
 
-def run_constructor(scene, target_track, output, effective, count, timeout):
+def run_constructor(scene, target_track, output, effective, count, timeout, resume=False):
     policy_path = output.parent/'effective-policy.json'
     atomic_json(policy_path, effective)
-    run_command([sys.executable, str(Path(__file__).resolve().parent/'run_ego_reference.py'), '--input', str(scene),
+    command = [sys.executable, str(Path(__file__).resolve().parent/'run_ego_reference.py'), '--input', str(scene),
         '--run', str(output), '--target-track', target_track, '--acceptance-policy', str(policy_path),
-        '--max-candidates', str(count)], output.parent/'constructor.log', timeout)
+        '--max-candidates', str(count)]
+    if resume:
+        command.append('--resume')
+    run_command(command, output.parent/'constructor.log', timeout)
 
 
 def run_independent(scene, editor_run, candidate, target_track, output, timeout):
@@ -311,13 +314,16 @@ def run_loop(config, output):
             run_constructor(attack_scene, target_track, constructor_dir, effective,
                 budget['defense_constructor_candidates'], 300)
             foci_dir=None
-            if config.get('use_foci',True):
+            from defense_generation import should_prepare_initial_foci
+            if should_prepare_initial_foci(config):
                 from defense_generation import prepare_initial_foci
                 state['active_stage']='defense_foci'
                 save()
                 check_budget()
                 foci_dir=prepare_initial_foci(attack_scene,constructor_dir,target_track,attempt/'defense_foci',
                     effective['observation_end_s'],float(times[-1]))
+            elif config.get('use_foci',True):
+                atomic_json(attempt/'foci-stage.json',dict(status='on_demand'))
             state['active_stage'] = 'defense_edit'
             save()
             check_budget()

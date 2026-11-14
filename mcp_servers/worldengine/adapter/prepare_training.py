@@ -47,9 +47,16 @@ def prepare(args):
         vocab = np.load(require_file(data["vocab_path"]), allow_pickle=False)
         if vocab.shape != (8192, 40, 3) or not np.isfinite(vocab).all():
             raise ValueError("Expected a finite (8192, 40, 3) trajectory vocabulary")
+        package_manifest = None
+        if data.get("manifest_path"):
+            from rl_annotations import verify_manifest
+            package_manifest = verify_manifest(data)
+            report["rl_annotation_manifest"] = str(require_file(data["manifest_path"]))
+            report["frame_to_plan_alignment"] = package_manifest["frame_to_plan_alignment"]
         metadata_root = rollout / "meta_datas"
         combined = metadata_root / "combined.pkl"
-        metadata_files = [combined] if combined.is_file() else sorted(metadata_root.glob("*.pkl"))
+        metadata_files = ([Path(package_manifest["annotation_file"])] if package_manifest else
+                          [combined] if combined.is_file() else sorted(metadata_root.glob("*.pkl")))
         if not metadata_files:
             raise ValueError("No rollout metadata files")
         infos = []

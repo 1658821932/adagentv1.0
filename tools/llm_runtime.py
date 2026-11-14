@@ -16,6 +16,7 @@ from typing import Annotated, Any, Callable
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from common.models import NonEmptyStr
+from mcp_servers.runtime import trace_context
 
 
 class ToolModel(BaseModel):
@@ -24,17 +25,8 @@ class ToolModel(BaseModel):
 
 
 class LLMToolConfig(ToolModel):
-    model_role: NonEmptyStr
     prompt_version: NonEmptyStr
-    timeout: Annotated[int, Field(gt=0)] | None = None
-    max_tokens: Annotated[int, Field(gt=0)] | None = None
     validation_retries: Annotated[int, Field(ge=0, le=2)] = 1
-
-
-class LLMRoleConfig(ToolModel):
-    model: NonEmptyStr | None = None
-    timeout: Annotated[int, Field(gt=0)] | None = None
-    max_tokens: Annotated[int, Field(gt=0)] | None = None
 
 
 def unwrap_result(value: Any, field: str | None = None) -> Any:
@@ -174,15 +166,7 @@ class LLMTool:
                 client = injected_client
             else:
                 from agent.llm_client import LLMClient
-                roles = LLMClient._load_llm_config().get("roles", {})
-                if not isinstance(roles, dict) or config.model_role not in roles:
-                    raise ValueError(f"Unknown LLM model role: {config.model_role}")
-                overrides = LLMRoleConfig.model_validate(roles[config.model_role]).model_dump(exclude_none=True)
-                for key in ("timeout", "max_tokens"):
-                    value = getattr(config, key)
-                    if value is not None:
-                        overrides[key] = value
-                client = LLMClient(overrides=overrides)
+                client = LLMClient(component=self.name)
             meta["model"] = getattr(client, "model", "injected-client")
             payload = self.payload_builder(data) if self.payload_builder else data.model_dump(mode="json")
             if self.client_adapter:
@@ -200,7 +184,8 @@ class LLMTool:
         for attempt in range(config.validation_retries + 1):
             meta["attempts"] = attempt + 1
             try:
-                response = client.chat(messages)
+                with trace_context(llm_attempt=attempt + 1):
+                    response = client.chat(messages)
             except Exception as exc:
                 # Do not turn auth/network errors into JSON-correction requests.
                 return error("llm_request_error", exc)

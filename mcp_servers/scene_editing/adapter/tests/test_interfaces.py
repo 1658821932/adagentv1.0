@@ -27,6 +27,30 @@ def attack_args(source):
     return {"scene_ref":source,"instruction":"Make the annotated lead vehicle slow down.","operation":"edit_existing","target_track":"vehicle_1"}
 
 
+def test_configuration_failure_survives_public_tool_and_context_compaction(source):
+    from subprocess import CompletedProcess
+    from agent.context import compact_state
+    backend=dict(status='backend_error',error_type='AttackConfigurationError',
+        error='Conflicting task and acceptance setting: observation_end_s (task=0.0, acceptance=1.5)',
+        error_code='editing_configuration_error',failure_stage='configuration',retryable=False,
+        error_details={'setting':'observation_end_s','task_value':0.,'acceptance_value':1.5},
+        recovery_hint='Repair configuration; changing the scene cannot fix this error.')
+    with patch('mcp_servers.scene_editing.adapter.service.stage_command',return_value=[sys.executable,'offline-only']), \
+         patch('mcp_servers.scene_editing.adapter.service.backend_api_env',side_effect=lambda command,env,component:env), \
+         patch('mcp_servers.scene_editing.adapter.service.run_logged',return_value=CompletedProcess([],0,json.dumps(backend),'')):
+        result=call_tool('attack_vehicle_editor',attack_args(source),mode='real')
+    error=result['error']
+    assert error['type']=='editing_configuration_error' and error['retryable'] is False
+    assert 'task=0.0, acceptance=1.5' in error['message']
+    assert error['error_details']==backend['error_details']
+    assert Path(error['log_path']).is_file()
+    compact=compact_state({'history':[{'tool':'attack_vehicle_editor','result':result,'result_ref':'fixture.json'}]})
+    saved=compact['history'][0]['result']['error']
+    assert saved['error_details']==backend['error_details']
+    assert saved['recovery_hint']==backend['recovery_hint']
+    assert saved['failure_stage']=='configuration'
+
+
 def test_mock_handoff_from_retrieval_reference_to_attack_and_ego(source):
     a=call_tool("attack_vehicle_editor",attack_args(source),mode="mock")
     assert a["status"]=="success"
@@ -123,17 +147,20 @@ def test_configured_json_bridge_keeps_identity_and_outputs_real_files(source,scr
 def test_mock_expert_csv_cannot_be_passed_as_il_labels(source):
     attack=call_tool("attack_vehicle_editor",attack_args(source),mode="mock")
     ego=call_tool("ego_trajectory_editor",{"attack_result":attack,"target_effect":"Stop."},mode="mock")
-    from tools.tool10_policy_trainer.schemas import Input
+    from tools.tool09_policy_trainer.schemas import Input
     with pytest.raises(ValueError):
         Input.model_validate({"training_mode":"ilft","training_data":{"expert_trajectory_path":ego["result"]["expert_trajectory_path"]},"base_checkpoint":"/base.pth"})
 
 
 def test_optional_handoff_blocks_match_existing_downstream_schemas():
     from mcp_servers.scene_editing.adapter.schemas import SimulationInput,ILTrainingData
-    from tools.tool08_policy_runner.schemas import Input as SimInput
-    from tools.tool10_policy_trainer.schemas import Input as TrainInput
+    from tools.tool07_policy_runner.schemas import Input as SimInput
+    from tools.tool09_policy_trainer.schemas import Input as TrainInput
     s=SimulationInput(scenario_data_folder_path="/native/scenes",asset_folder_path="/native/assets")
-    SimInput.model_validate({**s.model_dump(),"config_path":"/cfg.py","checkpoint_path":"/base.pth","model_name":"base","data_type":"custom"})
+    # Source frame_count is package metadata, not a policy_runner argument or
+    # an override of its standard 16-frame rollout budget.
+    native=SimInput.model_validate({**s.model_dump(exclude={'frame_count'}),"config_path":"/cfg.py","checkpoint_path":"/base.pth","model_name":"base","data_type":"custom"})
+    assert native.max_frame_per_scene==16
     labels=ILTrainingData(ann_file="/labels/infos.pkl",token_file="/labels/tokens.yaml")
     TrainInput.model_validate({"training_mode":"ilft","training_data":labels.model_dump(),"base_checkpoint":"/base.pth"})
 

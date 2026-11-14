@@ -2,8 +2,8 @@
 
 ## 当前范围
 
-当前预留 10 个工具编号，启用 9 个工具、4 个后端组件。攻击车、自车编辑后端已接入；新增快速粗规划与原生 WE 回放入口。原独立视觉验收已直接删除。
-原生回放需要目标版本的原生场景包。冻结 metadata 和专家 CSV 到仿真/训练格式的导出仍需接通；不把 mock 或接口测试当作全链路验证。
+当前启用 01–09 共 9 个工具、4 个后端组件。攻击车、自车编辑后端及快速粗规划已接入；独立视觉验收和原生回放不注册为主 Agent 工具。
+原生仿真需要目标版本的场景包，编辑工具通过 `simulation_input` 和导出报告说明实际可用状态。专家 CSV 的 ILFT 标注出口尚未接通；不把 mock 或接口测试当作全链路验证。
 
 ## 主流程
 
@@ -16,7 +16,7 @@
 ```
 
 主 Agent 根据任务选择工具，tool04 可筛掉不适合的检索场景；tool05/06 内部负责具体轨迹求解。
-原生回放与策略闭环仿真分别通过 tool07、tool08 执行，格式转换放在适配层，不再单独占工具。
+策略闭环仿真通过 tool07 执行，格式转换放在适配层，不再单独占工具；原回放工具（旧 tool07）已删除。
 
 ## 顶层目录
 
@@ -24,10 +24,10 @@
 |---|---|
 | agent/ | LLM 决策循环、执行器、状态和日志 |
 | common/ | 不依赖 Agent 或 Tool 的通用模型、场景引用和结果引用读取 |
-| tools/ | 10 个工具的说明、Schema、real 与 mock 入口 |
+| tools/ | 9 个工具的说明、Schema、real 与 mock 入口 |
 | mcp_servers/ | 四个后端的独立核心与 AdAgent 适配 |
-| configs/agent.json | 最大步数、工具模式、LLM 角色 |
-| configs/api.json | Kimi 与检索 API 的非敏感配置 |
+| configs/agent.json | 最大步数、工具模式、纠错次数和日志位置 |
+| configs/api.json | 公共 API 配置、active_profile 及可选逐工具模型/思考强度覆盖；另含独立检索配置 |
 | api_config.py | 统一解析 API profile 与密钥变量 |
 | environments/ | 主 Agent 和各服务环境，不进入 Git |
 | data/ | 场景、标注、高斯资产和地图，不进入 Git |
@@ -42,7 +42,7 @@
 |---|---|
 | main.py | 创建一次运行，循环决策、执行和写日志 |
 | prompt.md | 主 Agent 的调度、完成与纠错规则 |
-| orchestrator.py | 加载主提示词、工具选择、决策 JSON 校验与格式纠正 |
+| orchestrator.py | 加载主提示词、原生 Function Calling 决策、参数校验与调用纠正 |
 | executor.py | 根据配置选择 real/mock，将异常转换成标准错误 |
 | state.py | 任务、阶段、调用历史和运行状态 |
 | schemas.py | 通用决策和工具结果 envelope 校验 |
@@ -66,10 +66,9 @@
 | 04 | edit_planner | 快速判断可编辑性，给出针对底场景的粗计划 |
 | 05 | attack_vehicle_editor | 规划、搜索、编辑并冻结攻击车场景 |
 | 06 | ego_trajectory_editor | 规划、编辑并复核正确的自车专家轨迹 |
-| 07（未启用） | scene_replayer | 用 WE 原生轨迹回放输出相机视频 |
-| 08 | policy_runner | 执行 PDM 挑战或驾驶策略闭环仿真 |
-| 09 | failure_case_filter | 读取官方评分并筛选失败案例 |
-| 10 | policy_trainer | 执行 ILFT/RLFT 并输出模型与更新审计 |
+| 07 | policy_runner | 驾驶策略闭环仿真与评分，保留旧 PDM 挑战模式 |
+| 08 | failure_case_filter | 读取官方评分并筛选失败案例 |
+| 09 | policy_trainer | 执行 ILFT/RLFT 并输出模型与更新审计 |
 
 每个工具保留 description.py、schemas.py、real.py、mock.py；tool02/04 另有内部提示词和 LLM 配置。
 可执行契约与字段说明见 INTERFACES.md，不在多个文档重复维护参数默认值。
@@ -88,12 +87,13 @@
 
 ## 新编辑接入边界
 
-从 tool03.scene_ref 读取原始标注和已有高斯资产，分别对接攻击车编辑与自车专家轨迹编辑。真实后端位于 scene_editing/core/adversarial，PDM 旁路通过 tool08 的 pdm_closed_loop 模式执行，详见[攻防闭环后端接入说明](EDITING_INTERFACES.md)。
+从 tool03.scene_ref 读取原始标注和已有高斯资产，分别对接攻击车编辑与自车专家轨迹编辑。真实后端位于 scene_editing/core/adversarial，PDM 旁路通过 tool07 的 pdm_closed_loop 模式执行，详见[攻防闭环后端接入说明](EDITING_INTERFACES.md)。
 冻结场景、专家轨迹和原场景应保留来源及坐标/时间说明。需要转换成原生场景和训练数据后，才交给仿真与后训练。后端未配置时停止，不使用旧编辑转换链路作为隐式替代。
 
 ## 配置与协作
 
-.env 只放密钥；API 模型与端点在 configs/api.json；各后端解释器及路径在 adapter/settings.json。
+.env 只放密钥，可同时保存 API_KEY_1、API_KEY_2 等；API 模型、端点与 api_key_env 绑定在 configs/api.json。scripts/api_profile.py 的 add/list/show/use 命令管理和切换 active_profile，统一作用于所有推理 Agent；新任务启动前切换，已运行进程需重启。各后端解释器及路径在 adapter/settings.json。
+具体步骤、示例和兼容性边界见 [API 配置与统一切换](API_CONFIGURATION.md)。
 环境是非 Git 运行资源。DGGT 环境仍被数据下载进程使用，暂时保留；旧 SegFormer 和 SmartEdit 环境已清理。
 
 修改工具 Schema 后运行 scripts/generate_interface_docs.py；改注册表时同步工具说明、配置、测试。
@@ -138,7 +138,7 @@ flowchart TD
     A --> J["logger.py：写入运行日志"]
 ```
 
-正常决策有三种：`call_tool` 调用工具；`finish` 表示任务完成；`stop` 表示遇到无法解决的阻碍，以失败状态结束。
+主 Agent 通过流式原生 Function Calling 决策，每轮只调用一个业务函数或 finish/stop 控制函数。收到完整响应并校验后，转换为以下内部运行记录（不接受模型输出文本 JSON 作为替代协议）。内部决策有三种：`call_tool` 调用工具；`finish` 表示任务完成；`stop` 表示遇到无法解决的阻碍，以失败状态结束。
 
 失败后是否重试、改计划或换参数，由主 Agent 在下一轮决策中判断。相关规则位于 `agent/prompt.md` 中；最大执行步数由 `main.py` 控制。
 
@@ -205,7 +205,7 @@ logs/
 | sentry_video_search | tool03 | service.py、client.py、runner.py、scene_binding.py、config.py |
 | worldengine_failure_analysis | tool01 | service.py、config.py 及原生取证入口 |
 | scene_editing | tool05/06 | service.py、schemas.py、config.py；后端命令已配置 |
-| worldengine | tool07/08/09/10 | service.py、client.py、launch.py、evaluation.py、evaluate_batch.py、training.py、prepare_training.py |
+| worldengine | tool07/08/09 | service.py、client.py、launch.py、evaluation.py、evaluate_batch.py、training.py、prepare_training.py |
 
 ## 通用边界
 
@@ -240,7 +240,6 @@ API 统一通过根配置解析，服务配置不重复保存凭证。
 
 ## 原生回放
 
-tool07 → adapter/service.py.run_replay → replay.py → replay_native.py → WE 原生 runner。
 回放采用 trajectory_policy 和 log_play_controller，不启动 AlgEngine；原生 RGB 输出按相机编码为视频并核验解码。
 需要 simulation_input 和准确 scene_id，不将编辑结果隐式替换为原始数据。无 VLM 视觉验收。
 
@@ -300,7 +299,7 @@ adapter/run_testing.sh 是轻量入口，实际命令构建与进程监督位于
 - 保留单次运行的帧、轨迹和元数据，便于检查和后训练。
 
 训练的 IL 默认配置位置为 core/experiments/posttrain/e2e_vadv2_50pct_waymo_ilft.py。
-训练模式及数据准备以当前 tool10 schemas 和训练模块为准；本次接口整理保留同时进行的 IL/RL 模块改动。
+训练模式及数据准备以当前 tool09 schemas 和训练模块为准；本次接口整理保留同时进行的 IL/RL 模块改动。
 
 ## 长任务
 
@@ -322,3 +321,26 @@ agent_run_id、tool_call_id、parent_run_id。
 Agent 日志的 tools/step_*/call.json 保存同一关联信息。
 每次工具返回后写 state.json，供查看进度和人工恢复定位；最终状态仍在 final_state.json。
 state.json 不表示已实现自动续跑：恢复训练仍应显式选择已有 checkpoint 和任务参数。
+## 全工具决策上下文
+
+公共投影位于 `agent/context.py`，由 AgentState.to_orchestrator_dict 调用。
+仅影响发送给主 Agent 的状态视图，不修改完整 state.json、final_state.json 或工具结果文件。
+覆盖 01–10（含当前停用的 07）；未知工具或没有 result_ref 的输出保留完整数据。
+
+| 工具 | 主 Agent 保留的内容 |
+| --- | --- |
+| 01 | 失败原因、类别、场景要素、来源案例、官方指标和报告路径 |
+| 02 | 完整目标场景、正确自车行为、三个候选及检索/编辑对应关系 |
+| 03 | 匹配分数、片段、场景身份、相机名称和完整结果引用 |
+| 04 | 适用性、理由、编辑计划、可执行 attack_input、缺失资源 |
+| 05/06 | 业务状态、场景/候选版本、检查状态、关键产物、反馈和复用路径 |
+| 07 | 视频路径、回放报告和检查 |
+| 08 | 结果路径、训练数据路径、奖励可用性、PDM结论和数值摘要 |
+| 09 | 筛选结论、CSV、总数及至多8个案例样本，明确标记省略数 |
+| 10 | checkpoint、模式、日志、有限损失和参数更新数量、数据准备路径 |
+
+支持引用的输入使用精确版本的 result_ref；不把投影中的简化场景对象当作完整输入。
+成功历史调用只省略大的重复输入，保留 checkpoint、配置、目录等标量参数；
+被省略内容的原始输入文件通过 arguments_ref 追溯。失败输入保留以支持重试。
+长错误保留首尾和省略计数；业务无解与执行失败、mock与real、not_checked与passed不混淆。
+本模块不执行 LLM 摘要，不新增模型请求，不提供跨运行记忆。

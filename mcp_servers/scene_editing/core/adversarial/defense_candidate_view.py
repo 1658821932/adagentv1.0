@@ -21,7 +21,7 @@ GUIDANCE = (
     'Candidates are listed in generation order, with no quality ranking, preferred ID or overall score. '
     'Choose explicitly using the task, passed/failed checks and motion evidence. A clearance-curve dominance label concerns separation only, not an overall improvement in progress or driving quality. '
     'Compare clearance during the editable period and the recorded-ego contact samples; a minimum in '
-    'fixed observation history does not measure the benefit of a defense. '
+    'observation-period evidence may include edits; always inspect full-window safety as well. '
     'Keep an evidenced safety reserve for approximation/model uncertainty: do not seek the smallest gap '
     'or delay braking until contact. Also assess whether early stopping or strong braking is needed '
     'when a milder checked alternative has adequate reserve. There is no universal added gap threshold, '
@@ -48,7 +48,7 @@ def unranked_view(value):
     return value
 
 
-def temporal_evidence(times, xy, clearance, boundary, contact_indices=(), stop_speed=.1):
+def temporal_evidence(times, xy, clearance, boundary, contact_indices=(), stop_speed=.1, edit_start_s=None):
     """Native-frame diagnostics; source timestamps and hard checks remain unchanged."""
     times=[float(t) for t in times];gaps=[float(g) for g in clearance]
     if len(times)!=len(xy) or len(times)!=len(gaps) or len(times)<2:
@@ -62,13 +62,14 @@ def temporal_evidence(times, xy, clearance, boundary, contact_indices=(), stop_s
         return dict(sample_count=len(indices),sample_time_range_s=[times[indices[0]],times[indices[-1]]],
                     min_clearance_m=round(gaps[i],3),minimum_time_s=times[i],
                     minimum_frame_index=i)
-    editable=[i for i,t in enumerate(times) if t>boundary]
+    editable_start=boundary if edit_start_s is None else edit_start_s
+    editable=[i for i,t in enumerate(times) if t>editable_start]
     observation=[i for i,t in enumerate(times) if t<=boundary]
     contacts=[i for i in contact_indices if times[i]>boundary]
     last_moving=max((i for i,v in enumerate(speed) if v>stop_speed),default=-1)
     stopped=speed[-1]<=stop_speed
     stop_index=last_moving+1 if stopped else None
-    editable_travel=sum(v*(t1-max(t0,boundary)) for v,t0,t1 in zip(speed,times,times[1:]) if t1>boundary)
+    editable_travel=sum(v*(t1-max(t0,editable_start)) for v,t0,t1 in zip(speed,times,times[1:]) if t1>editable_start)
     return dict(
         clearance_periods=dict(observation=period(observation),editable=period(editable),
             recorded_ego_contact_samples=period(contacts)),
@@ -82,14 +83,14 @@ def temporal_evidence(times, xy, clearance, boundary, contact_indices=(), stop_s
 
 
 BEHAVIOR_GUIDANCE = (
-    'Driving objective: respect the specific user target_effect/maneuver and preserve the fixed observation prefix. Subject to all contact, other-actor, road '
+    'Driving objective: respect the specific user target_effect/maneuver and respect edit_start_s and preserve the chosen parent only until the requested edit start. Subject to all contact, other-actor, road '
     'and motion checks and an evidenced safety reserve, retain effective forward progress along the '
     'original route and reasonably normal driving. Avoid unnecessarily early braking, strong braking '
     'or stopping far behind the attack; do not trade reserve for progress or seek a minimum gap. '
     'Extra clearance has no automatic value once the needed reserve is provided. '
-    'behavior_metrics projects NET advancement onto the original route after the history boundary; '
-    'reverse and lateral detours cannot earn progress. progress_ratio_of_recorded is the legacy total '
-    'path-length diagnostic and is NOT the new objective. '
+    'behavior_metrics projects NET advancement onto the original route from edit_start_s; '
+    'reverse and lateral detours cannot earn progress. reference_progress_percent is the main progress '
+    'display; see the shared progress_reference denominator. Percentage differences are percentage points. '
     'Reserve parameters are explicit research optimization preferences, NOT calibrated prediction or '
     'execution error bounds, legal following distances or new acceptance gates. A shortfall is a '
     'reason for closer assessment, not permission to submit an unsafe path or a new automatic rejection. '

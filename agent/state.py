@@ -7,7 +7,6 @@ status.
 """
 
 from typing import Any, Dict, Optional
-from copy import deepcopy
 
 
 TOOL_STAGE_MAP = {
@@ -17,7 +16,6 @@ TOOL_STAGE_MAP = {
     "scene_instance_generator": "requirement_generation",
     "video_retriever": "retrieval",
     "edit_planner": "edit_planning",
-    "scene_replayer": "replay",
     "policy_runner": "simulation",
     "failure_case_filter": "failure_filtering",
     "policy_trainer": "training",
@@ -33,7 +31,12 @@ class AgentState:
         self.current_step = 0
         self.current_stage = "planning"
         self.status = "running"
+        self.pending_job = None
         self.error: Optional[Any] = None
+        self.current_request = task
+        self.user_messages = []
+        self.resume_context = None
+        self.execution_scope = None
 
     def set_step(self, step: int) -> None:
         """Update the current Agent step."""
@@ -61,6 +64,7 @@ class AgentState:
         self.history.append(
             {
                 "tool": tool_name,
+                "step": self.current_step,
                 "result": result,
                 **({"result_ref": result_ref} if result_ref else {}),
             }
@@ -90,65 +94,14 @@ class AgentState:
             "current_stage": self.current_stage,
             "status": self.status,
             "error": self.error,
+            "pending_job": self.pending_job,
+            "current_request": self.current_request,
+            "user_messages": self.user_messages,
+            "resume_context": self.resume_context,
+            "execution_scope": self.execution_scope,
         }
 
     def to_orchestrator_dict(self) -> Dict[str, Any]:
-        """Compact repeated editing context; leave complete state/log files intact."""
-        state = deepcopy(self.to_dict())
-        references = []
-        for entry in state["history"]:
-            decision = entry.get("decision", {})
-            arguments = decision.get("arguments", {})
-            name = decision.get("tool_name")
-            if name == "edit_planner" and "retrieval_result" in arguments:
-                value = arguments.get("retrieval_result")
-                if isinstance(value, dict) and value.get("tool") == "video_retriever" and value.get("status") == "success":
-                    value = value.get("result")
-                for tool, payload, reference in reversed(references):
-                    if tool != "video_retriever" or not isinstance(value, dict):
-                        continue
-                    # Match full envelope, bare result, or {"scene_ref": X} subset
-                    if value in (payload, payload.get("scene_ref")):
-                        arguments["retrieval_result"] = reference
-                        break
-                    # LLM may pass just {"scene_ref": <scene_ref_dict>}
-                    if set(value.keys()) == {"scene_ref"} and value.get("scene_ref") == payload.get("scene_ref"):
-                        arguments["retrieval_result"] = reference
-                        break
-            elif name == "attack_vehicle_editor":
-                value = arguments.get("scene_ref")
-                for tool, payload, reference in reversed(references):
-                    if tool == "video_retriever" and isinstance(value, dict) and value == payload.get("scene_ref"):
-                        arguments["scene_ref"] = reference
-                        break
-            elif name == "ego_trajectory_editor":
-                value = arguments.get("attack_result")
-                if isinstance(value, dict) and value.get("tool") == "attack_vehicle_editor" and value.get("status") == "success":
-                    value = value.get("result")
-                for tool, payload, reference in reversed(references):
-                    if tool == "attack_vehicle_editor" and isinstance(value, dict) and value == payload:
-                        arguments["attack_result"] = reference
-                        break
-            tool = entry.get("tool")
-            envelope = entry.get("result", {})
-            payload = envelope.get("result")
-            if not tool or envelope.get("status") != "success" or not entry.get("result_ref") or not isinstance(payload, dict):
-                continue
-            references.append((tool, deepcopy(payload), entry["result_ref"]))
-            if tool == "attack_vehicle_editor":
-                payload.pop("source_scene_ref", None)
-            elif tool == "failure_analyzer":
-                # A duplicate of the native result; retain interpreted evidence/paths.
-                payload.pop("raw", None)
-            elif tool == "video_retriever":
-                # Compact scene_ref to keep LLM context small; cameras metadata
-                # is available via result_ref when tools load it.
-                scene_ref = payload.get("scene_ref")
-                if isinstance(scene_ref, dict) and "cameras" in scene_ref:
-                    cameras = scene_ref["cameras"]
-                    if isinstance(cameras, dict):
-                        scene_ref["cameras"] = {
-                            cam: {"video_path": info.get("video_path"), "frame_count": info.get("frame_count")}
-                            for cam, info in cameras.items()
-                        }
-        return state
+        """All-tool decision summaries; original state and result files stay intact."""
+        from agent.context import compact_state
+        return compact_state(self.to_dict())

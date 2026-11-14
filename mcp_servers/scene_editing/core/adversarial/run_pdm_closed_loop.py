@@ -75,7 +75,8 @@ def main():
 
     from pdm_temporal import align_takeover, RecordedActorReplay
     from pdm_binding import binding, matching_baseline
-    settings = json.loads((Path(__file__).resolve().parent/'backend_settings.json').read_text())['pdm']
+    from backend_configuration import load_settings
+    settings = load_settings()['pdm']
     bindings = binding(dict(challenge_baseline_scene_path=str(args.baseline),
         challenge_attack_scene_path=str(args.attack),challenge_history_s=args.history_s,
         challenge_target_track=args.target_track,challenge_target_is_new=args.target_is_new,

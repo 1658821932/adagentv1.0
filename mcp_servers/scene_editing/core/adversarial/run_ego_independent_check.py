@@ -97,7 +97,7 @@ def main():
         record=next(row for row in source['candidates'] if 'constructor_'+row['candidate_id'].removeprefix('candidate_')==args.candidate)
         if record.get('operation') is not None:
             from ego_trajectory_edit import verify_braking_candidate,apply_curve_checks,apply_intent
-            curve=verify_braking_candidate(times,baseline_xy,baseline_yaw,xy,yaw,record['operation'],effective['observation_end_s'])
+            curve=verify_braking_candidate(times,baseline_xy,baseline_yaw,xy,yaw,record['operation'],policy.edit_start(effective))
             if curve != record['generation_curve']:
                 raise ValueError('Constructor curve evidence differs from recomputation')
             apply_curve_checks(screened,curve)
@@ -105,7 +105,7 @@ def main():
     if initial_path.is_file() and args.candidate.startswith('foci_'):
         foci_run=Path(config['foci_run'])
         foci_config=json.loads((foci_run/'config.json').read_text())
-        if foci_config.get('version') in ('ego_foci_probe.v5','ego_foci_probe.v6','ego_foci_probe.v7','ego_foci_probe.v8'):
+        if foci_config.get('version') in ('ego_foci_probe.v5','ego_foci_probe.v6','ego_foci_probe.v7','ego_foci_probe.v8','ego_foci_probe.v9'):
             from run_ego_foci_probe import verify_candidate
             optimization=json.loads((foci_run/'candidates'/args.candidate/'optimization.json').read_text())
             parent_id='constructor_'+optimization.get('parent_candidate_id',foci_config['parent_candidate_id']).removeprefix('candidate_')
@@ -144,7 +144,7 @@ def main():
                 parent_operation=folder/'edit.json'
                 if parent_operation.is_file() and (folder/'curve-check.json').is_file():
                     prior=json.loads(parent_operation.read_text())
-                    expected_xy,expected_yaw,evidence=modern_edit(times,lookup,prior,effective['observation_end_s'],parent_curve=parent_curve(prior['parent_candidate_id']),acceptance=effective)
+                    expected_xy,expected_yaw,evidence=modern_edit(times,lookup,prior,policy.edit_start(effective),parent_curve=parent_curve(prior['parent_candidate_id']),acceptance=effective)
                     saved_xy,saved_yaw=lookup(key)
                     if not np.allclose(expected_xy,saved_xy,atol=1e-9,rtol=0) or not np.allclose(expected_yaw,saved_yaw,atol=1e-9,rtol=0):
                         raise ValueError('Parent generation curve differs from its saved track')
@@ -154,13 +154,13 @@ def main():
                     if record.get('operation') is not None:
                         from ego_trajectory_edit import verify_braking_candidate
                         saved_xy,saved_yaw=lookup(key)
-                        evidence=verify_braking_candidate(times,baseline_xy,baseline_yaw,saved_xy,saved_yaw,record['operation'],effective['observation_end_s'])
+                        evidence=verify_braking_candidate(times,baseline_xy,baseline_yaw,saved_xy,saved_yaw,record['operation'],policy.edit_start(effective))
                         if evidence!=record['generation_curve']: raise ValueError('Parent constructor curve differs from recorded evidence')
                 else:
                     evidence=None
                 curve_cache[key]=evidence
                 return evidence
-            reproduced_xy,reproduced_yaw,curve = modern_edit(times,lookup,operation,effective['observation_end_s'],parent_curve=parent_curve(operation['parent_candidate_id']),acceptance=effective)
+            reproduced_xy,reproduced_yaw,curve = modern_edit(times,lookup,operation,policy.edit_start(effective),parent_curve=parent_curve(operation['parent_candidate_id']),acceptance=effective)
             if not np.allclose(reproduced_xy,xy,atol=1e-9,rtol=0) or not np.allclose(reproduced_yaw,yaw,atol=1e-9,rtol=0):
                 raise ValueError('Saved edit differs from reconstructed generation curve')
             stored_curve = json.loads((edit_path.parent/'curve-check.json').read_text())

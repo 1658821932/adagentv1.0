@@ -134,7 +134,7 @@ class ContinuityTests(unittest.TestCase):
         self.assertIn(5.25,curve['continuous_state']['times_s'])
         self.assertLess(curve['max_acceleration_mps2'],6.)
 
-    def test_earlier_retiming_preserves_legacy_explicit_hold_beyond_curve_end(self):
+    def test_absolute_position_stop_preserves_legacy_hold_beyond_curve_end(self):
         from ego_trajectory_edit import brake_along_path
         from ego_speed_schedule import generate
         from edit_feedback import intent_checks
@@ -142,7 +142,7 @@ class ContinuityTests(unittest.TestCase):
         low=dict(parent_candidate_id='p',path_candidate_id='recorded_baseline',start_time_s=4.,deceleration_mps2=.5,target_speed_mps=0.,motion_intent='forward_stop',end_behavior='hold')
         px,pa,parent=brake_along_path(t,xy,yaw,xy,yaw,low,3.,with_details=True)
         lookup=lambda key:(xy,yaw) if key=='recorded_baseline' else (px,pa)
-        op=dict(parent_candidate_id='p',operation='retime_braking',braking_start_shift_s=-.5,preserve='stop_position',reason='Earlier inherited braking')
+        op=dict(parent_candidate_id='p',operation='stop_at_position',start_time_s=3.5,stop_target='parent_stop_position',reason='Start braking earlier while keeping the actual stop')
         out,angles,curve=generate(t,lookup,op,3.,parent_curve=parent,acceptance=self.policy)
         self.assertTrue(intent_checks(curve)['passed']);self.assertLess(np.linalg.norm(out[-1]-px[-1]),1e-4)
 

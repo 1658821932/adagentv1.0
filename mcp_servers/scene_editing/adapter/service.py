@@ -9,13 +9,14 @@ from pydantic import ValidationError
 from api_config import get_profile
 from mcp_servers.process import run_logged
 from mcp_servers.runtime import current_run, runtime_task, write_json
-from .config import PROJECT_ROOT, stage_command, public_pipeline_root
+from .config import PROJECT_ROOT, llm_profile_name, stage_command, public_pipeline_root
 from .schemas import AttackInput, AttackOutput, EgoInput, EgoOutput, AttackRefusal, DefenseNotFound
 
 class EditingError(RuntimeError):
-    def __init__(self, code, message):
+    def __init__(self, code, message, **details):
         super().__init__(message)
         self.code = code
+        self.details = details
 
 
 def _file(value):
@@ -127,14 +128,42 @@ def _validate_ego(data, result, task):
     return result.model_dump()
 
 
-def backend_api_env(command, environment):
+def backend_api_env(command, environment, component="attack_editor"):
     """Inject project credentials only into the bundled backend, never persist them."""
     result = dict(environment)
     backend = Path(__file__).resolve().parents[1] / 'core/adversarial/editing_backend.py'
     if any(Path(part).resolve() == backend for part in command):
-        profile = get_profile('kimi', require_key=True)
+        public_root = public_pipeline_root()
+        # Clear inherited values: this path is owned exclusively by the adapter.
+        result.pop('ADVERSARIAL_FULL_PIPELINE_ROOT', None)
+        if public_root is not None:
+            result['ADVERSARIAL_FULL_PIPELINE_ROOT'] = str(public_root)
+        from common.api_profiles import effort_for, profile_argument
+        profile = get_profile(profile_argument(component), require_key=True)
+        # A tool-level thinking level pins this editor; otherwise the global value applies.
+        tool_effort = effort_for(component)
+        if tool_effort and profile.get('request_dialect'):
+            from common.api_profiles import DEFAULT as _follow
+            level_to_effort = {'thinking': {'low': 'low', 'medium': 'high', 'high': 'max'},
+                               'qwen': {'low': 'low', 'medium': 'medium', 'high': 'xhigh'},
+                               'kimi': {'low': 'low', 'medium': 'high', 'high': 'max'}}
+            mapped = level_to_effort.get(profile['request_dialect'], {}).get(tool_effort)
+            if mapped:
+                profile = dict(profile, reasoning_effort=mapped)
+        result.pop('ADVERSARIAL_REQUIRED_TOOL_THINKING', None)
+        if profile.get('required_tool_thinking'):
+            result['ADVERSARIAL_REQUIRED_TOOL_THINKING'] = profile['required_tool_thinking']
+        result.pop('ADVERSARIAL_IMAGE_TOOL_CHOICE', None)
+        if profile.get('image_tool_choice'):
+            result['ADVERSARIAL_IMAGE_TOOL_CHOICE'] = profile['image_tool_choice']
         result.update(ADVERSARIAL_API_KEY=profile['api_key'],
-                      ADVERSARIAL_API_BASE_URL=profile['base_url'], ADVERSARIAL_API_MODEL=profile['model'])
+                      ADVERSARIAL_API_BASE_URL=profile['base_url'], ADVERSARIAL_API_MODEL=profile['model'],
+                      ADVERSARIAL_API_TIMEOUT=str(profile['timeout']),
+                      ADVERSARIAL_API_MAX_TOKENS=str(profile['max_tokens']))
+        for field, name in [('reasoning_effort','ADVERSARIAL_REASONING_EFFORT'), ('request_dialect','ADVERSARIAL_REQUEST_DIALECT'), ('thinking_mode','ADVERSARIAL_THINKING_MODE'), ('tool_choice_policy','ADVERSARIAL_TOOL_CHOICE_POLICY')]:
+            result.pop(name, None)
+            if profile.get(field):
+                result[name] = str(profile[field])
     return result
 
 
@@ -158,7 +187,7 @@ def _execute(stage, arguments):
     payload = {"schema_version":"editing_stage.v1", "stage":stage,
                "arguments":data.model_dump(), "output_dir":str(task.output)}
     write_json(task.input / "stage_request.json",payload)
-    completed = run_logged(command,cwd=PROJECT_ROOT,env=backend_api_env(command, task.child_env()),input=json.dumps(payload,ensure_ascii=False),json_stdout=True,log_path=task.logs/"backend.log",timeout=data.timeout)
+    completed = run_logged(command,cwd=PROJECT_ROOT,env=backend_api_env(command, task.child_env(), "attack_editor" if stage=="attack_editing" else "ego_editor"),input=json.dumps(payload,ensure_ascii=False),json_stdout=True,log_path=task.logs/"backend.log",timeout=data.timeout)
     try:
         current_frames = _timeline(input_frames)
     except EditingError as error:
@@ -185,7 +214,17 @@ def _execute(stage, arguments):
                 _inside(path, task.output)
             return business.model_dump()
         if result.get("status") == "backend_error":
-            raise EditingError("editing_execution_failed", f"Backend execution failed ({result.get('error_type', 'unknown')}); see stage_response.json and backend.log")
+            error_code = ('editing_configuration_error' if result.get('error_code') == 'editing_configuration_error'
+                          else 'editing_execution_failed')
+            details = dict(backend_error_type=result.get('error_type', 'unknown'),
+                failure_stage=result.get('failure_stage', 'execution'),
+                run_dir=str(task.root), log_path=str(task.logs/'stage_response.json'))
+            for key in ('retryable', 'error_details', 'recovery_hint'):
+                if key in result:
+                    details[key] = result[key]
+            reason = str(result.get('error') or 'No backend error detail')[:600]
+            raise EditingError(error_code,
+                f"Backend execution failed ({details['backend_error_type']}): {reason}; see {task.logs/'stage_response.json'}", **details)
         if result.get("status") != "completed":
             raise EditingError("editing_not_completed", f"Backend did not submit a candidate: {result.get('status')}; see stage_response.json")
         result["mode"], result["run_dir"] = "real", str(task.root)

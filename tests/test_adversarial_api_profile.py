@@ -19,7 +19,7 @@ def test_adapter_injects_project_profile(monkeypatch):
     calls=[]
     def get_profile(name, *, require_key):
         calls.append((name,require_key))
-        return dict(api_key='test-project-secret',base_url='https://example.invalid/v1',model='test-model')
+        return dict(api_key='test-project-secret',base_url='https://example.invalid/v1',model='test-model',timeout=600,max_tokens=8192)
     monkeypatch.setattr(service,'get_profile',get_profile)
     env={'ADVERSARIAL_API_KEY':'stale-key','CARLA_GS_LLM_CONFIG':'/unused/old-profile'}
     injected=service.backend_api_env(['python',str(CORE/'editing_backend.py')],env)
@@ -28,7 +28,7 @@ def test_adapter_injects_project_profile(monkeypatch):
     assert injected['ADVERSARIAL_API_MODEL']=='test-model'
     assert env['ADVERSARIAL_API_KEY']=='stale-key'
     for key,value in injected.items():monkeypatch.setenv(key,value)
-    assert loader()()==dict(api_key='test-project-secret',base_url='https://example.invalid/v1',model='test-model')
+    assert loader()()==dict(api_key='test-project-secret',base_url='https://example.invalid/v1',model='test-model',timeout=600,max_tokens=8192)
 
 
 def test_external_backend_does_not_require_project_credentials(monkeypatch):
@@ -37,9 +37,47 @@ def test_external_backend_does_not_require_project_credentials(monkeypatch):
     assert service.backend_api_env(['custom-backend'],{'VALUE':'test'})=={'VALUE':'test'}
 
 
+@pytest.mark.parametrize('choice',[None,'auto','required'])
+def test_image_transport_capability_is_injected_and_stale_values_are_cleared(monkeypatch,choice):
+    profile=dict(api_key='fake-test-key',base_url='https://example.invalid/v1',model='test',timeout=240,max_tokens=8192)
+    if choice is not None:profile['image_tool_choice']=choice
+    monkeypatch.setattr(service,'get_profile',lambda *a,**kw:profile)
+    env=service.backend_api_env(['python',str(CORE/'editing_backend.py')],{'ADVERSARIAL_IMAGE_TOOL_CHOICE':'auto'})
+    assert env.get('ADVERSARIAL_IMAGE_TOOL_CHOICE')==choice
+    for key in ['ADVERSARIAL_API_KEY','ADVERSARIAL_API_BASE_URL','ADVERSARIAL_API_MODEL']:
+        monkeypatch.setenv(key,env[key])
+    if choice is None:monkeypatch.delenv('ADVERSARIAL_IMAGE_TOOL_CHOICE',raising=False)
+    else:monkeypatch.setenv('ADVERSARIAL_IMAGE_TOOL_CHOICE',choice)
+    assert loader()().get('image_tool_choice')==choice
+
+
 def test_core_does_not_fall_back_to_old_profile(monkeypatch):
     for key in ['ADVERSARIAL_API_KEY','ADVERSARIAL_API_BASE_URL','ADVERSARIAL_API_MODEL']:
         monkeypatch.delenv(key,raising=False)
     monkeypatch.setenv('CARLA_GS_LLM_CONFIG','/unused/old-profile')
     with pytest.raises(RuntimeError,match='host adapter'):
         loader()()
+
+
+def test_public_output_path_is_owned_by_adapter(monkeypatch, tmp_path):
+    monkeypatch.setattr(service, 'get_profile', lambda *a, **k: dict(
+        api_key='test',base_url='https://example.invalid/v1',model='test',timeout=600,max_tokens=8192))
+    root = tmp_path / 'public'
+    monkeypatch.setattr(service, 'public_pipeline_root', lambda: root)
+    env = {'ADVERSARIAL_FULL_PIPELINE_ROOT': '/stale'}
+    child = service.backend_api_env(['python',str(CORE/'editing_backend.py')],env)
+    assert child['ADVERSARIAL_FULL_PIPELINE_ROOT'] == str(root)
+    assert env['ADVERSARIAL_FULL_PIPELINE_ROOT'] == '/stale'
+    monkeypatch.setattr(service, 'public_pipeline_root', lambda: None)
+    child = service.backend_api_env(['python',str(CORE/'editing_backend.py')],env)
+    assert 'ADVERSARIAL_FULL_PIPELINE_ROOT' not in child
+    assert service.backend_api_env(['custom-backend'],env) == env
+
+
+def test_public_output_relative_path_uses_project_root(monkeypatch, tmp_path):
+    from mcp_servers.scene_editing.adapter import config
+    monkeypatch.setattr(config, 'PROJECT_ROOT', tmp_path)
+    monkeypatch.setattr(config, 'settings', lambda *a: {'public_pipeline_root':'outputs/rendered'})
+    assert config.public_pipeline_root() == tmp_path / 'outputs/rendered'
+    monkeypatch.setattr(config, 'settings', lambda *a: {})
+    assert config.public_pipeline_root() is None

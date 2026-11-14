@@ -92,3 +92,13 @@ mcp_servers/worldengine/core/logs/
 /docs/private/
 *.bak
 mcp_servers/worldengine_failure_analysis/core/configs/complete.json
+
+# Local repair backups and generated frontend caches
+/.backup_*/
+/frontend/.cache/
+
+# Local audit notes and manual retrieval benchmarks
+/docs/REVIEW_20261114.md
+/test_pipeline.py
+/test_rerank_parallel.py
+/.worktrees/

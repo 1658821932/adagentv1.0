@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from evidence import POSITIONS, save
 from prompt_utils import load_prompt
+from common.llm_audit import RequestAudit
 
 SYSTEM = load_prompt("forensic_analysis.md")
 IMAGE_SYSTEM = load_prompt("image_review.md")
@@ -19,36 +20,49 @@ class Client:
         self.secret,self.out=secret,out
 
     def ask(self,messages,name):
-        payload={'model':self.secret['model'],'thinking':{'type':'disabled'},'max_tokens':1800,'messages':messages}
+        payload={'model':self.secret['model'],'max_tokens':self.secret['max_tokens'],'messages':messages}
+        # Kimi K3 cannot disable thinking, so a hardcoded "disabled" was inert there
+        # and the call silently used the provider default. Send the level instead.
+        if self.secret.get('reasoning_effort'):
+            payload['reasoning_effort']=self.secret['reasoning_effort']
+        dialect=self.secret.get('request_dialect')
+        if dialect=='qwen':
+            payload['enable_thinking']=self.secret.get('thinking_mode')=='enabled'
+        elif dialect=='thinking':
+            payload['thinking']={'type':self.secret.get('thinking_mode') or 'enabled'}
+        elif not dialect:
+            payload['thinking']={'type':'disabled'}
         encoded=json.dumps(payload,ensure_ascii=False).encode()
-        save(self.out/(name+'_request.json'),{'sha256':hashlib.sha256(encoded).hexdigest(),'model':self.secret['model']})
-        attempts=[]
-        for attempt in range(2):
+        for attempt in range(3):
             started=time.monotonic()
+            audit=RequestAudit(payload,endpoint=self.secret['endpoint'],label=f'{name}/attempt_{attempt+1}',
+                               secrets=[self.secret['api_key']])
+            raw=None
             try:
                 request=urllib.request.Request(self.secret['endpoint'],data=encoded,
                     headers={'Authorization':'Bearer '+self.secret['api_key'],'Content-Type':'application/json'})
-                with urllib.request.urlopen(request,timeout=30) as response:raw=json.load(response)
-                save(self.out/(name+'_raw.json'),raw)
+                with urllib.request.urlopen(request,timeout=self.secret['timeout']) as response:
+                    audit.first_response()
+                    raw=json.load(response)
+                audit.finish(response=raw,usage=raw.get('usage'))
                 choice=raw['choices'][0]
                 if choice.get('finish_reason')=='length':raise ValueError('Truncated model response')
                 text=choice['message']['content'].strip()
                 if text.startswith('```'):text='\n'.join(text.splitlines()[1:-1])
                 answer=json.loads(text)
                 if not isinstance(answer,dict):raise ValueError('Expected JSON object')
-                attempts.append({'state':'completed','seconds':round(time.monotonic()-started,2),'usage':raw.get('usage')})
-                save(self.out/(name+'.json'),answer)
-                print('VLM',name,attempts[-1]['seconds'],'seconds',flush=True)
+                print('VLM',name,round(time.monotonic()-started,2),'seconds',flush=True)
                 return answer
             except (TimeoutError,socket.timeout,urllib.error.URLError) as exc:
-                attempts.append({'state':'failed','seconds':round(time.monotonic()-started,2),'error_type':type(exc).__name__})
+                if raw is None:
+                    audit.finish(error=exc,http_status=getattr(exc,'code',None))
                 retryable=not isinstance(exc,urllib.error.HTTPError) or exc.code in (429,500,502,503,504)
-                if attempt or not retryable:raise
-            except Exception as exc:
-                attempts.append({'state':'failed','seconds':round(time.monotonic()-started,2),'error_type':type(exc).__name__})
+                if attempt==2 or not retryable:raise
+                time.sleep(2*(attempt+1))
+            except BaseException as exc:
+                if raw is None:
+                    audit.finish(error=exc)
                 raise
-            finally:
-                save(self.out/(name+'_status.json'),attempts)
 
 
 def inspect_images(client,evidence,images,purpose,name,workers):
@@ -84,9 +98,16 @@ def validate_final(action,candidates,numeric_ids,image_ids=frozenset()):
     if chosen is None and action['reason_category']!='待确认':raise ValueError('No supported selection must be 待确认')
 
 
-def run(client,evidence,official,out,max_turns=12,workers=2):
-    initial=[evidence.images[f'I_overview_{i:02d}'] for i in range(12)]
-    overview=inspect_images(client,evidence,initial,'整体12个时刻，逐组观察', 'overview',workers)
+def run(client,evidence,official,out,max_turns=6,workers=4):
+    # 只送关键帧：开头、首次违规前后、结尾
+    try:
+        viol=int(float((official or {}).get('metrics',{}).get('first_violation_step') or 11))
+    except Exception:
+        viol=11
+    picked={0,5,11,max(0,viol-1),viol,min(11,viol+1)}
+    steps_used=sorted(s for s in picked if 0<=s<=11)
+    initial=[evidence.images[f'I_overview_{i:02d}'] for i in steps_used]
+    overview=inspect_images(client,evidence,initial,'关键帧逐组观察：%s' % steps_used,'overview',workers)
     contract={'official_evidence':{'id':'E0','metrics':official['metrics'],'source':official['source'],'sha256':official['source_sha256']},
        'layout':POSITIONS,'layout_note':'3x3布局，中央空白；八相机无旧BEV','overview_observations':overview,
        'numeric_tools':{'ego':'自车速度、纵向加速度、位置、朝向','actors':'对象ID、相对位置、几何间距、世界速度及速度变化；可选track_token、nearest',
@@ -98,9 +119,8 @@ def run(client,evidence,official,out,max_turns=12,workers=2):
           'final':{'action':'final','observations':['核验后现象'],'candidate_assessment':[{'id':'A','verdict':'supported/rejected/uncertain','evidence_ids':['E1'],'explanation':{'required_observation':'回答该候选needs_evidence，需要何种观测才能支持或直接否定','actual_observation':'实际证据中的相关观测；无直接反证不能rejected','missing_evidence':'尚缺什么，缺少关键证据则uncertain；确无缺失才写无'}}],
                    'selected_candidate_id':'支持最强的候选id；不能确定则null','failure_reason':'一句驾驶行为原因','reason_category':'简短可汇总的行为类别；不能确定则待确认','uncertainty':'仍不确定之处'}},
        'phase':'visual_review'}
-    save(out/'context.json',{'system_prompt':SYSTEM,**contract})
     history=[{'role':'system','content':SYSTEM},{'role':'user','content':json.dumps(contract,ensure_ascii=False)}]
-    candidates={};numeric_ids=set();image_ids={im['id'] for im in initial};trace=[]
+    candidates={};numeric_ids=set();image_ids={im['id'] for im in initial}
     for turn in range(max_turns):
         action=client.ask(history,f'turn_{turn:02d}')
         print('ACTION',turn,action.get('action'),flush=True)
@@ -116,7 +136,7 @@ def run(client,evidence,official,out,max_turns=12,workers=2):
                 if not action.get('observations') or not isinstance(items,list) or not items or any(not c.get('id') or not c.get('reason') for c in items):
                     raise ValueError('Provide observations and candidates with unique ids and reasons')
                 if len({c['id'] for c in items})!=len(items):raise ValueError('Duplicate candidate id')
-                candidates={c['id']:c for c in items};save(out/'visual_hypotheses.json',action)
+                candidates={c['id']:c for c in items}
                 response={'state':'numeric_verification','instruction':'现在主动请求数值，逐项核验候选。必要时仍可补图。'}
             elif kind=='numbers':
                 if not candidates:raise ValueError('Finish visual observations and candidates first')
@@ -127,19 +147,16 @@ def run(client,evidence,official,out,max_turns=12,workers=2):
                     try:
                         value=evidence.query(query);identifier=f'E{len(numeric_ids)+1}'
                         value={'id':identifier,**value};numeric_ids.add(identifier)
-                        save(out/(identifier+'.json'),value);returned.append(value)
+                        returned.append(value)
                     except (ValueError,KeyError,TypeError) as exc:returned.append({'request':query,'tool_error':str(exc)})
                 response={'evidence':returned}
             elif kind=='final':
                 validate_final(action,candidates,numeric_ids,image_ids)
                 result={**action,'token':evidence.row['token'],'status':'supported' if action['selected_candidate_id'] is not None else 'undetermined',
                         'analysis_level':'driving_behavior','source':'external_vlm','visual_review_reused':False}
-                save(out/'result.json',result)
-                trace.append({'action':action,'response':{'state':'completed'}});save(out/'trace.json',trace)
                 return result
             else:raise ValueError('Unknown action')
         except (ValueError,KeyError,TypeError,AttributeError,IndexError) as exc:
             response={'tool_error':str(exc),'instruction':'修正请求或补充证据，不要跳过核验。'}
-        trace.append({'action':action,'response':response});save(out/'trace.json',trace)
         history.append({'role':'user','content':json.dumps(response,ensure_ascii=False)})
     raise RuntimeError('Turn budget exhausted before an evidence-backed final answer; analysis incomplete')

@@ -44,13 +44,44 @@ def test_recursive_rank_removal_preserves_candidate_order_checks_and_explicit_se
     assert view['last_tool_result']['new_constraint_failures']==['motion']
 
 
-def test_compaction_keeps_temporal_curves_for_every_candidate_without_recommendations():
+def test_compaction_keeps_periods_for_all_and_curves_for_active_comparison_only():
     evidence=temporal_evidence([0.,3.,4.],[[0.,0.],[1.,0.],[1.,0.]],[5.,6.,7.],3.)
-    result=compact_context(dict(candidate_order_note='generation order',candidate_catalog=[
+    result=compact_context(dict(candidate_order_note='generation order',selected_initial_candidate_id='z',candidate_catalog=[
         dict(candidate_id='z',status='reference_screen_passed',**evidence),
         dict(candidate_id='a',status='reference_screen_failed',failed_checks=['target_clearance'],**evidence)]))
     rows=[dict(zip(result['candidate_catalog']['columns'],r)) for r in result['candidate_catalog']['rows']]
     assert [r['candidate_id'] for r in rows]==['z','a']
-    assert all(r['motion_timeline']==evidence['motion_timeline'] for r in rows)
+    assert all('motion_timeline' not in r for r in rows)
+    assert result['active_candidate_details']['z']['motion_timeline']==evidence['motion_timeline']
     assert all(r['clearance_periods']==evidence['clearance_periods'] for r in rows)
     assert 'numerical best' not in result['context_policy']
+
+
+def test_generation_feedback_references_catalog_without_repeating_public_candidate():
+    row=dict(candidate_id='new',status='reference_screen_failed',failed_checks=['road'],
+             coverage=dict(road='failed',no_cross_lines='unknown'))
+    result=compact_context(dict(candidate_catalog=[row],latest_generated_candidate_id='new',
+        last_tool_result=dict(status='candidates_generated',candidates=[dict(row,speed_target_feedback=dict(targets_met=False))],failures=['optimizer timed out'])))
+    assert result['last_tool_result']['candidates']==[dict(candidate_id='new',evidence='candidate_catalog',speed_target_feedback=dict(targets_met=False))]
+    assert result['last_tool_result']['failures']==['optimizer timed out']
+    table=result['candidate_catalog'];record=dict(zip(table['columns'],table['rows'][0]))
+    assert record['failed_checks']==['road'] and record['unknown_checks']==['no_cross_lines']
+    assert result['active_candidate_details']['new']['summary_evidence']=='candidate_catalog'
+
+
+def test_percentage_display_does_not_remove_progress_from_legacy_non_behavior_runs():
+    from mcp_servers.scene_editing.core.adversarial.ego_context_view import candidate_summary
+    legacy=dict(candidate_id='old',progress_ratio_of_recorded=.6)
+    assert candidate_summary(legacy)['progress_ratio_of_recorded']==.6
+    modern=dict(legacy,behavior_metrics=dict(reference_progress_percent=47.5))
+    assert 'progress_ratio_of_recorded' not in candidate_summary(modern)
+
+
+def test_inspecting_another_candidate_expands_its_curves_without_changing_edit_parent():
+    evidence=temporal_evidence([0.,3.,4.],[[0.,0.],[1.,0.],[1.,0.]],[5.,6.,7.],3.)
+    rows=[dict(candidate_id=cid,status='reference_screen_passed',**evidence) for cid in ('fallback','another','unused')]
+    context=dict(candidate_catalog=rows,current_edit_parent_id='fallback',inspection_candidate_ids=['another'])
+    result=compact_context(context)
+    assert set(result['active_candidate_details'])=={'fallback','another'}
+    assert result['active_candidate_details']['another']['motion_timeline']==evidence['motion_timeline']
+    assert result['current_edit_parent_id']=='fallback'

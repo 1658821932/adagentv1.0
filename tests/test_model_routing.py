@@ -6,14 +6,25 @@ from types import SimpleNamespace
 import pytest
 
 @pytest.fixture
-def model_environment(monkeypatch):
+def root_config_environment(monkeypatch,tmp_path):
     for key in ['OPENAI_MODEL','LLM_MODEL','OPENAI_BASE_URL','LLM_BASE_URL']:
         monkeypatch.delenv(key,raising=False)
     monkeypatch.setenv('OPENAI_API_KEY','test-kimi-key')
     monkeypatch.setenv('DASHSCOPE_API_KEY','test-retrieval-key')
     import api_config
+    profiles=json.loads(api_config.API_CONFIG_PATH.read_text())
+    profiles['active_profile']='kimi'
+    config=tmp_path/'routing-api.json';config.write_text(json.dumps(profiles))
+    monkeypatch.setattr(api_config,'API_CONFIG_PATH',config)
+    with patch('dotenv.load_dotenv'):
+        yield
+
+
+@pytest.fixture
+def model_environment(root_config_environment):
+    import api_config
     from mcp_servers.sentry_video_search.core.api_settings import bind_profiles
-    with patch('dotenv.load_dotenv'), bind_profiles(api_config.get_profile):
+    with bind_profiles(api_config.get_profile):
         yield
 
 @pytest.mark.parametrize('kind',['search_plan','precheck','first_person'])
@@ -59,14 +70,15 @@ def test_reasoning_cannot_borrow_retrieval_key(monkeypatch):
 
 def test_effective_agent_defaults_to_kimi(model_environment):
     from agent.llm_client import LLMClient
-    with patch.dict('sys.modules', {'openai':SimpleNamespace(OpenAI=Mock())}):
+    with patch.dict('sys.modules', {'openai':SimpleNamespace(OpenAI=Mock(), Timeout=Mock())}):
         assert LLMClient().model=='kimi-k3'
 
 @pytest.fixture
-def root_profile_override(tmp_path,monkeypatch):
+def root_profile_override(tmp_path,monkeypatch,root_config_environment):
     import api_config
     profiles=json.loads(api_config.API_CONFIG_PATH.read_text())
-    profiles['kimi'].update(model='root-test-model',base_url='https://root.invalid/v1',api_key_env='ROOT_TEST_KEY')
+    profiles['active_profile']='kimi'
+    profiles['kimi'].update(model='root-test-model',base_url='https://root.invalid/v1',api_key_env='ROOT_TEST_KEY',timeout=600,max_tokens=8192)
     profiles['retrieval'].update(api_key_env='ROOT_RETRIEVAL_KEY',embedding_model='root-embedding',embedding_url='https://embedding.invalid/api',embedding_dimensions=3,rerank_model='root-rerank',rerank_url='https://rerank.invalid/api')
     path=tmp_path/'api.json';path.write_text(json.dumps(profiles))
     monkeypatch.setattr(api_config,'API_CONFIG_PATH',path)
@@ -79,14 +91,14 @@ def test_one_root_profile_controls_all_reasoning_clients(model_environment,root_
     import api_config
     from agent.llm_client import LLMClient
     from mcp_servers.sentry_video_search.core.pipeline.common import model_settings
-    with patch.dict('sys.modules',{'openai':SimpleNamespace(OpenAI=Mock())}):
+    with patch.dict('sys.modules',{'openai':SimpleNamespace(OpenAI=Mock(), Timeout=Mock())}):
         client=LLMClient()
     for config in [dict(model=client.model,base_url=client.base_url,api_key=client.api_key)]:
         assert config['model']=='root-test-model'
         assert config['base_url']=='https://root.invalid/v1'
         assert config['api_key']=='root-kimi-key'
     assert model_settings()==('root-test-model','https://root.invalid/v1','root-kimi-key')
-    assert api_config.wfa_settings()=={'endpoint':'https://root.invalid/v1/chat/completions','model':'root-test-model','api_key':'root-kimi-key'}
+    assert api_config.wfa_settings()=={'endpoint':'https://root.invalid/v1/chat/completions','model':'root-test-model','api_key':'root-kimi-key','timeout':600,'max_tokens':8192}
     assert 'api_key' not in api_config.get_profile('kimi')
 
 

@@ -139,11 +139,11 @@ def apply_point_edits(times, parent_xy, parent_yaw, points):
     return xy, parent_yaw+offsets[:, 2]
 
 
-def apply_candidate_repair(times, parent_xy, parent_yaw, target_xy, target_yaw, ratio, window_s=None):
+def apply_candidate_repair(times, parent_xy, parent_yaw, target_xy, target_yaw, ratio, window_s=None, edit_start_s=3.):
     """Interpolate a proposal toward a target while retaining the initial pose."""
     if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not math.isfinite(ratio) or not 0 < ratio <= 1:
         raise ValueError('ratio must be finite in (0,1]')
-    weight = float(ratio)*smoothstep((times-3.)/1.0)
+    weight = float(ratio)*smoothstep((times-edit_start_s)/1.0)
     if window_s is not None:
         if not isinstance(window_s, (list, tuple)) or len(window_s) != 2 or any(
                 isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in window_s):
@@ -179,7 +179,7 @@ class EgoEditor:
         saved_policy = source.get('acceptance_policy')
         self.effective_policy = policy.resolve(saved_policy) if saved_policy and 'profile' in saved_policy else policy.resolve()
         if not saved_policy or 'profile' not in saved_policy:
-            self.effective_policy.update(official_margin_m=official_min_margin_m, allow_safe_stop=bool(source.get('allow_safe_stop', False)), minimum_progress_fraction=.5)
+            self.effective_policy.update(official_margin_m=official_min_margin_m, allow_safe_stop=bool(source.get('allow_safe_stop', False)))
         self.official_min_margin_m = self.effective_policy['official_margin_m']
         self.allow_safe_stop = self.effective_policy['allow_safe_stop']
         if source.get('road_source') == 'official_union':
@@ -202,7 +202,7 @@ class EgoEditor:
             if record.get('operation') is not None:
                 from ego_trajectory_edit import verify_braking_candidate
                 curve = verify_braking_candidate(self.times,self.baseline_xy,self.baseline_yaw,
-                    xy,yaw,record['operation'],self.effective_policy['observation_end_s'])
+                    xy,yaw,record['operation'],policy.edit_start(self.effective_policy))
                 if curve != record['generation_curve']:
                     raise ValueError('Constructor curve evidence differs from recomputation')
                 apply_curve_checks(result,curve)
@@ -240,7 +240,7 @@ class EgoEditor:
                                            math.cos(yaw[0]-parent['yaw'][0]))
                 if np.linalg.norm(xy[0]-parent['xy'][0]) > 1e-8 or abs(heading_delta) > 1e-8:
                     raise ValueError('FOCI candidate changes the parent initial pose')
-                if config.get('version') in ('ego_foci_probe.v5','ego_foci_probe.v6','ego_foci_probe.v7','ego_foci_probe.v8'):
+                if config.get('version') in ('ego_foci_probe.v5','ego_foci_probe.v6','ego_foci_probe.v7','ego_foci_probe.v8','ego_foci_probe.v9'):
                     from run_ego_foci_probe import verify_candidate
                     verify_candidate(self.foci_run,candidate_id,input_dir=self.input_dir,target_track=self.target_track,
                         acceptance=self.effective_policy,times=self.times,actors=self.actors,
@@ -301,7 +301,7 @@ class EgoEditor:
                     expected_xy,expected_yaw=self._foci_arrays(edit)
                 else:
                     target = self.nodes[edit['target_candidate_id']]
-                    expected_xy, expected_yaw = apply_candidate_repair(self.times, parent['xy'], parent['yaw'], target['xy'], target['yaw'], edit['ratio'], edit.get('window_s'))
+                    expected_xy, expected_yaw = apply_candidate_repair(self.times, parent['xy'], parent['yaw'], target['xy'], target['yaw'], edit['ratio'], edit.get('window_s'),edit_start_s=policy.edit_start(self.effective_policy))
             else:
                 operation = {key:edit[key] for key in ('mode','start_index','amount','duration_s','reason')}
                 expected_xy = expected_yaw = None
@@ -426,7 +426,7 @@ class EgoEditor:
         public = dict(candidate_id=candidate_id, parent_id=node['parent_id'], source=(operation or {}).get('generation_source',node['source']),
             motion_evidence={key:value for key,value in motion_evidence(self.times, node['xy'], node['yaw']).items() if key != 'signed_speed_mps'},
             motion_intent=result.get('motion_intent'), generation_curve=({key:value for key,value in result['generation_curve'].items() if key not in {'continuous_state','speed_route'}} if result.get('generation_curve') else None),
-            actual_default_start_state=start_state(self.times,node['xy'],node['yaw'],self.effective_policy['observation_end_s']),
+            actual_default_start_state=start_state(self.times,node['xy'],node['yaw'],policy.edit_start(self.effective_policy)),
             collision_geometry=overlap_summary(self.times,analysis.get('intersection_area',np.zeros(len(self.times)))),
             operation=operation, status=result['status'],
             submit_status=result.get('submit_status'), coverage=result.get('coverage'),
@@ -457,7 +457,7 @@ class EgoEditor:
             from defense_candidate_view import temporal_evidence
             public.update(temporal_evidence(self.times,node['xy'],analysis['clearance'],
                 self.effective_policy['observation_end_s'],self.baseline_analysis['overlaps'],
-                self.effective_policy['stop_speed_mps']))
+                self.effective_policy['stop_speed_mps'],edit_start_s=policy.edit_start(self.effective_policy)))
         if getattr(self,'behavior_enabled',False):
             from defense_behavior import DrivingObjective,agent_evidence
             if not hasattr(self,'driving_objective'):
@@ -556,7 +556,7 @@ class EgoEditor:
             return xy,yaw,None
         if mode not in ('speed_profile','speed_schedule','route_edit') and arguments.get('motion_intent') not in ('unrestricted', 'forward_stop', 'forward', 'reverse'):
             raise ValueError('New editing modes require explicit motion_intent')
-        boundary = self.effective_policy['observation_end_s']
+        boundary = policy.edit_start(self.effective_policy)
         if mode in ('path_progress','set_offsets','replace_positions','brake_profile','speed_profile','speed_schedule','route_edit'):
             return modern_edit(self.times,self._reference_arrays,arguments,boundary,parent_curve=parent['result'].get('generation_curve'),acceptance=self.effective_policy)
         raise ValueError('Unknown edit_mode')
@@ -606,7 +606,7 @@ class EgoEditor:
                 xy,yaw = self._foci_arrays(arguments)
             elif mode == 'repair':
                 target = self.nodes[arguments['target_candidate_id']]
-                xy, yaw = apply_candidate_repair(self.times, parent['xy'], parent['yaw'], target['xy'], target['yaw'], arguments['ratio'], arguments.get('window_s'))
+                xy, yaw = apply_candidate_repair(self.times, parent['xy'], parent['yaw'], target['xy'], target['yaw'], arguments['ratio'], arguments.get('window_s'),edit_start_s=policy.edit_start(self.effective_policy))
             else:
                 xy, yaw = apply_parent_edit(self.times, parent['xy'], parent['yaw'], mode,
                     arguments['start_index'], arguments['amount'], arguments['duration_s'])
@@ -617,20 +617,20 @@ class EgoEditor:
         except (KeyError, TypeError, ValueError) as error:
             if arguments.get('edit_mode') in ('speed_schedule','route_edit'):
                 from edit_feedback import failure_feedback
-                feedback=failure_feedback(error,arguments,self.effective_policy['observation_end_s'],float(self.times[-1]))
+                feedback=failure_feedback(error,arguments,policy.edit_start(self.effective_policy),float(self.times[-1]))
                 if feedback is not None:return feedback
             message=str(error)[:500]
             hints={}
             if arguments.get('mode')!='point_edit':
                 hints=self._parameter_hints(parent_id,arguments.get('mode'),arguments.get('duration_s'))
             else:
-                time=arguments.get('start_time_s',arguments.get('window_s',[self.effective_policy['observation_end_s']])[0])
+                time=arguments.get('start_time_s',arguments.get('window_s',[policy.edit_start(self.effective_policy)])[0])
                 if type(time) in (int,float) and math.isfinite(time):
                     hints['actual_start_state']=inherited_brake_state(self.times,parent['xy'],parent['yaw'],time,parent['result'].get('generation_curve'))
                 hints.update(available_reference_ids=['recorded_baseline',*self.nodes],
-                    next_action='For speed changes use edit_speed_profile. set_speed_targets supports braking, waiting, restarting and declared reverse; retime_braking preserves a stated stopping target. Keep parent route for tail repair; recorded_baseline permits checked original-route continuation. A preview spends no candidate slot. Change the deadline/start/cap indicated by the error; do not infer global infeasibility.')
+                    next_action='For speed changes use edit_speed_profile. set_speed_targets supports braking, waiting, restarting and declared reverse; stop_at_position takes an absolute start and inherits a verified parent stopping position; stop time and braking are calculated. Keep parent route for tail repair; recorded_baseline permits checked original-route continuation. A preview spends no candidate slot. Change the deadline/start/cap indicated by the error; do not infer global infeasibility.')
             goal_failure=arguments.get('edit_mode') in ('speed_profile','speed_schedule','route_edit') and any(label in message for label in
-                ('target_unreachable:','route_exhausted:','route_unavailable:','retiming_unavailable:','state_incompatible:','direction_change_requires_stop:','no extrapolation','available reference path'))
+                ('target_unreachable:','route_exhausted:','route_unavailable:','stop_position_unavailable:','stop_position_off_route:','state_incompatible:','direction_change_requires_stop:','no extrapolation','available reference path'))
             error_summary=None
             if arguments.get('edit_mode')=='route_edit':
                 error_summary='The lateral maneuver could not fit the selected route, available speed or time window. Reduce offset, allow more transition time, or explicitly choose preserve_progress; check the measured failure before retrying.'
@@ -643,8 +643,6 @@ class EgoEditor:
                     error_summary='The requested speed change is too fast for the allowed acceleration. Allow more time, start earlier, or reduce the speed change; see the required interval in error.'
                 elif 'direction_change_requires_stop:' in message:
                     error_summary='Add a zero-speed target before changing between forward and reverse. Add a second zero-speed target if a waiting period is intended.'
-                elif 'retiming_unavailable:' in message:
-                    error_summary='This candidate has no explicit braking segment to move. Use set_speed_targets to state the desired stop/speed times.'
             return dict(status=('preview' if arguments.get('preview_only') else 'not_feasible') if goal_failure else 'invalid',
                 error_summary=error_summary,
                 feasible=False,candidate_created=False,error=message,
@@ -753,7 +751,7 @@ class EgoEditor:
             acceptance_policy=self.effective_policy, lane_compliance=self.nodes[candidate_id]['result'].get('lane_compliance', 'unknown'), physical_avoidance='undetermined', carla_executed=False))
         self._save_state(); return dict(status='accepted', candidate_id=candidate_id, physical_avoidance='undetermined')
 
-    def model_context(self, turns_remaining, edit_candidates_remaining, last_feedback=None, pending_review_candidate_id=None):
+    def model_context(self, turns_remaining, edit_candidates_remaining, last_feedback=None, pending_review_candidate_id=None, inspection_candidate_ids=None):
         current = self._preview(self.current) if self.current else None
         best = self._preview(self.best)
         tried = {row['parent_candidate_id'] for row in self.history}
@@ -773,28 +771,28 @@ class EgoEditor:
                 target_forward_left_m=[round(value, 4) for value in self.baseline_analysis['target_forward_left'][i]],
                 recorded_ego_speed_to_next_mps=None if i == len(self.times)-1 else round(float(speed[i]), 5)))
         context = dict(pending_review_candidate_id=pending_review_candidate_id, editor_schema_version='ego_edit.v9',tool_semantics=TOOL_SEMANTICS,initial_pool_provenance=self.initial_pool_provenance,reference_path_ids=['recorded_baseline',*self.nodes],
-            reference_path_contract='recorded_baseline is the immutable recorded ego path, available to path tools but not selectable as a candidate. Other reference IDs are existing candidates. New braking/speed edits reconstruct a generated parent curve at the requested time. CSV-only parents use a reported sampled-state estimate; low-level path tools still require a matching reference. path_progress retains its sampled-state and strict matching contract.',
+            reference_path_contract='recorded_baseline is the immutable recorded ego path, not a selectable candidate. Other reference IDs are existing candidates. Speed edits inherit the actual parent state and spatial route; sampled parents use a reported estimate. Use only the exposed speed/route tool schemas.',
             ranking_scope='Numerical best ranks feasibility, maximum sampled overlap, overlap exposure and spatial deviation using 1e-6 numerical quantisation. Current is the explicit editing parent, not a ranking selection. Numerical best is not a combined comfort/progress/reverse optimum. Keep a passing fallback and compare task-relevant tradeoffs; these labels do not determine the next action.',
-            acceptance_policy=model_policy(self.effective_policy), task='Choose a maneuver from the input task and scene evidence; edit when useful within the controller constraints. No maneuver is preferred universally. FOCI candidates are precomputed, not agent edits. Compare task-relevant tradeoffs and disclose evidence gaps; reference checks do not certify physical safety, complete lawfulness or unavoidability.',
+            acceptance_policy=model_policy(self.effective_policy), task='Choose a maneuver from the input task and scene evidence; edit when useful within the controller constraints. Initial constructor/FOCI candidates are seeds; on-demand FOCI is a checked refinement. Compare actual benefits and costs and disclose evidence gaps; reference checks do not certify physical safety, complete lawfulness or unavoidability.',
             data_scope='Recorded actor observations use frame_times_s. Read acceptance_policy.max_check_step_s for configured interpolation spacing and returned road/coverage results for map checks and margins. Missing observations remain unknown; no continuous-time collision or physical certification.',
-            coordinate_convention='delta_parent offsets use parent pose frames; set_offsets uses the pose of the immutable anchor trajectory at EACH target time, not the edit-start pose. Forward is positive ahead, left positive left, yaw counterclockwise in radians. replace_positions uses scene-local x/y and absolute yaw; path_progress uses signed path arc travel from its start.',
+            coordinate_convention='Scene-local x/y in metres; ego pose is rear axle, actors use box centres. Signed speed: positive forward, negative reverse; left_offset_m is positive left along the reference route. Times are absolute scene seconds; yaw is counterclockwise radians.',
             target_track=self.target_track,
             geometry_at_edit_start=geometry_evidence(self.times,
                 self.baseline_xy if self.current is None else self.nodes[self.current]['xy'],
                 self.baseline_yaw if self.current is None else self.nodes[self.current]['yaw'],
-                self.actors,self.target_track,self.effective_policy['observation_end_s']),
-            braking_start_state=(start_state(self.times,self.baseline_xy,self.baseline_yaw,self.effective_policy['observation_end_s']) if self.current is None else inherited_brake_state(self.times,self.nodes[self.current]['xy'],self.nodes[self.current]['yaw'],self.effective_policy['observation_end_s'],self.nodes[self.current]['result'].get('generation_curve'))),
+                self.actors,self.target_track,policy.edit_start(self.effective_policy)),
+            braking_start_state=(start_state(self.times,self.baseline_xy,self.baseline_yaw,policy.edit_start(self.effective_policy)) if self.current is None else inherited_brake_state(self.times,self.nodes[self.current]['xy'],self.nodes[self.current]['yaw'],policy.edit_start(self.effective_policy),self.nodes[self.current]['result'].get('generation_curve'))),
             actual_start_state=start_state(self.times,
                 self.baseline_xy if self.current is None else self.nodes[self.current]['xy'],
-                self.baseline_yaw if self.current is None else self.nodes[self.current]['yaw'],self.effective_policy['observation_end_s']),
+                self.baseline_yaw if self.current is None else self.nodes[self.current]['yaw'],policy.edit_start(self.effective_policy)),
             progress_policy=dict(minimum_fraction=self.effective_policy['minimum_progress_fraction'],
                 allow_terminal_stop=self.allow_safe_stop, terminal_stop_duration_s=self.effective_policy['terminal_stop_duration_s'],
                 note='A null minimum fraction means progress is diagnostic only; a stop does not certify safety beyond the observed horizon.'),
             observed_window_s=[float(self.times[0]), float(self.times[-1])],
-            progress_edit_start=dict(time_s=self.effective_policy['observation_end_s'],
+            progress_edit_start=dict(time_s=policy.edit_start(self.effective_policy),
                 reference_point='ego rear axle; distances are path arc travel from start, not target/body-center gap',
-                recorded_xy_m=[float(np.interp(self.effective_policy['observation_end_s'],self.times,self.baseline_xy[:,axis])) for axis in range(2)],
-                note='New path_progress inherits the chosen parent start velocity, then fits the requested distance/time/zero final speed. Do not add a negative offset to a stopped parent to express an earlier stop.'),
+                recorded_xy_m=[float(np.interp(policy.edit_start(self.effective_policy),self.times,self.baseline_xy[:,axis])) for axis in range(2)],
+                note='Speed/route edits inherit the actual parent state at start_time_s. To change stopping location or timing, use the exposed speed operations and inspect reachability feedback.'),
             frame_times_s=[round(float(value), 6) for value in self.times],
             recorded_scene_timeline=baseline_rows,
             goal=('Use acceptance_policy and returned check results for reference-screen requirements, '
@@ -804,8 +802,8 @@ class EgoEditor:
                 'establish marking compliance. Missing evidence remains unknown and does not alone '
                 'ban lateral movement. Compare actions against the input goal without automatically '
                 'maximizing clearance, progress or score.'),
-            new_edit_modes='Use edit_speed_profile for timed signed speed states or explicit braking retiming. Positive=forward, zero=stop, negative=reverse; use an explicit zero target before direction changes. Two zero targets wait, then a positive target restarts. Original braking and speed-profile operations remain available only for archive replay. Tool feedback checks actual planar acceleration including curvature. Use edit_path_progress, set_trajectory_offsets or replace_trajectory_positions; these agent tools select the backend mode and do not accept edit_mode. path_progress uses a fixed forward reference path matching the parent start pose, inherits signed start speed and accepts timed signed distance_from_start_m/speed_mps targets; only final zero-speed hold is supported, with no extrapolation or reconnect. set_offsets adds offsets to the immutable anchor trajectory pose at each target time; offsets are NOT distance travelled from the edit start. A fixed offset still follows a moving anchor until hold begins at window end; replace_positions sets scene-local absolute targets. Both position modes inherit parent start pose/velocity over window_s: hold needs the final target at window end and freezes absolute pose afterward; reconnect needs the last target before window end and returns to parent pose/velocity there. All new modes require motion_intent and end_behavior, with target times strictly after the inherited start. Start at or after acceptance_policy.observation_end_s; do not supply a start-time zero target. Intent and reverse evidence must agree. Point times normalize scene end rounding within 1ms.',
-            edit_modes='Legacy delta_parent supplies 1-5 ordered time_s/forward_m/left_m/yaw_rad points; offsets add to the parent, including across repeated edits. Use a zero-offset point at acceptance_policy.observation_end_s before later offsets to preserve history. The initial offset is zero and the end returns to zero unless an endpoint point is specified. repair blends a parent toward an existing target using one ratio (0,1]; the initial pose is preserved using a 1s ramp and observation history must remain unchanged. Optional window_s restricts changes with smooth zero-offset boundaries. Each call screens one candidate.',
+            new_edit_modes='Use edit_speed_profile for timed signed speed states or explicit braking retiming. Positive=forward, zero=stop, negative=reverse; use an explicit zero target before direction changes. Two zero targets wait, then a positive target restarts. Original braking and speed-profile operations remain available only for archive replay. Tool feedback checks actual planar acceleration including curvature. Use edit_path_progress, set_trajectory_offsets or replace_trajectory_positions; these agent tools select the backend mode and do not accept edit_mode. path_progress uses a fixed forward reference path matching the parent start pose, inherits signed start speed and accepts timed signed distance_from_start_m/speed_mps targets; only final zero-speed hold is supported, with no extrapolation or reconnect. set_offsets adds offsets to the immutable anchor trajectory pose at each target time; offsets are NOT distance travelled from the edit start. A fixed offset still follows a moving anchor until hold begins at window end; replace_positions sets scene-local absolute targets. Both position modes inherit parent start pose/velocity over window_s: hold needs the final target at window end and freezes absolute pose afterward; reconnect needs the last target before window end and returns to parent pose/velocity there. All new modes require motion_intent and end_behavior, with target times strictly after the inherited start. Start at or after acceptance_policy.edit_start_s; do not supply a start-time zero target. Intent and reverse evidence must agree. Point times normalize scene end rounding within 1ms.',
+            edit_modes='Legacy delta_parent supplies 1-5 ordered time_s/forward_m/left_m/yaw_rad points; offsets add to the parent, including across repeated edits. Use a zero-offset point at acceptance_policy.observation_end_s before later offsets to preserve history. The initial offset is zero and the end returns to zero unless an endpoint point is specified. repair blends a parent toward an existing target using one ratio (0,1]; the initial pose is preserved using a 1s ramp and the prefix through edit_start_s must remain unchanged. Optional window_s restricts changes with smooth zero-offset boundaries. Each call screens one candidate.',
             baseline_min_target_clearance_m=self.baseline['min_target_clearance_m'],
             baseline_progress_m=round(self.baseline_progress, 5),
             constructor_preferred_candidate_id=self.constructor_best,
@@ -841,6 +839,13 @@ class EgoEditor:
                 from defense_behavior import preferences,candidate_differences
                 context['behavior_preferences']=preferences()
                 context['comparison_guidance']=GUIDANCE+' '+BEHAVIOR_GUIDANCE
-                context['candidate_differences']=candidate_differences(context['candidate_catalog'])
-                context['candidate_differences_scope']='Adjacent passed candidates in generation order, at most 10 pairs; not a ranking or exhaustive pair table. Every candidate metric remains in catalog.'
+                latest=context['latest_generated_candidate_id']
+                context['candidate_differences']=candidate_differences(context['candidate_catalog'],
+                    fallback_id=self.selected_initial,latest_id=latest,
+                    parent_id=self.nodes[latest].get('parent_id')) if latest else []
+                context['candidate_differences_scope']='At most two pairs: retained fallback versus latest, and editing parent versus latest if distinct. No ranking. Positive differences mean B minus A. Clearance is editable-period sampled body gap; peak acceleration differences use native samples on both sides, not mixed analytic/sampled bounds. Null means missing evidence.'
+                context['progress_reference']=dict(start_time_s=policy.edit_start(self.effective_policy),available_reference_m=round(float(self.driving_objective.available),3),
+                    definition='reference_progress_percent = 100 * net advancement along the original route from edit_start_s / original route available from that time. New runs cover the whole scene from 0s, including the observation window. Same denominator for all candidates. Reverse/lateral travel earns no extra progress. No minimum percentage gate.')
+        context['tool_semantics']={key:value for key,value in TOOL_SEMANTICS.items() if key != 'offset_bounds'}
+        context['inspection_candidate_ids']=list(inspection_candidate_ids or [])
         return compact_context(context)

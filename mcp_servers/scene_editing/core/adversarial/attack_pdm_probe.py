@@ -11,6 +11,7 @@ from experiment_runtime import atomic_json
 from pdm_tool import run_pdm_challenge
 from run_ego_reference import EGO_FRONT, EGO_REAR, EGO_WIDTH, polygon
 from workflow_timing import timed_operation
+from attack_tool_contract import revision_evidence
 
 
 class PDMProbe:
@@ -23,7 +24,7 @@ class PDMProbe:
         self.state_path = self.root/'budget.json'
         if not self.state_path.exists():
             cache=None
-            evidence=editor.constraints.get('revision_feedback',{}).get('evidence',{})
+            evidence=revision_evidence(editor.constraints)
             previous=evidence.get('result_path')
             if previous and Path(previous).is_file():
                 review=json.loads(Path(previous).read_text())
@@ -100,7 +101,7 @@ class PDMProbe:
             frozen=self._materialize(candidate_id,folder)
             arguments=dict(challenge_baseline_scene_path=str(editor.scene),challenge_attack_scene_path=str(frozen),
                 challenge_target_track=editor.target['track_id'],challenge_target_is_new=editor.target['operation']=='add_vehicle',
-                challenge_history_s=editor.constraints.get('observation_end_s',3.),
+                challenge_history_s=editor.constraints.get('observation_end_s',1.5),
                 challenge_ignore_traffic_lights=editor.constraints.get('pdm_ignore_traffic_lights',False))
             if state['baseline_cache']:
                 arguments['challenge_baseline_cache_path']=state['baseline_cache']

@@ -8,6 +8,7 @@ PROJECT=Path(__file__).resolve().parent
 sys.path.insert(0,str(PROJECT/'scripts'))
 from evidence import Evidence,save
 from official_results import load_official
+from official_metrics import official_metrics_csv
 from vlm_review import Client,run
 
 
@@ -38,7 +39,7 @@ def summarize(directory,rows):
         out=directory/'scenes'/row['token']
         if not (out/'status.json').is_file():continue
         status=json.loads((out/'status.json').read_text())
-        if status['state']=='completed':completed.append(json.loads((out/'result.json').read_text()))
+        if status['state']=='completed' and (out/'result.json').is_file():completed.append(json.loads((out/'result.json').read_text()))
         else:failed.append(row['token'])
     failed_total=sum(float(r['no_at_fault_collisions'])<1 or float(r['drivable_area_compliance'])<1 for r in rows)
     summary={'official_scene_count':len(rows),'official_failure_count':failed_total,'vlm_cases_completed':len(completed),
@@ -65,7 +66,7 @@ def main():
     if not 1<=args.attempts<=3:p.error('--attempts must be 1..3')
     if not args.run_name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in args.run_name):p.error('Invalid run-name')
     rows=list(csv.DictReader((root/'scene_index.csv').open()))
-    with (root/'WE_output/openscene_format/all_scenes_pdm_averages_R.csv').open() as stream:
+    with Path(cfg.get('official_metrics_csv') or official_metrics_csv(root)).open() as stream:
         official_rows={r['token']:r for r in csv.DictReader(stream) if r['token']!='overall_average'}
     if len({r['token'] for r in rows})!=len(rows) or set(official_rows)!={r['token'] for r in rows}:raise ValueError('Invalid official scene inventory')
     rows=[{**r,**official_rows[r['token']]} for r in rows]
@@ -88,7 +89,7 @@ def main():
         started=time.monotonic()
         status={'state':'failed'};prepared=None
         try:
-            official=load_official(root,row);save(out/'official_results.json',official)
+            official=load_official(root,row)
             metadata=(root/row['metadata']).resolve()
             if not metadata.is_relative_to(root.resolve()):raise ValueError('Metadata outside archive')
             frames=sorted(pickle.load(metadata.open('rb')),key=lambda f:f['frame_idx'])
@@ -96,11 +97,10 @@ def main():
             evidence=Evidence(PROJECT,cfg,row,frames,out);evidence.prepare_images();evidence.numbers()
             prepared=time.monotonic()
             print('PREPARED',row['token'],flush=True)
-            result=run(Client(secret,out),evidence,official,out,cfg.get('max_turns',12),cfg.get('workers',2))
-            result['official_metrics']=official['metrics'];save(out/'result.json',result)
-            (out/'report.md').write_text('\n'.join(['# 失败行为原因','',row['token'],'',result['failure_reason'],'',
-                '## 现象',json.dumps(result['observations'],ensure_ascii=False,indent=2),'','## 候选原因及核验',
-                json.dumps(result['candidate_assessment'],ensure_ascii=False,indent=2),'','## 不确定之处',str(result.get('uncertainty',''))])+'\n')
+            result=run(Client(secret,out),evidence,official,out,cfg.get('max_turns',6),cfg.get('workers',4))
+            result['official_metrics']=official['metrics']
+            # 结果直接回传 stdout，不再落盘一份单独的 result.json
+            print('RESULT '+json.dumps(result,ensure_ascii=False),flush=True)
             status={'state':'completed','model':secret['model'],'analysis_level':'driving_behavior'}
         except Exception as exc:
             status={'state':'failed','error_type':type(exc).__name__,'message':str(exc)}
@@ -110,7 +110,8 @@ def main():
                 status['preprocess_seconds']=round(prepared-started,2)
                 status['vlm_seconds']=round(time.monotonic()-prepared,2)
             save(out/'status.json',status)
-            print(json.dumps(status,ensure_ascii=False),flush=True);summarize(directory,rows)
+            print(json.dumps(status,ensure_ascii=False),flush=True)
+            if args.command!='scene':summarize(directory,rows)
     if any(not (directory/'scenes'/r['token']/'status.json').is_file() or
            json.loads((directory/'scenes'/r['token']/'status.json').read_text())['state']!='completed' for r in selected):raise SystemExit(2)
 

@@ -7,7 +7,7 @@ import sys
 CORE = Path(__file__).resolve().parents[1] / 'mcp_servers/scene_editing/core/adversarial'
 sys.path.insert(0, str(CORE))
 
-from agent_tool_view import candidate_card, with_decision_summary
+from agent_tool_view import candidate_card, compact_action_feedback, creation_contract, with_decision_summary
 from ego_context_view import candidate_summary
 from route_edit_contract import EXAMPLE as ROUTE_EXAMPLE, tool as route_tool, validate as validate_route
 from speed_profile_contract import EXAMPLE as SPEED_EXAMPLE, tool as speed_tool, validate as validate_speed
@@ -123,3 +123,37 @@ def test_attack_and_ego_candidate_cards_share_identity_eligibility_and_metrics()
     assert ego['unknown_checks'] == ['no_cross_lines']
     assert attack['min_ego_clearance_m'] == 0.4
     assert ego['min_target_clearance_m'] == 1.2
+
+
+def test_position_stop_failure_does_not_suggest_changing_stop_position_or_deadline():
+    arguments=dict(edit_mode='speed_schedule',parent_candidate_id='p',operation='stop_at_position',
+        start_time_s=4.,stop_target='parent_stop_position',reason='Keep parent stop')
+    for code in ('route_exhausted','target_unreachable','stop_position_unavailable','stop_position_off_route'):
+        result=with_decision_summary(dict(status='not_feasible',feasible=False,candidate_created=False,
+            error_code=code,feasibility_limits=dict(interval_s=[4.,6.],minimum_transition_duration_s=3.)),arguments)
+        assert result['decision_summary']['recommended_previews']==[]
+    result=with_decision_summary(dict(status='preview',feasible=True,candidate_created=False),arguments)
+    validate_speed(result['decision_summary']['create_candidate_call']['arguments'])
+
+
+def test_passed_preview_exposes_only_its_exact_creation_call():
+    result=with_decision_summary(dict(status='preview',feasible=True,candidate_created=False),speed_arguments())
+    tools=[speed_tool(),route_tool()]
+    choice,exposed=creation_contract(tools,result)
+    assert choice['function']['name']=='edit_speed_profile'
+    assert len(exposed)==1 and exposed[0]['function']['name']=='edit_speed_profile'
+    validate_speed(result['decision_summary']['create_candidate_call']['arguments'])
+    assert creation_contract(tools,dict(status='selected'))==(None,tools)
+    failed_task=with_decision_summary(dict(status='preview',feasible=True,candidate_created=False,
+        task_contract_passed=False),speed_arguments())
+    assert creation_contract(tools,failed_task)==(None,tools)
+
+
+def test_compact_feedback_keeps_decision_evidence_and_archive_without_large_geometry():
+    result=with_decision_summary(dict(status='preview',feasible=True,candidate_created=False,
+        dense_trajectory=[[index,0] for index in range(1000)],archive_ref='runs/visual/tool-exchanges/turn_03'),speed_arguments())
+    compact=compact_action_feedback(result)
+    assert compact['archive_ref']==result['archive_ref']
+    assert compact['create_candidate_call']['arguments']['preview_only'] is False
+    assert 'dense_trajectory' not in compact
+    assert len(json.dumps(compact))<len(json.dumps(result))*.5

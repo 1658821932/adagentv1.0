@@ -9,51 +9,22 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcp_servers.worldengine_failure_analysis.adapter.service import analyze_scene
+from mcp_servers.worldengine_failure_analysis.adapter.service import analyze_scene, WfaError
 
 
 def _map_to_failure_analysis(result) -> dict[str, Any]:
-    """Map a wfa scene result onto the downstream failure_analysis contract.
+    """Map a wfa scene result onto the compact downstream failure_analysis contract.
 
-    Keeps the fields the agent chain consumes (failure_type, failure_reason,
-    key_scene_factors, risk_factors, supporting/uncovered case ids) while
-    preserving wfa's full forensic evidence under 'forensics'.
+    Only what downstream needs is returned; full forensic detail
+    (candidate assessments, image/evidence inventory, report) stays on disk and is
+    reachable through ``result_path``.
     """
-    reason_category = result.reason_category or "unknown"
-    failure_type = [reason_category]
-    # Derive coarse risk factors from candidate assessments + metrics.
-    risk_factors: list[str] = []
-    metrics = result.official_metrics or {}
-    try:
-        if float(metrics.get("no_at_fault_collisions", 1)) < 1:
-            risk_factors.append("collision")
-        if float(metrics.get("drivable_area_compliance", 1)) < 1:
-            risk_factors.append("drivable_area_violation")
-    except (TypeError, ValueError):
-        pass
-    if not risk_factors:
-        risk_factors = ["driving_behavior"]
-
-    key_scene_factors = [obs for obs in (result.observations or [])][:5]
-
     return {
-        "failure_type": failure_type,
+        "failure_type": [result.reason_category or "unknown"],
         "failure_reason": result.failure_reason,
-        "key_scene_factors": key_scene_factors,
-        "risk_factors": risk_factors,
-        "supporting_case_ids": [result.token],
-        "uncovered_case_ids": [],
-        "forensics": {
-            "token": result.token,
-            "status": result.status,
-            "reason_category": reason_category,
-            "observations": result.observations,
-            "candidate_assessment": result.candidate_assessment,
-            "uncertainty": result.uncertainty,
-            "official_metrics": result.official_metrics,
-            "report_path": result.report_path,
-            "result_path": result.result_path,
-        },
+        "key_scene_factors": list(result.observations or [])[:5],
+        "official_metrics": dict(result.official_metrics or {}),
+        "uncertainty": result.uncertainty or "",
     }
 
 
@@ -69,21 +40,30 @@ def run(input_data: dict[str, Any]) -> dict[str, Any]:
             "closed-loop run. For free-form failure_case lists, run a WorldEngine "
             "policy first (policy_runner -> failure_case_filter) to obtain tokens."
         )
-    result = analyze_scene(
-        str(token),
-        config_path=input_data.get("config_path"),
-        run_name=input_data.get("run_name") or "adagent_failure_analysis",
-        resume=bool(input_data.get("resume", True)),
-        timeout=int(input_data.get("timeout", 1800)),
-    )
+    try:
+        result = analyze_scene(
+            str(token),
+            simulation=(input_data.get("simulation") or input_data.get("we_simulation")
+                        or input_data.get("simulation_record") or input_data.get("result_root")),
+            timeout=int(input_data.get("timeout", 300)),
+        )
+    except WfaError as error:
+        # Old adapters/plain exceptions may not carry the extended metadata.
+        # Error reporting must never replace the backend cause with AttributeError.
+        details = getattr(error, 'details', {})
+        if not isinstance(details, dict):
+            details = {}
+        return dict(status='error', tool='failure_analyzer',
+                    error=dict(type='backend_environment_error' if details.get('failure_stage') == 'environment'
+                               else 'failure_analysis_error', message=str(error), **details))
     return {
         "status": "success",
         "tool": "failure_analyzer",
         "result": {
             "failure_analysis": _map_to_failure_analysis(result),
             "token": result.token,
-            "report_path": result.report_path,
-            "result_path": result.result_path,
+            "simulation": (result.simulation or {}).get("record"),
+            "evidence_dir": result.result_path,
         },
     }
 

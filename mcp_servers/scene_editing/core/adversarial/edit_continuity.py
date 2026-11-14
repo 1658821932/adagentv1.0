@@ -8,11 +8,118 @@ from scipy.interpolate import BPoly, CubicSpline, CubicHermiteSpline, PPoly
 from scipy.integrate import solve_ivp
 
 
+def _concatenate_curves(parts):
+    """Join polynomial pieces without changing their degrees or coordinates."""
+    degree=max(part.c.shape[0] for part in parts)
+    coefficients=[]
+    for part in parts:
+        pad=[(degree-part.c.shape[0],0)]+[(0,0)]*(part.c.ndim-1)
+        coefficients.append(np.pad(part.c,pad))
+    return PPoly(np.concatenate(coefficients,axis=1),
+                 np.concatenate([parts[0].x]+[part.x[1:] for part in parts[1:]]))
+
+
+def restrict_curve(curve,start):
+    """Retain the exact polynomial from an arbitrary takeover time onward."""
+    i=max(0,min(len(curve.x)-2,int(np.searchsorted(curve.x,start,side='right'))-1))
+    shift=float(start-curve.x[i]);first=np.zeros_like(curve.c[:,i])
+    for index in np.ndindex(curve.c.shape[2:]):
+        key=(slice(None),i)+index
+        polynomial=np.polynomial.Polynomial(curve.c[key][::-1])
+        shifted=polynomial(np.polynomial.Polynomial([shift,1.])).coef
+        first[(slice(-len(shifted),None),)+index]=shifted[::-1]
+    return PPoly(np.concatenate([first[:,None],curve.c[:,i+1:]],axis=1),
+                 np.r_[float(start),curve.x[i+1:]])
+
+
+def _smooth_future_connection(q,points,angles,t,x,future,future_yaw):
+    """Fit the missing motion over a real sample interval, not a micro seam.
+
+    Native delivery stays untouched. Connections must respect the existing
+    1cm reconstruction bound and preserve the defined future through C2.
+    """
+    from ego_trajectory_edit import curve_evidence
+    join=float(future.x[0]);source=CubicSpline(q[:-1],points[:-1])
+    source_yaw=CubicSpline(q[:-1],angles[:-1])
+    spacing=np.diff(t);spacing=spacing[spacing>=.001]
+    interval=float(np.median(spacing)) if len(spacing) else join-q[0]
+    choices=[]
+    for left in source.x[source.x<=join-interval+1e-8][::-1]:
+        bridge=PPoly.from_bernstein_basis(BPoly.from_derivatives([left,join],
+            [[source(left),source(left,1),source(left,2)],
+             [future(join),future(join,1),future(join,2)]]))
+        mask=(t>=left)&(t<join)
+        error=float(np.max(np.linalg.norm(bridge(t[mask])-x[mask],axis=1))) if np.any(mask) else 0.
+        if error>.01:continue
+        peak=curve_evidence(bridge,{},'Reconstruction connection extrema')['max_acceleration_mps2']
+        choices.append((peak,error,float(left),bridge))
+    if not choices:
+        raise ValueError('state_incompatible: cannot connect sampled history to the defined future within the 0.01m reconstruction bound; choose a later supported takeover or a different parent')
+    peak,error,left,bridge=min(choices,key=lambda item:(item[0],item[1],-item[2]))
+    yaw_bridge=PPoly.from_bernstein_basis(BPoly.from_derivatives([left,join],
+        [[source_yaw(left),source_yaw(left,1),source_yaw(left,2)],
+         [future_yaw(join),future_yaw(join,1),future_yaw(join,2)]]))
+    # source.x includes left; truncating its right end keeps every earlier piece.
+    index=int(np.searchsorted(source.x,left))
+    xy_parts=([PPoly(source.c[:,:index],source.x[:index+1])] if index else [])+[bridge]
+    yaw_parts=([PPoly(source_yaw.c[:,:index],source_yaw.x[:index+1])] if index else [])+[yaw_bridge]
+    return _concatenate_curves(xy_parts),_concatenate_curves(yaw_parts),dict(
+        method='bounded_C2_sample_to_future',window_s=[left,join],
+        maximum_sample_adjustment_m=error,peak_acceleration_mps2=peak,
+        position_bound_m=.01)
+
+
+def _complete_defined_parent(times,lookup,parent_id,curve):
+    """Add missing legacy yaw and the explicitly declared terminal hold."""
+    cont=curve['continuous_state'];knots=np.asarray(cont['times_s'])
+    p=PPoly(np.asarray(cont['xy_coefficients']),knots)
+    hold=curve.get('hold_starts_at_s');changed=False
+    if 'yaw_coefficients' in cont:
+        a=PPoly(np.asarray(cont['yaw_coefficients']),knots)
+    else:
+        _,angles=lookup(parent_id)
+        sampled=CubicSpline(np.asarray(times),np.unwrap(angles))
+        # Use one polynomial representation/grid for both position and yaw.
+        rates=sampled(knots,1);values=sampled(knots)
+        if hold is not None and hold<=knots[-1]+1e-8:rates[-1]=0.
+        a=CubicHermiteSpline(knots,values,rates);changed=True
+    if knots[-1]<times[-1]-1e-8:
+        if hold is None or hold>knots[-1]+1e-8:
+            raise ValueError('state_incompatible: parent curve ends before scene end without a declared hold')
+        last=float(knots[-1]);position=p(last);angle=float(a(last))
+        p=_concatenate_curves([p,PPoly(position[None,None,:],[last,float(times[-1])])])
+        a=_concatenate_curves([a,PPoly(np.array([[angle]]),[last,float(times[-1])])]);changed=True
+    if not changed:return curve
+    result=dict(curve)
+    result['continuous_state']=dict(cont,times_s=p.x.tolist(),xy_coefficients=p.c.tolist(),yaw_coefficients=a.c.tolist())
+    return result
+
+
+def _limit_terminal_overshoot(curve,times,points):
+    """Keep a sampled stop forward instead of inventing reverse between samples.
+
+    Only limit the final moving knot's derivative when its last cubic piece
+    reverses along the final chord. Native positions and the zero-speed stop
+    stay exact; the adjacent Hermite pieces remain C1.
+    """
+    delta=points[-1]-points[-2];length=float(np.linalg.norm(delta))
+    if length<1e-10:return curve,False
+    projected=np.polynomial.Polynomial((curve.c[:,-1]@(delta/length))[::-1]).deriv()
+    duration=float(times[-1]-times[-2])
+    query=[0.,duration]+[float(r.real) for r in projected.deriv().roots() if abs(r.imag)<1e-8 and 0<r.real<duration]
+    if min(projected(np.asarray(query)))>=-1e-8:return curve,False
+    velocity=curve(times,1);velocity[-1]=0.
+    slope=delta/duration
+    for axis in range(2):
+        velocity[-2,axis]=0. if abs(slope[axis])<1e-12 else np.clip(velocity[-2,axis]/slope[axis],0.,3.)*slope[axis]
+    return CubicHermiteSpline(times,points,velocity),True
+
+
 def parent_motion(times, lookup, parent_id, curve, boundary, start, context=None):
     from ego_speed_profile import continuous_parent
     curve=continuous_parent(times,lookup,parent_id,curve,boundary)
     if curve and curve.get('continuous_state') and start>=curve['continuous_state']['times_s'][0]:
-        return curve
+        return _complete_defined_parent(times,lookup,parent_id,curve)
     context=context or {}
     samples=context.get('samples')
     if samples is None:
@@ -43,21 +150,26 @@ def parent_motion(times, lookup, parent_id, curve, boundary, start, context=None
     end=stop+1 if stop is not None else len(q)
     if end<2:raise ValueError('route_exhausted: sampled parent has no usable motion')
     bc=('not-a-knot',(1,future(future.x[0],1))) if future is not None else ('not-a-knot',(1,np.zeros(2))) if stop is not None else 'not-a-knot'
-    xy_curve=CubicSpline(q[:end],points[:end],bc_type=bc)
-    yaw_curve=CubicSpline(q[:end],angles[:end],bc_type=('not-a-knot',(1,float(future_yaw(future.x[0],1)))) if future is not None else ('not-a-knot',(1,0.)) if stop is not None else 'not-a-knot')
+    connection=None;terminal_limited=False
     if future is not None:
-        xy_curve=PPoly(np.concatenate([xy_curve.c,future.c],axis=1),np.r_[xy_curve.x,future.x[1:]])
+        xy_curve,yaw_curve,connection=_smooth_future_connection(q,points,angles,t,x,future,future_yaw)
+    else:
+        xy_curve=CubicSpline(q[:end],points[:end],bc_type=bc)
+        if stop is not None:xy_curve,terminal_limited=_limit_terminal_overshoot(xy_curve,q[:end],points[:end])
+        yaw_curve=CubicSpline(q[:end],angles[:end],bc_type=('not-a-knot',(1,0.)) if stop is not None else 'not-a-knot')
+    if future is not None:
+        xy_curve=_concatenate_curves([xy_curve,future])
         if 'yaw_coefficients' in original:
-            yaw_curve=PPoly(np.concatenate([yaw_curve.c,future_yaw.c],axis=1),xy_curve.x)
+            yaw_curve=_concatenate_curves([yaw_curve,future_yaw])
         else:
             tail=CubicSpline(future.x,future_yaw(future.x))
-            yaw_curve=PPoly(np.concatenate([yaw_curve.c,tail.c],axis=1),xy_curve.x)
+            yaw_curve=_concatenate_curves([yaw_curve,tail])
         if xy_curve.x[-1]<t[-1]:
             if curve.get('hold_starts_at_s') is None or curve['hold_starts_at_s']>xy_curve.x[-1]+1e-8:
                 raise ValueError('state_incompatible: parent continuous curve ends before scene end without a declared hold')
             final=xy_curve.x[-1];position=xy_curve(final);angle=float(yaw_curve(final))
-            xy_curve=PPoly(np.concatenate([xy_curve.c,np.array([[0.,0.],[0.,0.],[0.,0.],position])[:,None,:]],axis=1),np.r_[xy_curve.x,t[-1]])
-            yaw_curve=PPoly(np.concatenate([yaw_curve.c,np.array([0.,0.,0.,angle])[:,None]],axis=1),np.r_[yaw_curve.x,t[-1]])
+            xy_curve=_concatenate_curves([xy_curve,PPoly(position[None,None,:],[final,t[-1]])])
+            yaw_curve=_concatenate_curves([yaw_curve,PPoly(np.array([[angle]]),[final,t[-1]])])
     elif stop is not None:
         xy_curve=PPoly(np.concatenate([xy_curve.c,np.array([[0.,0.],[0.,0.],[0.,0.],points[stop]])[:,None,:]],axis=1),np.r_[xy_curve.x,q[-1]])
         yaw_curve=PPoly(np.concatenate([yaw_curve.c,np.array([0.,0.,0.,angles[stop]])[:,None]],axis=1),np.r_[yaw_curve.x,q[-1]])
@@ -67,8 +179,10 @@ def parent_motion(times, lookup, parent_id, curve, boundary, start, context=None
     result=dict(profile='sampled_parent_motion.v1',
         continuous_state=dict(version='continuous.v2',times_s=xy_curve.x.tolist(),xy_coefficients=xy_curve.c.tolist(),yaw_coefficients=yaw_curve.c.tolist()),
         parent_motion_source=dict(method='bounded_sample_interpolation',samples='attack_dense' if samples is not None else 'native',max_sample_error_m=error,position_bound_m=.01,screening_samples_removed=False))
+    if terminal_limited:result['parent_motion_source']['terminal_overshoot_limited']=True
     if future is not None:
         result['parent_motion_source']['preserved_future_curve_from_s']=float(future.x[0])
+        result['parent_motion_source']['connection']=connection
         if curve.get('hold_starts_at_s') is not None:result['hold_starts_at_s']=curve['hold_starts_at_s']
     elif stop is not None:result['hold_starts_at_s']=float(q[stop])
     return result

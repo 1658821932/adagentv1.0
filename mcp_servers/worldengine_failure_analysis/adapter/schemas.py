@@ -15,3 +15,5 @@ class WfaSceneResult:
     report_path: str
     result_path: str
     raw: dict
+    # Which closed-loop simulation record produced the official metrics.
+    simulation: dict | None = None

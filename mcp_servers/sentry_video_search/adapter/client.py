@@ -17,8 +17,8 @@ def retrieve_video(input_data: dict) -> dict:
     if not isinstance(requirement, str) or not requirement.strip():
         raise ValueError("video_retriever requires a non-empty 'requirement' string")
     library = input_data.get("library", "default")
-    if library not in {"default", "waymo"}:
-        raise ValueError("video_retriever library must be 'default' or 'waymo'")
+    if library != "default":
+        raise ValueError("video_retriever library must be 'default'")
     if not VIDEO_RETRIEVER_PYTHON.is_file():
         raise RuntimeError(
             "video_retriever environment is missing. Create it with: "

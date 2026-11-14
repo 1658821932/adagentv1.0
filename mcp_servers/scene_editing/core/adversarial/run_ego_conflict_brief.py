@@ -9,7 +9,7 @@ Optionally supplies original recorded camera images for lane understanding. Thes
 images predate the attack edit and must not be described as the edited scene.
 Offline counterfactual analysis, not online prediction.
 """
-from llm_profile import load_llm_profile
+from llm_profile import load_llm_profile,reasoning_effort
 from workflow_timing import timed_operation
 
 import argparse
@@ -78,7 +78,12 @@ def recorded_images(scene_dir, image_scene, frame_index, cameras):
     if not cameras or len(cameras) > 3 or len(set(cameras)) != len(cameras):
         raise ValueError('Choose one to three distinct camera channels')
     with (image_scene / 'metadata/image_manifest.csv').open(newline='') as stream:
-        rows = list(csv.DictReader(stream))
+        raw_rows = list(csv.DictReader(stream))
+    # 数据集表头是 frame_idx/timestamp_us/frame_token；内部统一成 frame_index/timestamp/token
+    rows = [dict(row,
+                 frame_index=row.get('frame_index') or row.get('frame_idx'),
+                 timestamp=row.get('timestamp') or row.get('timestamp_us'),
+                 token=row.get('token') or row.get('frame_token')) for row in raw_rows]
     result = []
     root = (image_scene / 'original_images').resolve()
     for camera in cameras:
@@ -161,7 +166,7 @@ def run(scene_dir, attack_run, candidate_id, target_track, run_dir, timeout_seco
     context = build_context(scene_dir, attack_run, candidate_id, target_track, allow_safe_stop, target_effect)
     if acceptance is not None:
         context['acceptance_policy'] = model_policy(policy.resolve(acceptance))
-        context['defense_constraints'] = 'Use acceptance_policy as the frozen experiment settings. First observation_end_s seconds are immutable; progress is diagnostic when minimum_progress_fraction is null. Road/vehicle capability not provided remains unknown. Do not invent a progress gate or an earlier editing start.'
+        context['defense_constraints'] = 'Use acceptance_policy as the frozen experiment settings. Read edit_start_s for the earliest edit. New runs allow editing from edit_start_s (0s); only that pose must equal the parent, and the edited prefix is the setup the policy inherits, so it may close on the hazard earlier as long as no body contact precedes takeover; observation_end_s is the WE input horizon, not an edit lock; progress is diagnostic when minimum_progress_fraction is null. Road/vehicle capability not provided remains unknown. Do not invent a progress gate or an editing start earlier than edit_start_s.'
     context['acceptance_policy'] = model_policy(policy.resolve(context['acceptance_policy']))
     actual_frames = json.loads((Path(scene_dir)/'metadata/frames.json').read_text())
     actual_times,actual_xy,actual_yaw,actual_actors = scene_from_frames(actual_frames,target_track)
@@ -195,9 +200,10 @@ def run(scene_dir, attack_run, candidate_id, target_track, run_dir, timeout_seco
     response_received = False
     try:
         _, attempt = archive.complete('turn_01', messages, total_seconds=timeout_seconds,
+                                      no_output_seconds=min(60, timeout_seconds), retries=2,
                                       max_tokens=max_tokens,
                                       extra_body={'thinking': {'type': 'enabled'}},
-                                      reasoning_effort='high')
+                                      reasoning_effort=reasoning_effort())
         response_received = True
         message = json.loads((attempt / 'response.json').read_text())['choices'][0]['message']
         text = message.get('content') or ''
@@ -266,7 +272,7 @@ def main():
     parser.add_argument('--timeout-seconds', type=int, default=300)
     parser.add_argument('--max-tokens', type=int, default=8192)
     parser.add_argument('--allow-stop', action=argparse.BooleanOptionalAction, default=True,
-                        help='Allow a safe stop instead of 50% progress (default: enabled)')
+                        help='Allow safe waiting/stopping; progress has no default fraction gate (default: enabled)')
     parser.add_argument('--image-scene', type=Path, help='Original recorded scene containing the image manifest')
     parser.add_argument('--visual-frame', type=int, default=0)
     parser.add_argument('--camera', action='append', dest='cameras', help='Recorded camera channel; repeat up to three times')

@@ -30,7 +30,7 @@ def _recommended_previews(result, arguments):
         recommendations.append(dict(condition=condition, **call))
 
     if code == 'route_exhausted':
-        if arguments.get('edit_mode') == 'speed_schedule' and arguments.get('path_source', 'parent') == 'parent':
+        if arguments.get('edit_mode') == 'speed_schedule' and arguments.get('operation') == 'set_speed_targets' and arguments.get('path_source', 'parent') == 'parent':
             add('Continue only when following the known recorded route matches the task; all checks still apply.',
                 path_source='recorded_baseline')
         if arguments.get('edit_mode') == 'route_edit' and arguments.get('speed_policy', 'preserve_speed') == 'preserve_speed':
@@ -135,6 +135,20 @@ def with_decision_summary(result, arguments):
     return enriched
 
 
+def creation_contract(tools, feedback):
+    """Materialize a passing preview once, using its exact original arguments."""
+    summary = (feedback or {}).get('decision_summary') or feedback or {}
+    call = summary.get('create_candidate_call') or {}
+    if (summary.get('outcome') != 'preview_passed' or summary.get('candidate_created')
+            or (feedback or {}).get('task_contract_passed', summary.get('task_contract_passed')) is False):
+        return None, tools
+    name = call.get('tool')
+    exposed = [copy.deepcopy(tool) for tool in tools if tool['function']['name'] == name]
+    if not exposed:
+        return None, tools
+    return {'type': 'function', 'function': {'name': name}}, exposed
+
+
 def candidate_card(value):
     """Common candidate identity and eligibility fields for attack and ego views."""
     reference = value.get('reference_screen_passed')
@@ -161,3 +175,28 @@ def candidate_card(value):
         card['unknown_checks'] = [key for key, state in (value.get('coverage') or {}).items()
                                   if state not in ('passed', 'failed')]
     return card
+
+
+def compact_action_feedback(result):
+    """Keep decisions and failed measurements while raw evidence stays in its exchange archive."""
+    if not isinstance(result, dict):
+        return result
+    summary = result.get('decision_summary')
+    compact = dict(summary) if isinstance(summary, dict) else {}
+    for key in (
+        'status', 'candidate_id', 'parent_candidate_id', 'reference_geometry_passed',
+        'task_contract_passed', 'reference_screen_passed', 'failed_checks', 'task_failed_checks',
+        'candidate_created', 'feasible', 'cached', 'error', 'error_code', 'failure_kind',
+        'feasibility_limits', 'speed_edit_summary', 'route_edit_summary', 'archive_ref',
+    ):
+        if key in result:
+            compact[key] = result[key]
+    if isinstance(result.get('candidates'), list):
+        compact['candidate_ids'] = [item.get('candidate_id') for item in result['candidates']
+                                    if isinstance(item, dict) and item.get('candidate_id')]
+    if isinstance(result.get('construction_goal'), dict):
+        from attack_tool_contract import goal_diagnostics
+        failures, measurements = goal_diagnostics(result['construction_goal'])
+        compact['task_failed_checks'] = failures
+        compact['failure_measurements'] = measurements
+    return compact

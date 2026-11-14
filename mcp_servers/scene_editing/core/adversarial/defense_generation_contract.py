@@ -14,7 +14,7 @@ def _tool(name, description, properties):
 TOOLS = [
     _tool('construct_defense_candidates',
         'Construct bounded speed-reduction candidates. Search the requested time/deceleration ranges; '
-        'preserve observation history. All created candidates, including failed checks, remain available. '
+        'respect edit_start_s (0s in new runs), retaining the initial pose and checked continuous motion. All created candidates, including failed checks, remain available. '
         'Positive target speed requires cruise; zero requires hold. This tool shares the new-candidate '
         'budget with edits, repairs and FOCI. No acceptance limit can be changed.',
         dict(parent_trajectory_id=dict(type='string'), action=dict(type='string', enum=['reduce_speed']),
@@ -23,6 +23,7 @@ TOOLS = [
              max_candidates=dict(type='integer', minimum=1, maximum=3))),
     _tool('optimize_defense_candidate',
         'Run FOCI with shared route-progress, reserve-shortfall and actual-motion objectives on this parent. '
+        'Initial preparation does not run FOCI automatically; call this only for a concrete improvement need on the selected parent. '
         'History and later outside-window samples stay fixed; a window ending at scene end permits terminal adjustment. '
         'Optional preserve_route=true changes timing along the parent route instead of steering. '
         'terminal_behavior=stop smoothly approaches a hold over the final sampled interval (window must end at scene end). '
@@ -32,7 +33,7 @@ TOOLS = [
              max_candidates=dict(type='integer', minimum=1, maximum=3))),
 ]
 
-FOCI_OPTIONS = dict(preserve_route=dict(type='boolean',description='Default false. True keeps the parent spatial route and changes its timing; cannot extend beyond that route.'),
+FOCI_OPTIONS = dict(preserve_route=dict(type='boolean',description='Default false. Prefer true for brake/timing-only improvements: it keeps the parent spatial route, reduces the search to 16 progress controls and cannot extend beyond that route. Use false when lateral avoidance is needed.'),
     terminal_behavior=dict(type='string',enum=['free','stop'],description='Default free. stop holds the final sampled interval and smooths entry over the preceding interval; final checks still apply.'),
     improvement_goal=dict(type='string',enum=['balanced','recover_progress','smoother_motion'],description='Default balanced. Search emphasis, not a guarantee or acceptance override.'))
 FOCI_OPTIONS['speed_targets']=dict(type='array',minItems=1,maxItems=6,items=dict(type='object',properties=dict(time_s=NUMBER,speed_mps=NUMBER),required=['time_s','speed_mps'],additionalProperties=False),description='Optional timed signed speeds, same meanings as edit_speed_profile. Soft sample-based optimization preferences, not exact states or acceptance overrides. Zero=stop, negative=reverse without flipping body heading. Check returned speed_target_feedback.')
@@ -66,7 +67,7 @@ def validate_request(name, args, *, boundary, end, remaining):
             or not boundary<=interval[0]<=interval[1]<=end
             or (name=='optimize_defense_candidate' and interval[0]==interval[1])
             or (name=='construct_defense_candidates' and interval[1]>=end)):
-        raise ValueError(key+' must lie after observation and inside the scene')
+        raise ValueError(key+' must lie at or after edit_start_s and inside the scene')
     parent_key='parent_trajectory_id' if name=='construct_defense_candidates' else 'parent_candidate_id'
     if not isinstance(args[parent_key],str) or not args[parent_key]:
         raise ValueError('An existing parent identity is required')

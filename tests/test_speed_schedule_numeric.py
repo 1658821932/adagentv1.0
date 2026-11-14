@@ -55,7 +55,7 @@ class ScheduleTests(unittest.TestCase):
             self.schedule.generate(t,lambda _: (xy,yaw),self.request(targets=[dict(time_s=6.,speed_mps=-1.)]),3.,acceptance=self.policy)
         with self.assertRaisesRegex(ValueError,'route_exhausted'):
             self.schedule.generate(t,lambda _: (xy,yaw),self.request(targets=[dict(time_s=5.,speed_mps=10.)]),3.,acceptance=self.policy)
-        with self.assertRaisesRegex(ValueError,'after observation'):
+        with self.assertRaisesRegex(ValueError,'after edit_start_s'):
             self.schedule.generate(t,lambda _: (xy,yaw),self.request(start_time_s=2.9),3.,acceptance=self.policy)
 
     def test_restart_from_actual_stop_uses_known_route_and_exact_child_replay(self):
@@ -73,24 +73,83 @@ class ScheduleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'route_exhausted'):
             self.edit.modern_edit(t,lookup,dict(op,path_source='parent'),3.,parent_curve=c,acceptance=self.policy)
 
-    def test_retime_removes_original_braking_and_preserves_declared_stop_target(self):
+    def position_request(self,**changes):
+        args=dict(edit_mode='speed_schedule',operation='stop_at_position',parent_candidate_id='p',
+                  start_time_s=3.5,stop_target='parent_stop_position',reason='Keep actual stopping position')
+        args.update(changes);return args
+
+    def stopped_parent(self):
         t,xy,yaw=self.fixture()
         low=dict(parent_candidate_id='p',path_candidate_id='recorded_baseline',start_time_s=3.,
             deceleration_mps2=.5,target_speed_mps=0.,motion_intent='forward_stop',end_behavior='hold')
         px,pa,c=self.edit.brake_along_path(t,xy,yaw,xy,yaw,low,3.,with_details=True)
+        return t,xy,yaw,px,pa,c
+
+    def test_position_stop_preserves_actual_prefix_goal_and_has_exact_replay(self):
+        t,xy,yaw,px,pa,c=self.stopped_parent()
         lookup=lambda k:(xy,yaw) if k=='recorded_baseline' else (px,pa)
-        op=dict(edit_mode='speed_schedule',operation='retime_braking',parent_candidate_id='p',braking_start_shift_s=.5,
-                preserve='stop_position',reason='Delay onset without moving the stopping location')
-        x,a,d=self.schedule.generate(t,lookup,op,3.,parent_curve=c,acceptance=self.policy)
-        self.assertAlmostEqual(x[-1,0],px[-1,0],places=5)
-        self.assertLess(d['max_acceleration_mps2'],2.)
-        self.assertAlmostEqual(x[t==3.5,0][0],7.,places=5) # Coasts, does not inherit old braking.
-        self.assertEqual(d['speed_edit_summary']['preserved_until_s'],3.)
-        self.assertTrue(self.np.array_equal(x[t<=3],px[t<=3]))
-        timed=self.schedule.generate(t,lookup,dict(op,preserve='stop_time',path_source='recorded_baseline'),3.,parent_curve=c,acceptance=self.policy)[2]
-        self.assertEqual(timed['hold_starts_at_s'],c['hold_starts_at_s'])
-        with self.assertRaisesRegex(ValueError,'retiming_unavailable'):
-            self.schedule.generate(t,lookup,op,3.,acceptance=self.policy)
+        op=self.position_request()
+        out,angles,curve=self.schedule.generate(t,lookup,op,3.,parent_curve=c,acceptance=self.policy)
+        self.assertTrue(self.np.array_equal(out[t<=3.5],px[t<=3.5]))
+        self.assertAlmostEqual(out[t==3.5,0][0],6.9375,places=5) # Existing braking is retained.
+        self.assertAlmostEqual(out[-1,0],px[-1,0],places=5)
+        self.assertAlmostEqual(curve['hold_starts_at_s'],7.,places=5)
+        summary=curve['speed_edit_summary']
+        self.assertLess(summary['stop_position']['position_error_m'],1e-4)
+        self.assertAlmostEqual(summary['actual_start_speed_mps'],1.75,places=5)
+        self.assertLess(curve['max_acceleration_mps2'],2.)
+        from edit_feedback import intent_checks
+        self.assertTrue(intent_checks(curve)['passed'])
+        again=self.schedule.generate(t,lookup,op,3.,parent_curve=c,acceptance=self.policy)
+        self.assertTrue(self.np.array_equal(out,again[0]));self.assertEqual(curve,again[2])
+        child=self.position_request(start_time_s=4.,transition_style='constant_acceleration')
+        x,a,next_curve=self.schedule.generate(t,lambda _: (out,angles),child,3.,parent_curve=curve,acceptance=self.policy)
+        self.assertEqual(next_curve['speed_route'],curve['speed_route'])
+        self.assertAlmostEqual(x[-1,0],out[-1,0],places=5)
+
+    def test_sampled_foci_stop_needs_no_named_braking_segment(self):
+        t,xy,yaw,px,pa,_=self.stopped_parent()
+        out,angles,curve=self.schedule.generate(t,lambda _: (px,pa),self.position_request(),3.,acceptance=self.policy)
+        self.assertTrue(self.np.array_equal(out[t<=3.5],px[t<=3.5]))
+        self.assertAlmostEqual(out[-1,0],px[-1,0],places=5)
+        self.assertEqual(curve['speed_edit_summary']['stop_position']['source'],'observed_stationary_tail')
+        self.assertTrue(self.np.allclose(curve['terminal_velocity_xy_mps'],0.,atol=1e-8))
+
+    def test_position_stop_does_not_invent_goal_for_a_moving_parent(self):
+        from edit_feedback import EditFeasibilityError,failure_feedback
+        t,xy,yaw=self.fixture()
+        try:self.schedule.generate(t,lambda _: (xy,yaw),self.position_request(),3.,acceptance=self.policy)
+        except EditFeasibilityError as error:
+            self.assertEqual(error.code,'stop_position_unavailable')
+            result=failure_feedback(error,self.position_request(preview_only=True),3.,12.)
+            self.assertFalse(result['feasible']);self.assertFalse(result['candidate_created'])
+            self.assertEqual(result['error_code'],'stop_position_unavailable')
+        else:self.fail('Moving final frame was treated as a stopping point')
+
+    def test_position_stop_rejects_fixed_history_excess_braking_and_off_route_goal(self):
+        from edit_feedback import EditFeasibilityError
+        t,xy,yaw,px,pa,c=self.stopped_parent()
+        lookup=lambda k:(xy,yaw) if k=='recorded_baseline' else (px,pa)
+        with self.assertRaisesRegex(EditFeasibilityError,'immutable_history'):
+            self.schedule.generate(t,lookup,self.position_request(start_time_s=2.9),3.,parent_curve=c,acceptance=self.policy)
+        with self.assertRaisesRegex(EditFeasibilityError,'target_unreachable'):
+            self.schedule.generate(t,lookup,self.position_request(max_acceleration_mps2=.1),3.,parent_curve=c,acceptance=self.policy)
+        from ego_speed_profile import continuous_parent
+        c=continuous_parent(t,lookup,'p',c,3.)
+        shifted=xy.copy();shifted[:,1]=.5
+        lookup=lambda k:(shifted,yaw) if k=='recorded_baseline' else (px,pa)
+        with self.assertRaisesRegex(EditFeasibilityError,'stop_position_off_route'):
+            self.schedule.generate(t,lookup,self.position_request(path_source='recorded_baseline'),3.,parent_curve=c,acceptance=self.policy)
+
+    def test_position_stop_reports_computed_time_when_it_exceeds_horizon(self):
+        from edit_feedback import EditFeasibilityError
+        t,xy,yaw=self.fixture()
+        px,pa,c=self.schedule.generate(t,lambda _: (xy,yaw),self.request(
+            targets=[dict(time_s=5.,speed_mps=4.),dict(time_s=7.,speed_mps=0.)]),3.,acceptance=self.policy)
+        with self.assertRaises(EditFeasibilityError) as caught:
+            self.schedule.generate(t,lambda _: (px,pa),self.position_request(start_time_s=3.),3.,parent_curve=c,acceptance=self.policy)
+        self.assertEqual(caught.exception.code,'target_unreachable')
+        self.assertGreater(caught.exception.limits['computed_stop_time_s'],t[-1])
 
     def test_curved_route_motion_bound_is_for_delivered_curve_not_tangential_cap(self):
         t,xy,yaw=self.fixture();np=self.np
@@ -100,6 +159,18 @@ class ScheduleTests(unittest.TestCase):
         self.assertGreater(c['max_acceleration_mps2'],c['speed_edit_summary']['peak_tangential_acceleration_mps2'])
         self.assertLess(np.max(np.abs(np.diff(a))),.1)
         self.assertAlmostEqual(float(np.linalg.norm(c['terminal_velocity_xy_mps'])),0.)
+
+    def test_sampled_curved_stop_reaches_route_endpoint_without_extrapolation(self):
+        t,xy,yaw=self.fixture();np=self.np
+        angle=.1*t;xy=np.column_stack([20*np.sin(angle),20*(1-np.cos(angle))]);yaw=angle
+        px,pa,_=self.schedule.generate(t,lambda _: (xy,yaw),self.request(
+            targets=[dict(time_s=7.,speed_mps=0.)]),3.,acceptance=self.policy)
+        out,angles,curve=self.schedule.generate(t,lambda _: (px,pa),self.position_request(
+            start_time_s=4.),3.,acceptance=self.policy)
+        self.assertLess(float(np.linalg.norm(out[-1]-px[-1])),1e-4)
+        from edit_feedback import intent_checks
+        self.assertTrue(intent_checks(curve)['passed'])
+        self.assertTrue(np.array_equal(out[t<=4.],px[t<=4.]))
 
     def test_foci_timed_speed_targets_are_explicit_soft_preferences(self):
         from run_ego_foci_probe import FociProblem
@@ -123,32 +194,14 @@ class ScheduleTests(unittest.TestCase):
         self.assertLess(curve['acceleration_peak']['normal_mps2'],1e-8)
         self.assertEqual(curve['profile'],'signed_speed_schedule.v4')
 
-    def test_retime_inherits_style_and_child_reuses_identical_saved_route(self):
-        t,xy,yaw=self.fixture()
-        low=dict(parent_candidate_id='p',path_candidate_id='recorded_baseline',start_time_s=3.,
-            deceleration_mps2=.5,target_speed_mps=0.,motion_intent='forward_stop',end_behavior='hold')
-        px,pa,parent=self.edit.brake_along_path(t,xy,yaw,xy,yaw,low,3.,with_details=True)
-        lookup=lambda k:(xy,yaw) if k=='recorded_baseline' else (px,pa)
-        op=dict(edit_mode='speed_schedule',operation='retime_braking',parent_candidate_id='p',braking_start_shift_s=.2,
-                preserve='stop_position',reason='Delay onset, keep original braking style')
-        out,angles,curve=self.schedule.generate(t,lookup,op,3.,parent_curve=parent,acceptance=self.policy)
-        self.assertEqual(curve['speed_edit_summary']['transition_style'],'constant_acceleration')
-        self.assertEqual(curve['speed_edit_summary']['transition_style_source'],'inherited_parent_braking')
-        child=dict(op,braking_start_shift_s=.1)
-        x,a,next_curve=self.schedule.generate(t,lambda _: (out,angles),child,3.,parent_curve=curve,acceptance=self.policy)
-        self.assertEqual(next_curve['speed_route'],curve['speed_route'])
-        self.assertEqual(next_curve['speed_edit_summary']['route_initialization']['method'],'reuse_saved_spatial_route')
-        self.assertEqual(next_curve['speed_edit_summary']['transition_style'],'constant_acceleration')
-        self.assertAlmostEqual(x[-1,0],out[-1,0],places=5)
-
-    def test_archived_schedule_keeps_its_original_generation_and_new_version_is_explicit(self):
+    def test_current_schedule_version_is_explicit_and_removed_versions_are_rejected(self):
         t,xy,yaw=self.fixture();op=self.request()
-        archived=self.edit.modern_edit(t,lambda _: (xy,yaw),op,3.,acceptance=self.policy)
-        current=self.edit.modern_edit(t,lambda _: (xy,yaw),dict(op,speed_schedule_version='route_reuse.v2'),3.,acceptance=self.policy)
-        self.assertEqual(archived[2]['profile'],'signed_speed_schedule.v1')
-        self.assertEqual(current[2]['profile'],'signed_speed_schedule.v2')
-        self.assertTrue(self.np.allclose(archived[0],current[0],atol=1e-8))
-        with self.assertRaisesRegex(ValueError,'Unknown speed schedule'):
-            self.edit.modern_edit(t,lambda _: (xy,yaw),dict(op,speed_schedule_version='future'),3.)
+        default=self.edit.modern_edit(t,lambda _: (xy,yaw),op,3.,acceptance=self.policy)
+        explicit=self.edit.modern_edit(t,lambda _: (xy,yaw),dict(op,speed_schedule_version='state_continuity.v4'),3.,acceptance=self.policy)
+        self.assertEqual(default[2]['profile'],'signed_speed_schedule.v4')
+        self.assertEqual(default[2],explicit[2]);self.assertTrue(self.np.array_equal(default[0],explicit[0]))
+        for version in ('route_reuse.v2','future'):
+            with self.assertRaisesRegex(ValueError,'Unsupported speed schedule'):
+                self.edit.modern_edit(t,lambda _: (xy,yaw),dict(op,speed_schedule_version=version),3.)
 
 if __name__=='__main__':unittest.main()

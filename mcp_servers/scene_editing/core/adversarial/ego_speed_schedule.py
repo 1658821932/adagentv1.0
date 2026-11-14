@@ -142,9 +142,42 @@ class Route:
         return dict(version='spatial_route.v3',knots_m=self.path.x.tolist(),coefficients=self.path.c.tolist(),scope='Known route only; no extrapolation or rear-space certification')
 
 
+def inherited_stop_target(curve, parent_xy, scene_end):
+    """Require an observed stationary tail or an explicit continuous zero-speed end.
+
+    A final CSV position alone does not mean that the vehicle stopped there.
+    Sampled parents must contain a completed stationary interval, reconstructed
+    by parent_motion; continuous generated parents may stop exactly at scene end.
+    """
+    from edit_feedback import EditFeasibilityError
+    continuous=curve['continuous_state']
+    path=PPoly(np.asarray(continuous['xy_coefficients']),np.asarray(continuous['times_s']))
+    hold=curve.get('hold_starts_at_s')
+    sampled=curve.get('profile')=='sampled_parent_motion.v1'
+    last=float(path.x[-1]);terminal=min(float(scene_end),last)
+    valid=not (sampled and hold is None)
+    valid=valid and (last>=scene_end-1e-8 or (hold is not None and hold<=last+1e-8))
+    goal=np.asarray(path(terminal))
+    valid=valid and float(np.linalg.norm(path(terminal,1)))<=1e-6
+    valid=valid and float(np.linalg.norm(goal-np.asarray(parent_xy[-1])))<=1e-4
+    if hold is not None:
+        valid=valid and path.x[0]<=hold<=terminal
+        if valid:
+            knots=np.unique(np.r_[hold,path.x[(path.x>=hold)&(path.x<=terminal)],terminal])
+            query=np.r_[knots,(knots[:-1]+knots[1:])/2]
+            valid=bool(np.max(np.linalg.norm(path(query)-goal,axis=1))<=1e-4 and
+                       np.max(np.linalg.norm(path(query,1),axis=1))<=1e-6)
+    if not valid:
+        raise EditFeasibilityError('stop_position_unavailable',
+            'The parent has no verified terminal stop. Its last position is not a stopping goal; use timed speed targets or choose a stopped parent.',
+            parent_terminal_speed_mps=float(np.linalg.norm(path(terminal,1))),
+            parent_stationary_tail_detected=hold is not None)
+    return dict(target='parent_stop_position',target_xy_m=goal.tolist(),parent_hold_starts_at_s=hold,
+                source='observed_stationary_tail' if sampled else 'continuous_parent_terminal_stop')
+
+
 def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,parent_context=None):
-    from ego_speed_profile import continuous_parent
-    from ego_trajectory_edit import inherited_brake_state,_endpoint,curve_evidence
+    from ego_trajectory_edit import _endpoint,curve_evidence
     import acceptance_policy
     clean={k:v for k,v in args.items() if k not in {'mode','candidate_id','generation_source','speed_schedule_version'}}
     validate(clean)
@@ -153,42 +186,52 @@ def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,pare
     cap=float(args.get('max_acceleration_mps2',effective['max_acceleration_mps2']))
     if not 0<cap<=effective['max_acceleration_mps2']:
         raise ValueError('Acceleration cap must be positive and within unchanged planar policy')
-    retime=args['operation']=='retime_braking'
-    segment=None
-    if retime:
-        segment=(parent_curve or {}).get('braking_segment')
-        if segment is None and parent_curve and parent_curve.get('profile') in ('constant_tangential_deceleration_then_hold_or_cruise','smooth_deceleration_then_hold_or_cruise') and parent_curve.get('target_speed_mps')==0:
-            segment=dict(start_time_s=float(parent_curve['actual_start_state']['time_s']),stop_time_s=float(parent_curve['hold_starts_at_s']),
-                stop_xy_m=parent_curve['transition_xy_m'],transition_style='smooth' if parent_curve['profile']=='smooth_deceleration_then_hold_or_cruise' else 'constant_acceleration')
-        if segment is None:
-            raise ValueError('retiming_unavailable: parent has no explicit reconstructable braking-to-stop segment. Use set_speed_targets with a stated start and timed states; no braking onset is invented for sampled FOCI')
-        original_start=float(segment['start_time_s']);braking_start=original_start+args['braking_start_shift_s']
-        start=min(original_start,braking_start)
-    else:start=_endpoint(args['start_time_s'],times)
-    style=args.get('transition_style',segment['transition_style'] if retime else 'smooth')
-    style_source='explicit_request' if 'transition_style' in args else 'inherited_parent_braking' if retime else 'default_for_new_speed_targets'
+    stop_at_position=args['operation']=='stop_at_position'
+    start=_endpoint(args['start_time_s'],times)
+    style=args.get('transition_style','smooth')
+    style_source='explicit_request' if 'transition_style' in args else 'default_for_position_stop' if stop_at_position else 'default_for_new_speed_targets'
     factor=1.5 if style=='smooth' else 1.
     if not boundary<=start<times[-1]:
         from edit_feedback import EditFeasibilityError
         raise EditFeasibilityError('immutable_history' if start<boundary else 'target_unreachable',
-            'Edit start must lie at or after observation and before scene end',requested_start_s=float(start),earliest_editable_time_s=float(boundary),latest_editable_time_s=float(times[-1]))
-    if retime and not start<=braking_start<times[-1]:raise ValueError('target_unreachable: shifted braking start is outside editable horizon')
+            'Edit start must lie at or after edit_start_s and before scene end; observation_end_s is not an edit lock',requested_start_s=float(start),earliest_editable_time_s=float(boundary),latest_editable_time_s=float(times[-1]))
     from edit_continuity import parent_motion,state_at,body_heading
     parent_curve=parent_motion(times,lookup,parent_id,parent_curve,boundary,start,parent_context)
+    stop_goal=inherited_stop_target(parent_curve,parent_xy,float(times[-1])) if stop_at_position else None
     state=state_at(times,parent_xy,parent_yaw,start,parent_curve,parent_context)
     initial=float(np.sign(state['signed_speed_mps'])*np.linalg.norm(state['velocity_xy_mps']))
     if abs(state['signed_speed_mps'])<1e-9 and np.linalg.norm(state['velocity_xy_mps'])>1e-6:
         raise ValueError('state_incompatible: inherited motion is lateral; use a spatial route edit')
     route=Route(times,lookup,parent_id,state,parent_curve,args.get('path_source','parent'))
-    if retime:
-        if initial<=0:raise ValueError('retiming_unavailable: braking-to-stop retiming requires a forward inherited state')
-        if args['preserve']=='stop_time':end=float(segment['stop_time_s'])
-        else:
-            destination=route.project(np.asarray(segment['stop_xy_m']))
-            remaining=destination-route.origin-initial*(braking_start-start)
-            end=braking_start+2*remaining/initial
-        if not braking_start<end<=times[-1]+1e-8:raise ValueError('target_unreachable: shifted braking cannot retain the requested stopping target inside the scene')
-        targets=([dict(time_s=float(braking_start),speed_mps=initial)] if braking_start>start+1e-8 else [])+[dict(time_s=float(end),speed_mps=0.)]
+    if stop_at_position:
+        from edit_feedback import EditFeasibilityError
+        if initial<=1e-8:
+            raise EditFeasibilityError('state_incompatible',
+                'Position-based braking requires a moving forward state; use timed speed targets for restarting or reverse.',
+                inherited_speed_mps=initial)
+        goal=np.asarray(stop_goal['target_xy_m']);destination=route.project(goal)
+        projected=route.path(float(np.interp(destination,route.distance,route.parameter)))
+        mismatch=float(np.linalg.norm(projected-goal))
+        if mismatch>1e-4:
+            raise EditFeasibilityError('stop_position_off_route',
+                'The inherited stopping position is not on the selected known route; no snapping or extrapolation.',
+                stopping_position_route_error_m=mismatch,stopping_position_tolerance_m=1e-4)
+        # The arc table locates geometry but is not an exact distance constraint.
+        # Integrate the polynomial route to avoid overshooting its endpoint.
+        from scipy.integrate import quad
+        origin_parameter=float(np.interp(route.origin,route.distance,route.parameter))
+        goal_parameter=float(np.interp(destination,route.distance,route.parameter))
+        breaks=route.path.x[(route.path.x>min(origin_parameter,goal_parameter))&(route.path.x<max(origin_parameter,goal_parameter))]
+        remaining=float(quad(lambda value:float(np.linalg.norm(route.path(value,1))),
+            origin_parameter,goal_parameter,points=breaks,epsabs=1e-10,epsrel=1e-10,limit=max(50,len(breaks)+2))[0])
+        end=float(start+2*remaining/initial)
+        if remaining<=1e-8 or not start<end<=times[-1]+1e-8:
+            raise EditFeasibilityError('target_unreachable',
+                'Braking from this inherited speed cannot reach the stopping position within the scene with this transition style.',
+                remaining_distance_m=remaining,inherited_speed_mps=initial,computed_stop_time_s=end,
+                available_time_s=float(times[-1]-start))
+        stop_goal.update(remaining_route_distance_m=remaining,computed_stop_time_s=end)
+        targets=[dict(time_s=end,speed_mps=0.)]
     else:targets=copy.deepcopy(args['targets'])
     for p in targets:p['time_s']=_endpoint(p['time_s'],times)
     validate_targets(targets,start=start,end=float(times[-1]),max_speed=effective['max_speed_mps'])
@@ -221,7 +264,9 @@ def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,pare
     from trajectory_sampling import construction_times
     query=construction_times(knots,crossing_times,start,float(times[-1]))
     progress=route.origin+integral(query)-integral(start)
-    if progress.min()<-1e-6 or progress.max()>route.distance[-1]+1e-6:
+    # Position stops are monotone between verified route parameters. drive
+    # checks those bounds; do not compare exact distance to the coarse table.
+    if not stop_at_position and (progress.min()<-1e-6 or progress.max()>route.distance[-1]+1e-6):
         from edit_feedback import EditFeasibilityError
         raise EditFeasibilityError('route_exhausted','The speed targets exceed the known route; no extrapolation',
             requested_arc_range_m=[float(progress.min()),float(progress.max())],known_arc_range_m=[0.,float(route.distance[-1])],
@@ -239,9 +284,10 @@ def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,pare
         while k>0 and speeds[k-1]==0:k-=1
         hold_start=float(knots[k])
     preservation=None
-    if retime:
-        error=(float(np.linalg.norm(xy[-1]-np.asarray(segment['stop_xy_m']))) if args['preserve']=='stop_position' else abs(hold_start-float(segment['stop_time_s'])))
-        preservation=dict(preserve=args['preserve'],error=error,tolerance=1e-4 if args['preserve']=='stop_position' else 1e-8,units='m' if args['preserve']=='stop_position' else 's')
+    if stop_at_position:
+        error=float(np.linalg.norm(xy[-1]-np.asarray(stop_goal['target_xy_m'])))
+        preservation=dict(preserve='stop_position',error=error,tolerance=1e-4,units='m')
+        stop_goal.update(actual_stop_time_s=hold_start,actual_stop_xy_m=xy[-1].tolist(),position_error_m=error)
     evidence.update(profile='signed_speed_schedule.v4',edit_contract_version='trajectory_edit.v2',
         body_heading=heading_evidence,parent_motion_source=parent_curve.get('parent_motion_source'),
         continuous_state=dict(version='continuous.v2',times_s=spline.x.tolist(),xy_coefficients=spline.c.tolist(),yaw_coefficients=yaw_curve.c.tolist()),
@@ -250,28 +296,37 @@ def generate(times,lookup,args,boundary,*,parent_curve=None,acceptance=None,pare
         target_speed_mps=terminal,hold_starts_at_s=hold_start,
         speed_edit_summary=dict(operation=args['operation'],preserved_until_s=float(start),path_source=args.get('path_source','parent'),
             transition_style=style,transition_style_source=style_source,route_initialization=route.initialization,targets=targets,preservation_evidence=preservation,terminal_behavior='hold' if terminal==0 else 'maintain_signed_speed',
-            retiming=(dict(original_braking_start_s=original_start,actual_braking_start_s=float(braking_start),preserve=args['preserve']) if retime else None),
+            retiming=None,
             actual_start_speed_mps=initial,peak_tangential_acceleration_mps2=float(max(abs(law(t,1)) for t in np.r_[knots,((np.array(knots[:-1])+np.array(knots[1:]))/2)])),
             target_evidence=[dict(time_s=p['time_s'],requested_speed_mps=p['speed_mps'],actual_speed_mps=float(np.copysign(np.linalg.norm(spline(p['time_s'],1)),spline(p['time_s'],1)@np.array([np.cos(yaw_curve(p['time_s'])),np.sin(yaw_curve(p['time_s']))]))),
                 actual_body_forward_speed_mps=float(spline(p['time_s'],1)@np.array([np.cos(yaw_curve(p['time_s'])),np.sin(yaw_curve(p['time_s']))]))) for p in targets],
             scope='Signed-speed states on a checked known route; sampled geometry does not certify rear coverage or physical execution'),
         resolved_targets=[dict(time_s=p['time_s'],xy_m=spline(p['time_s']).tolist(),speed_mps=float(law(p['time_s']))) for p in targets],
         direction_sequence=[float(v) for v in speeds],declared_reverse=any(v<0 for v in speeds))
+    if stop_goal is not None:evidence['speed_edit_summary']['stop_position']=stop_goal
     evidence['acceleration_peak']=acceleration_peak(spline)
     evidence['speed_edit_summary']['actual_motion']=dict(peak_acceleration=evidence['acceleration_peak'],hard_planar_acceleration_limit_mps2=effective['max_acceleration_mps2'])
-    if retime or (len(targets)==1 and initial>0 and targets[0]['speed_mps']==0):
-        evidence['braking_segment']=dict(start_time_s=float(braking_start) if retime else float(start),stop_time_s=float(hold_start),stop_xy_m=xy[-1].tolist(),transition_style=style)
+    if len(targets)==1 and initial>0 and targets[0]['speed_mps']==0:
+        evidence['braking_segment']=dict(start_time_s=float(start),stop_time_s=float(hold_start),stop_xy_m=xy[-1].tolist(),transition_style=style)
     return xy,yaw,evidence
 
 
 def acceleration_peak(spline):
-    """Actual delivered cubic acceleration maxima occur at piece endpoints."""
+    """Exact planar acceleration extrema, also for reconstructed quintic pieces."""
     best=None
     for i,span in enumerate(np.diff(spline.x)):
-        for elapsed in (0.,float(span)):
-            c=spline.c[:,i]
-            velocity=3*c[0]*elapsed**2+2*c[1]*elapsed+c[2]
-            acceleration=6*c[0]*elapsed+2*c[1]
+        c=spline.c[:,i];queries=[0.,float(span)]
+        if c.shape[0]!=4:
+            components=[np.polynomial.Polynomial(axis[::-1]) for axis in c.T]
+            squared=sum((p.deriv(2)**2 for p in components),np.polynomial.Polynomial([0.]))
+            queries.extend(float(root.real) for root in squared.deriv().roots() if abs(root.imag)<1e-8 and 0<root.real<span)
+        for elapsed in queries:
+            if c.shape[0]==4:
+                velocity=3*c[0]*elapsed**2+2*c[1]*elapsed+c[2]
+                acceleration=6*c[0]*elapsed+2*c[1]
+            else:
+                velocity=np.array([p.deriv()(elapsed) for p in components])
+                acceleration=np.array([p.deriv(2)(elapsed) for p in components])
             magnitude=float(np.linalg.norm(acceleration))
             speed=float(np.linalg.norm(velocity))
             along=float(acceleration@velocity/speed) if speed>1e-8 else None

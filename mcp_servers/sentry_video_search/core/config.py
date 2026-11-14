@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 COMPONENT_ROOT = Path(__file__).resolve().parents[1]
-LIBRARIES = ("default", "waymo")
+LIBRARIES = ("default",)
 
 
 @dataclass
@@ -47,14 +47,6 @@ class SearchConfig:
     def for_library(cls, library: str) -> SearchConfig:
         if library == "default":
             return cls()
-        if library == "waymo":
-            root = Path(os.getenv("SENTRY_WAYMO_ROOT", str(COMPONENT_ROOT / "data_waymo_front"))).expanduser()
-            return cls(
-                chunk_duration=10,
-                runtime_home=(root / "runtime").resolve(),
-                preprocess_index_chunks=True,
-                import_source_videos=False,
-            )
         raise ValueError(f"Unknown video library: {library}")
 
     def validate(self) -> None:

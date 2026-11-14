@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import shutil
 import time
 from pathlib import Path
@@ -13,14 +14,27 @@ from pathlib import Path
 import numpy as np
 from scipy.interpolate import BSpline
 from scipy.optimize import minimize
-from shapely.geometry import Point
 
 from ego_action_tool import assess
 from ego_road_checks import (RoadGeometry, check_drivable_area_official, ego_corners_xy,
     load_official_drivable, load_scene_road)
 from experiment_runtime import atomic_json
+from foci_parallel import optimize_candidates
 from run_ego_reference import (DEFAULT_TARGET_TRACK, EGO_FRONT, EGO_REAR, EGO_WIDTH,
     progress_with_safe_stop, scene_from_frames)
+
+
+def optimize_foci_candidate(payload):
+    from defense_behavior import DrivingObjective
+    official_road = load_official_drivable(payload['official_path']) if payload.get('official_path') else None
+    behavior = DrivingObjective(payload['times'], payload['baseline_xy'], payload['actors'],
+        payload['target_track'], payload['acceptance'])
+    problem = FociProblem(payload['times'], payload['parent_xy'], payload['parent_yaw'], payload['actors'],
+        target_track=payload['target_track'], official_road=official_road,
+        freeze_before_s=payload['freeze_before_s'], road_margin_m=payload['road_margin_m'],
+        edit_window_s=payload['edit_window_s'], observation_end_s=payload['observation_end_s'],
+        behavior_objective=behavior, edit_goals=payload['edit_goals'], edit_start_s=payload['edit_start_s'])
+    return problem.optimize(*payload['weights'], max_iterations=payload['max_iterations'])
 
 
 def read_track(path, times):
@@ -91,9 +105,10 @@ def overlap_integral(ego_means, ego_covariance, target_means, target_covariance)
 class FociProblem:
     def __init__(self, times, parent_xy, parent_yaw, actors, control_count=16, freeze_before_s=8.,
             target_track=DEFAULT_TARGET_TRACK, official_road=None, road_margin_m=0.1,
-            edit_window_s=None, observation_end_s=3., behavior_objective=None, edit_goals=None):
+            edit_window_s=None, observation_end_s=1.5, behavior_objective=None, edit_goals=None, edit_start_s=None):
         self.times = np.asarray(times, float)
         self.observation_end_s = float(observation_end_s)
+        self.edit_start_s=float(observation_end_s if edit_start_s is None else edit_start_s)
         self.edit_window_s = edit_window_s
         self.behavior_objective=behavior_objective
         self.edit_goals=edit_goals or {}
@@ -104,8 +119,8 @@ class FociProblem:
             raise ValueError('Stop goal requires a terminal window covering at least the last two intervals')
         if edit_window_s is not None:
             if (len(edit_window_s)!=2 or not np.isfinite(edit_window_s).all()
-                    or not observation_end_s <= edit_window_s[0] < edit_window_s[1] <= self.times[-1]+1e-8):
-                raise ValueError('FOCI edit window must lie after observation and inside scene')
+                    or not self.edit_start_s <= edit_window_s[0] < edit_window_s[1] <= self.times[-1]+1e-8):
+                raise ValueError('FOCI edit window must lie inside the editable scene horizon')
             span=edit_window_s[1]-edit_window_s[0]
             u=np.clip((self.times-edit_window_s[0])/min(1.,span/2),0.,1.)
             v=np.clip((edit_window_s[1]-self.times)/min(1.,span/2),0.,1.)
@@ -135,20 +150,18 @@ class FociProblem:
         the union count a negative margin, so the penalty grows quadratically outward."""
         if self.official_road is None:
             return 0.0
+        import shapely
         union = self.official_road.union
-        boundary = self._road_boundary
-        total = 0.0
-        for i in range(len(self.times)):
-            for corner in ego_corners_xy(xy[i, 0], xy[i, 1], yaw[i]):
-                point = Point(corner)
-                if union.covers(point):
-                    margin = boundary.distance(point)
-                else:
-                    margin = -union.distance(point)
-                shortfall = self.road_margin_m-margin
-                if shortfall > 0:
-                    total += shortfall**2
-        return float(total/(4*len(self.times)))
+        if not getattr(self, '_road_prepared', False):
+            shapely.prepare(union)
+            self._road_prepared = True
+        corners = np.array([ego_corners_xy(xy[i, 0], xy[i, 1], yaw[i]) for i in range(len(self.times))])
+        points = shapely.points(corners.reshape(-1, 2))
+        covered = shapely.covers(union, points)
+        margins = np.where(covered, shapely.distance(points, self._road_boundary),
+            -shapely.distance(points, union))
+        shortfall = np.maximum(self.road_margin_m-margins, 0.)
+        return float(np.mean(shortfall**2))
 
     def trajectory(self, delta):
         delta=np.asarray(delta).reshape(self.initial_control.shape)
@@ -170,7 +183,7 @@ class FociProblem:
             poses[unchanged,:2]=self.parent_xy[unchanged];poses[unchanged,2]=self.parent_yaw[unchanged]
         elif self.edit_goals.get('terminal_behavior')=='stop':
             poses=self._terminal_hold(poses)
-        prefix = self.times <= self.observation_end_s+1e-8
+        prefix = self.times <= self.edit_start_s+1e-8
         poses[prefix, :2] = self.parent_xy[prefix]
         poses[prefix, 2] = self.parent_yaw[prefix]
         return poses[:, :2], poses[:, 2]
@@ -228,23 +241,183 @@ class FociProblem:
                 (-yaw_limit, yaw_limit)]))
         return bounds
 
+    def supports_hybrid_gradient(self):
+        return (not self.edit_goals.get('preserve_route', False)
+                and self.edit_goals.get('terminal_behavior', 'free') == 'free')
+
+    def _linear_gradient(self, poses):
+        design = np.array(self.design, copy=True)
+        if self.edit_window_s is not None:
+            design *= self.window_weight[:, None]
+        design[self.times <= self.edit_start_s+1e-8] = 0.
+        return (design.T @ poses).reshape(-1)
+
+    def _overlap_value_gradient(self, xy, yaw):
+        if self.overlap_scale is None:
+            return 0., np.zeros((len(self.times), 3))
+        length = EGO_FRONT+EGO_REAR
+        shift = (EGO_FRONT-EGO_REAR)/2
+        means, covariance = vehicle_gaussians(xy, yaw, length, EGO_WIDTH, shift)
+        delta = means[:, :, None, :]-self.target_means[:, None, :, :]
+        combined = covariance[:, :, None]+self.target_covariance[:, None, :]
+        inverse = np.linalg.inv(combined)
+        determinant = np.linalg.det(combined)
+        mahalanobis = np.einsum('...i,...ij,...j->...', delta, inverse, delta)
+        density = np.exp(-.5*mahalanobis)/(2*np.pi*np.sqrt(determinant))
+        value = float(density.sum(axis=(1, 2)).mean()/self.overlap_scale)
+        inverse_delta = np.einsum('...ij,...j->...i', inverse, delta)
+        mean_gradient = -density[..., None]*inverse_delta
+        mean_gradient = mean_gradient.sum(axis=2)
+        xy_gradient = mean_gradient.sum(axis=1)
+        local = np.linspace(-1/3, 1/3, 3)[None, :]*length+shift
+        mean_yaw = local[:, :, None]*np.column_stack([-np.sin(yaw), np.cos(yaw)])[:, None, :]
+        covariance_gradient = .5*density[..., None, None]*(
+            inverse_delta[..., :, None]*inverse_delta[..., None, :]-inverse)
+        c, s = np.cos(yaw), np.sin(yaw)
+        rotation = np.stack([np.stack([c, -s], axis=1), np.stack([s, c], axis=1)], axis=1)
+        rotation_derivative = np.stack([np.stack([-s, -c], axis=1), np.stack([c, -s], axis=1)], axis=1)
+        diagonal = np.zeros((len(self.times), 3, 2, 2))
+        diagonal[:, :, 0, 0] = (length/3/2)**2
+        diagonal[:, :, 1, 1] = (EGO_WIDTH/2)**2
+        covariance_derivative = (rotation_derivative[:, None] @ diagonal @ np.swapaxes(rotation[:, None], -1, -2)
+            + rotation[:, None] @ diagonal @ np.swapaxes(rotation_derivative[:, None], -1, -2))
+        yaw_covariance = np.einsum('...ij,...ij->...', covariance_gradient,
+            covariance_derivative[:, :, None, :, :]).sum(axis=(1, 2))
+        yaw_gradient = (mean_gradient*mean_yaw).sum(axis=(1, 2))+yaw_covariance
+        gradient = np.column_stack([xy_gradient, yaw_gradient])/(len(self.times)*self.overlap_scale)
+        return value, gradient
+
+    def _smooth_value_gradient(self, flat_delta, collision_weight, deviation_weight,
+            jerk_weight, lateral_weight, collision_factor):
+        xy, yaw = self.trajectory(flat_delta.reshape(self.initial_control.shape))
+        overlap, overlap_gradient = self._overlap_value_gradient(xy, yaw)
+        correction_xy = xy-self.zero_xy
+        correction_yaw = yaw-self.zero_yaw
+        deviation = float(np.mean(correction_xy**2)+.1*np.mean(correction_yaw**2))
+        deviation_gradient = np.column_stack([correction_xy/len(self.times),
+            .2*correction_yaw/len(self.times)])
+        motion = np.diff(xy, axis=0)/np.diff(self.times)[:, None]
+        midpoint = (yaw[:-1]+yaw[1:])/2
+        normal = np.column_stack([-np.sin(midpoint), np.cos(midpoint)])
+        lateral = np.sum(motion*normal, axis=1)
+        excess = np.maximum(np.abs(lateral)-.75, 0.)
+        lateral_penalty = float(np.mean(excess**2))
+        coefficient = 2*excess*np.sign(lateral)/len(lateral)
+        lateral_gradient = np.zeros((len(self.times), 3))
+        positions = coefficient[:, None]*normal/np.diff(self.times)[:, None]
+        indices = np.arange(len(lateral))
+        np.add.at(lateral_gradient[:, :2], indices, positions)
+        np.add.at(lateral_gradient[:, :2], indices+1, -positions)
+        yaw_rate = .5*np.sum(motion*np.column_stack([-np.cos(midpoint), -np.sin(midpoint)]), axis=1)
+        np.add.at(lateral_gradient[:, 2], indices, coefficient*yaw_rate)
+        np.add.at(lateral_gradient[:, 2], indices+1, coefficient*yaw_rate)
+        if self.behavior_objective is not None:
+            deviation_weight = .01/max(1., self.behavior_objective.available**2)
+            jerk = 0.
+            jerk_gradient = np.zeros((len(self.times), 3))
+        else:
+            difference = np.diff(np.eye(len(self.times)), n=3, axis=0)
+            jerk_xy = np.diff(correction_xy, n=3, axis=0)
+            jerk_yaw = np.diff(correction_yaw, n=3, axis=0)
+            jerk = float(np.mean(jerk_xy**2)+.05*np.mean(jerk_yaw**2))
+            jerk_gradient = np.column_stack([2*difference.T@jerk_xy/jerk_xy.size,
+                .1*difference.T@jerk_yaw/jerk_yaw.size])
+        value = (collision_weight*overlap*collision_factor+deviation_weight*deviation
+            +jerk_weight*jerk+lateral_weight*lateral_penalty)
+        gradient = (collision_weight*collision_factor*overlap_gradient
+            +deviation_weight*deviation_gradient+jerk_weight*jerk_gradient+lateral_weight*lateral_gradient)
+        return value, self._linear_gradient(gradient), overlap
+
+    def _target_cost(self, xy, yaw):
+        if not self.edit_goals.get('speed_targets'):
+            return 0.
+        from ego_speed_schedule import sampled_target_errors
+        return sampled_target_errors(self.times, xy, yaw, self.edit_goals['speed_targets'])['mean_squared_error_mps2']
+
+    def _residual_value(self, xy, yaw, road_weight):
+        base = 0.
+        collision_factor = 1.
+        if self.behavior_objective is not None:
+            behavior = self.behavior_objective.evaluate(xy, yaw)
+            base = behavior['optimization_cost']
+            if self.edit_goals.get('improvement_goal') == 'recover_progress':
+                base += behavior['cost_components']['progress_loss']
+            elif self.edit_goals.get('improvement_goal') == 'smoother_motion':
+                base += (.08*behavior['cost_components']['acceleration']
+                    +.02*behavior['cost_components']['jerk'])
+            collision_factor = min(1., behavior['reserve_shortfall_cost'])
+        road = road_weight*self.road_penalty(xy, yaw) if road_weight else 0.
+        return base+self._target_cost(xy, yaw)+road, collision_factor
+
+    def objective_and_gradient(self, flat_delta, collision_weight, deviation_weight,
+            jerk_weight, lateral_weight, road_weight=0.):
+        xy, yaw = self.trajectory(flat_delta.reshape(self.initial_control.shape))
+        residual, collision_factor = self._residual_value(xy, yaw, road_weight)
+        value, gradient, overlap = self._smooth_value_gradient(flat_delta, collision_weight,
+            deviation_weight, jerk_weight, lateral_weight, collision_factor)
+        value += residual
+        if self.behavior_objective is None and not self.edit_goals.get('speed_targets') and not road_weight:
+            return value, gradient
+        bounds = np.asarray(self.bounds())
+        active = np.flatnonzero(bounds[:, 0] != bounds[:, 1])
+        for index in active:
+            step = np.sqrt(np.finfo(float).eps)*(1+abs(flat_delta[index]))
+            changed = flat_delta.copy()
+            changed[index] += step
+            changed_xy, changed_yaw = self.trajectory(changed.reshape(self.initial_control.shape))
+            changed_residual, changed_factor = self._residual_value(changed_xy, changed_yaw, road_weight)
+            gradient[index] += (changed_residual-residual)/step
+            if self.behavior_objective is not None:
+                gradient[index] += collision_weight*overlap*(changed_factor-collision_factor)/step
+        return value, gradient
+
     def optimize(self, collision_weight, deviation_weight, jerk_weight, lateral_weight, road_weight=0.,
             max_iterations=250):
         start = time.monotonic()
-        initial = np.zeros(self.initial_control.size)
-        result = minimize(self.objective, initial,
-            args=(collision_weight, deviation_weight, jerk_weight, lateral_weight, road_weight),
-            method='L-BFGS-B', bounds=self.bounds(), options={'maxiter':max_iterations, 'maxls':40, 'ftol':1e-12})
-        xy, yaw = self.trajectory(result.x.reshape(self.initial_control.shape))
+        current = np.zeros(self.initial_control.size)
+        if max_iterations <= 60:
+            stages = [max_iterations]
+        elif max_iterations <= 120:
+            stages = [max_iterations//2, max_iterations-max_iterations//2]
+        else:
+            stages = [60, 60, max_iterations-120]
+        hybrid = self.supports_hybrid_gradient()
+        records = []
+        iterations = evaluations = 0
+        previous = None
+        stop_reason = 'iteration_budget'
+        for allowance in stages:
+            function = self.objective_and_gradient if hybrid else self.objective
+            result = minimize(function, current,
+                args=(collision_weight, deviation_weight, jerk_weight, lateral_weight, road_weight),
+                method='L-BFGS-B', bounds=self.bounds(), jac=hybrid,
+                options={'maxiter':allowance, 'maxls':40, 'ftol':1e-10})
+            iterations += int(result.nit)
+            evaluations += int(result.nfev)
+            improvement = None if previous is None else float(previous-result.fun)
+            records.append(dict(requested_iterations=allowance, iterations=int(result.nit),
+                function_evaluations=int(result.nfev), objective=float(result.fun), improvement=improvement,
+                success=bool(result.success)))
+            current = result.x
+            if result.success:
+                stop_reason = 'solver_converged'
+                break
+            if improvement is not None and improvement <= 1e-5*max(1., abs(previous)):
+                stop_reason = 'stage_plateau'
+                break
+            previous = float(result.fun)
+        xy, yaw = self.trajectory(current.reshape(self.initial_control.shape))
         return xy, yaw, dict(success=bool(result.success), solver_status=int(result.status),
-            message=str(result.message), iterations=int(result.nit), function_evaluations=int(result.nfev),
+            message=str(result.message), iterations=iterations, function_evaluations=evaluations,
             objective=float(result.fun), collision_weight=collision_weight,
             deviation_weight=deviation_weight, jerk_weight=jerk_weight, lateral_weight=lateral_weight,
             road_weight=road_weight, road_margin_m=self.road_margin_m,
             road_penalty_final=float(self.road_penalty(xy, yaw)),
             lateral_soft_target_mps=.75, initial_mean_overlap_per_frame=self.overlap_scale,
             final_mean_overlap_per_frame=float(self.overlap(xy, yaw).mean()),
-            control_delta=result.x.reshape(self.initial_control.shape).tolist(),
+            control_delta=current.reshape(self.initial_control.shape).tolist(),
+            gradient_method='hybrid_analytic_finite_difference' if hybrid else 'finite_difference',
+            iteration_stages=records, stop_reason=stop_reason,
             wall_time_s=time.monotonic()-start)
 
 
@@ -293,13 +466,14 @@ def run(input_dir, parent_run, candidate_id, run_dir, max_iterations=250, target
         road = RoadGeometry(road_official.union, map_source=str(official_path),
                             polygon_count=len(road_official.polygons))
     times, baseline_xy, baseline_yaw, actors = scene_from_frames(frames, target_track=target_track)
-    observation_end_s=(acceptance or {}).get('observation_end_s',3.)
-    freeze_before_s=observation_end_s if freeze_before_s is None else float(freeze_before_s)
+    observation_end_s=(acceptance or {}).get('observation_end_s',1.5)
+    editable=policy.edit_start(acceptance or policy.resolve())
+    freeze_before_s=editable if freeze_before_s is None else float(freeze_before_s)
     if not np.isfinite(freeze_before_s):
         raise ValueError('FOCI freeze boundary must be finite')
     # Freeze-before restricts optimizer control points; the window additionally
     # guarantees exact unchanged sampled history and outside-window parent poses.
-    edit_window_s=list(edit_window_s) if edit_window_s is not None else [max(observation_end_s,freeze_before_s),float(times[-1])]
+    edit_window_s=list(edit_window_s) if edit_window_s is not None else [max(editable,freeze_before_s),float(times[-1])]
     if max_candidates is not None and (type(max_candidates) is not int or not 1<=max_candidates<=8):
         raise ValueError('FOCI candidate limit must be in [1,8]')
     if type(max_iterations) is not int or not 1<=max_iterations<=250:
@@ -315,7 +489,7 @@ def run(input_dir, parent_run, candidate_id, run_dir, max_iterations=250, target
     (run_dir/'input').mkdir()
     shutil.copyfile(parent_track, run_dir/'input/parent-trajectory.csv')
     road_weights = (300., 1000.) if road_official is not None else (0.,)
-    config = dict(acceptance_policy=acceptance, version='ego_foci_probe.v8',edit_goals=edit_goals, input_dir=str(input_dir), parent_run=str(parent_run),
+    config = dict(acceptance_policy=acceptance, version='ego_foci_probe.v9' if editable<observation_end_s else 'ego_foci_probe.v8',edit_goals=edit_goals, input_dir=str(input_dir), parent_run=str(parent_run),
         parent_candidate_id=candidate_id, target_track=target_track,
         method='FOCI-inspired dynamic 2D Gaussian overlap with cubic B-spline control points; not the original 3D FOCI implementation',
         vehicle_model='Three anisotropic 2D Gaussians per vehicle; longitudinal sigma=segment_length/2 and lateral sigma=width/2',
@@ -337,10 +511,12 @@ def run(input_dir, parent_run, candidate_id, run_dir, max_iterations=250, target
         raise ValueError('FOCI parent count exceeds candidate budget')
     config.update(parent_candidate_ids=parent_ids,behavior_preferences=preferences(),
         terminal_window_policy='terminal free only when editable window ends at scene end; sampled history and any later outside-window parent poses stay fixed')
+    if editable<observation_end_s:
+        config['edit_start_s']=editable
     atomic_json(run_dir/'config.json', config)
     problem = FociProblem(times, parent_xy, parent_yaw, actors, target_track=target_track,
         official_road=road_official, freeze_before_s=freeze_before_s,
-        road_margin_m=road_margin_target_m,edit_window_s=edit_window_s,observation_end_s=observation_end_s,behavior_objective=behavior,edit_goals=edit_goals)
+        road_margin_m=road_margin_target_m,edit_window_s=edit_window_s,observation_end_s=observation_end_s,behavior_objective=behavior,edit_goals=edit_goals,edit_start_s=editable)
     weight_sets = [(1., .03, 1., 1.), (1., .03, 1., 10.), (1., .03, 1., 100.),
         (3., .03, 1., 1.), (3., .03, 1., 10.), (3., .03, 1., 100.),
         (10., .01, .1, 10.), (30., .003, .1, 100.), (100., .001, .01, 1000.)]
@@ -373,26 +549,44 @@ def run(input_dir, parent_run, candidate_id, run_dir, max_iterations=250, target
     archive('spline_initial', problem.zero_xy, problem.zero_yaw, dict(source='zero_edit_spline_fit',
         initial_mean_overlap_per_frame=problem.overlap_scale))
     if problem.overlap_scale is not None or behavior is not None:
+        from functools import partial
+        tasks = []
+        parents = {}
         for index, weights in enumerate(weight_sets, 1):
             active_parent=parent_ids[(index-1)%len(parent_ids)]
+            parents[index]=active_parent
             if active_parent!=candidate_id:
                 path=(parent_run/'reference_screen'/active_parent/'trajectory.csv') if constructor_track.is_file() else parent_run/'candidates'/active_parent/'trajectory.csv'
                 active_xy,active_yaw=read_track(path,times)
                 saved_parent=run_dir/'input'/('parent-'+active_parent+'.csv')
                 if not saved_parent.exists():shutil.copyfile(path,saved_parent)
-                active_problem=FociProblem(times,active_xy,active_yaw,actors,target_track=target_track,
-                    official_road=road_official,freeze_before_s=freeze_before_s,road_margin_m=road_margin_target_m,
-                    edit_window_s=edit_window_s,observation_end_s=observation_end_s,behavior_objective=behavior,edit_goals=edit_goals)
             else:
-                active_problem=problem
-            xy, yaw, optimization = active_problem.optimize(*weights, max_iterations=max_iterations)
+                active_xy,active_yaw=parent_xy,parent_yaw
+            payload = dict(times=times,baseline_xy=baseline_xy,baseline_yaw=baseline_yaw,actors=actors,
+                parent_xy=active_xy,parent_yaw=active_yaw,target_track=target_track,
+                official_path=str(official_path) if road_official is not None else None,
+                freeze_before_s=freeze_before_s,road_margin_m=road_margin_target_m,
+                edit_window_s=edit_window_s,observation_end_s=observation_end_s,
+                acceptance=acceptance or policy.resolve(),edit_goals=edit_goals,edit_start_s=editable,
+                weights=weights,max_iterations=max_iterations)
+            tasks.append(dict(index=index, timeout_s=float(os.getenv('FOCI_CANDIDATE_TIMEOUT_S','280')),
+                optimize=partial(optimize_foci_candidate,payload)))
+        results = optimize_candidates(tasks,max_workers=int(os.getenv('FOCI_PARALLEL_WORKERS','2')))
+        for result in results:
+            index=result['index'];active_parent=parents[index];cid=f'foci_{index:03d}'
+            if result.get('error_type'):
+                candidates.append(dict(candidate_id=cid,parent_candidate_id=active_parent,
+                    status='execution_failed',eligible_for_best=False,error_type=result['error_type'],error=result['error']))
+                print(json.dumps({'candidate_id':cid,'status':'execution_failed','error_type':result['error_type']}))
+                continue
+            xy, yaw, optimization = result['value']
             optimization.update(parent_candidate_id=active_parent,behavior_preferences=preferences(),
                 behavior_metrics=behavior.evaluate(xy,yaw))
             if speed_targets:
                 from ego_speed_schedule import sampled_target_errors
                 optimization['speed_target_feedback']=sampled_target_errors(times,xy,yaw,speed_targets)
-            archive(f'foci_{index:03d}', xy, yaw, optimization)
-            print(json.dumps({'candidate_id':f'foci_{index:03d}', 'min_target_clearance_m':candidates[-1]['min_target_clearance_m'],
+            archive(cid, xy, yaw, optimization)
+            print(json.dumps({'candidate_id':cid, 'min_target_clearance_m':candidates[-1]['min_target_clearance_m'],
                 'status':candidates[-1]['status'], 'solver_success':optimization['success']}))
     else:
         print(json.dumps({'status':'gaussian_optimizer_skipped',
@@ -433,7 +627,7 @@ def run(input_dir, parent_run, candidate_id, run_dir, max_iterations=250, target
 def verify_candidate(run_dir, candidate_id, *, input_dir, target_track, acceptance, times, actors, parent_xy, parent_yaw):
     run_dir=Path(run_dir)
     config=json.loads((run_dir/'config.json').read_text())
-    if (config.get('version') not in ('ego_foci_probe.v5','ego_foci_probe.v6','ego_foci_probe.v7','ego_foci_probe.v8') or Path(config['input_dir']).resolve()!=Path(input_dir).resolve()
+    if (config.get('version') not in ('ego_foci_probe.v5','ego_foci_probe.v6','ego_foci_probe.v7','ego_foci_probe.v8','ego_foci_probe.v9') or Path(config['input_dir']).resolve()!=Path(input_dir).resolve()
             or config['target_track']!=target_track or config['acceptance_policy']!=acceptance):
         raise ValueError('FOCI candidate scene, policy or version differs')
     optimization=json.loads((run_dir/'candidates'/candidate_id/'optimization.json').read_text())
@@ -443,7 +637,7 @@ def verify_candidate(run_dir, candidate_id, *, input_dir, target_track, acceptan
     parent_file='parent-trajectory.csv' if selected_parent==config['parent_candidate_id'] else 'parent-'+selected_parent+'.csv'
     saved_xy,saved_yaw=read_track(run_dir/'input'/parent_file,times)
     behavior=None
-    if config['version'] in ('ego_foci_probe.v6','ego_foci_probe.v7','ego_foci_probe.v8'):
+    if config['version'] in ('ego_foci_probe.v6','ego_foci_probe.v7','ego_foci_probe.v8','ego_foci_probe.v9'):
         from defense_behavior import DrivingObjective,preferences
         if config.get('behavior_preferences')!=preferences():
             raise ValueError('FOCI behavior preferences differ from archived run')
@@ -457,7 +651,8 @@ def verify_candidate(run_dir, candidate_id, *, input_dir, target_track, acceptan
     problem=FociProblem(times,parent_xy,parent_yaw,actors,control_count=config['control_count'],
         freeze_before_s=config['freeze_before_s'],target_track=target_track,official_road=official,
         road_margin_m=config['road_margin_target_m'],edit_window_s=config['edit_window_s'],
-        observation_end_s=config['observation_end_s'],behavior_objective=behavior,edit_goals=edit_goals)
+        observation_end_s=config['observation_end_s'],behavior_objective=behavior,edit_goals=edit_goals,
+        edit_start_s=config.get('edit_start_s',config['observation_end_s']))
     optimization=json.loads((run_dir/'candidates'/candidate_id/'optimization.json').read_text())
     delta=np.asarray(optimization['control_delta'],float)
     if (delta.shape!=problem.initial_control.shape or not np.isfinite(delta).all()

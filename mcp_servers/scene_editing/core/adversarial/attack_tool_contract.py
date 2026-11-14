@@ -2,6 +2,13 @@
 from copy import deepcopy
 
 
+def revision_evidence(constraints):
+    evidence=(constraints.get('revision_feedback') or {}).get('evidence',{})
+    if isinstance(evidence,str):
+        return dict(result_path=evidence)
+    return evidence if isinstance(evidence,dict) else {}
+
+
 def goal_diagnostics(goal):
     failures, measurements = [], []
     if goal is None:
@@ -52,7 +59,7 @@ def constructor_exhaustion(nodes, budget):
 
 
 def trajectory_tools(tools, nodes, evaluated, tested, probes_remaining, *,
-                     constructor_remaining=None, reselections_remaining=None):
+                     constructor_remaining=None, reselections_remaining=None, inspected=None):
     """Offer actions only while their eligibility and independent budgets permit them.
 
     Unknown balances preserve compatibility for callers without a constructor ledger.
@@ -65,13 +72,18 @@ def trajectory_tools(tools, nodes, evaluated, tested, probes_remaining, *,
             continue
         if name=='request_object_reselection' and reselections_remaining is not None and reselections_remaining<=0:
             continue
-        if name=='probe_pdm':
+        if name in ('probe_pdm','probe_vadv2'):
             ids=[key for key,node in nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible'] and key not in tested]
             if probes_remaining<=0 or not ids:
                 continue
             function['parameters']['properties']['candidate_id']['enum']=ids
         elif name=='evaluate_candidate':
             ids=[key for key in nodes if key not in evaluated]
+            if not ids:
+                continue
+            function['parameters']['properties']['candidate_id']['enum']=ids
+        elif name=='inspect_trajectory' and inspected is not None:
+            ids=[key for key in nodes if key not in inspected]
             if not ids:
                 continue
             function['parameters']['properties']['candidate_id']['enum']=ids

@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from email.utils import formatdate
 from pathlib import Path
 from typing import Any
@@ -120,19 +121,29 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
         scratch = run_dir.parent / "input" if run_dir.name == "logs" else run_dir / "input"
         scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="rerank-", dir=scratch) as temp_dir:
-            documents = []
-            for index, hit in enumerate(candidates):
+            run_label = run_dir.parent.name if run_dir.name == "logs" else run_dir.name
+
+            def prepare(index: int, hit: dict[str, Any]) -> str:
+                """剪辑 -> 转码 -> 上传，返回签名 URL。参数与原串行版本完全一致。"""
                 clip = Path(temp_dir) / f"candidate_{index:02d}.mp4"
                 trim_clip(str(hit["source_file"]), float(hit["start_time"]), float(hit["end_time"]), str(clip))
                 upload_clip = Path(preprocess_chunk(str(clip), target_resolution=None, target_fps=10))
                 if not 24 * 1024 <= upload_clip.stat().st_size <= MAX_RERANK_VIDEO_BYTES:
                     raise RuntimeError(f"Rerank video exceeds API size limits: {upload_clip}")
-                run_label = run_dir.parent.name if run_dir.name == "logs" else run_dir.name
                 key = f"{settings[4]}/run-{run_label}-{index:02d}-{int(time.time())}.mp4"
-                signed_url = _upload(upload_clip, key, settings)
-                uploaded.append(signed_url)
-                documents.append({"video": signed_url})
-                details["candidates"].append({**hit, "candidate_index": index})
+                return _upload(upload_clip, key, settings)
+
+            # 各候选互不依赖，并行准备（实测排序结果与串行完全一致）
+            prep_start = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=max(1, len(candidates))) as pool:
+                futures = [pool.submit(prepare, index, hit) for index, hit in enumerate(candidates)]
+                documents = []
+                for index, future in enumerate(futures):
+                    signed_url = future.result()
+                    uploaded.append(signed_url)  # 先登记，便于失败时统一清理
+                    documents.append({"video": signed_url})
+                    details["candidates"].append({**candidates[index], "candidate_index": index})
+            details.setdefault("timings", {})["rerank_prep_seconds"] = round(time.perf_counter() - prep_start, 3)
 
             payload = {
                 "model": profile["rerank_model"],
@@ -144,15 +155,17 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                     "instruct": "按照查询判断视频整体场景和关键交通行为的相关性，并对候选视频排序。",
                 },
             }
-            response = requests.post(
+            api_start = time.perf_counter()
+            from common.llm_audit import audited_json_call
+            response, body = audited_json_call(lambda: requests.post(
                 profile["rerank_url"],
                 headers={"Authorization": f"Bearer {profile['api_key']}", "Content-Type": "application/json"},
                 json=payload,
                 timeout=profile["rerank_timeout"],
-            )
-            body = response.json()
+            ), payload, endpoint=profile["rerank_url"], label='retrieval_rerank', secrets=[profile['api_key']], return_response=True)
+            details.setdefault("timings", {})["rerank_api_seconds"] = round(time.perf_counter() - api_start, 3)
             if response.status_code != 200 or body.get("code"):
-                raise RuntimeError(f"qwen3-vl-rerank failed ({response.status_code}): {body.get('message') or body.get('code')}")
+                raise RuntimeError(f"qwen3-vl-rerank failed ({response.status_code}); see request archive")
             results = body.get("output", {}).get("results") or []
             if not results:
                 raise RuntimeError("qwen3-vl-rerank returned no results")

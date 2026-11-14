@@ -1,6 +1,6 @@
 """Native replay goal failures are visible and ineligible actions are not offered."""
 from copy import deepcopy
-from mcp_servers.scene_editing.core.adversarial.attack_tool_contract import candidate_eligibility,constructor_exhaustion,goal_diagnostics,trajectory_tools
+from mcp_servers.scene_editing.core.adversarial.attack_tool_contract import candidate_eligibility,constructor_exhaustion,goal_diagnostics,revision_evidence,trajectory_tools
 
 
 def result(passed):
@@ -13,6 +13,15 @@ def result(passed):
 
 def tool(name):
     return dict(type='function',function=dict(name=name,parameters=dict(properties=dict(candidate_id=dict(type='string')))))
+
+
+def test_revision_evidence_accepts_archive_paths_and_structured_measurements():
+    path='/runs/attack/trajectory_editing/output.json'
+    assert revision_evidence(dict(revision_feedback=dict(evidence=path)))==dict(result_path=path)
+    measured=dict(min_target_gap_m=.425)
+    assert revision_evidence(dict(revision_feedback=dict(evidence=measured))) is measured
+    assert revision_evidence(dict(revision_feedback=dict(evidence=None)))=={}
+    assert revision_evidence({})=={}
 
 
 def test_native_failure_is_reported_despite_geometry_pass():
@@ -37,6 +46,15 @@ def test_probe_enum_only_contains_ready_untested_candidates_and_read_is_not_repe
 def test_no_eligible_candidate_hides_probe_without_loosening_the_gate():
     exposed=trajectory_tools([tool('probe_pdm'),tool('evaluate_candidate')],{'bad':dict(result=result(False))},{'bad'},set(),2)
     assert exposed==[]
+
+
+def test_delivered_visual_inspection_is_not_offered_again():
+    exposed=trajectory_tools([tool('inspect_trajectory'),tool('submit_candidate')],
+        {'ready':dict(result=result(True))},set(),set(),0,inspected={'ready'})
+    assert [item['function']['name'] for item in exposed]==['submit_candidate']
+    # Omitting the delivery ledger preserves compatibility for other callers.
+    exposed=trajectory_tools([tool('inspect_trajectory')],{},set(),set(),0)
+    assert [item['function']['name'] for item in exposed]==['inspect_trajectory']
 
 
 def test_exhausted_budgets_hide_only_the_affected_tools():

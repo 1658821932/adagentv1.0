@@ -1,5 +1,20 @@
 # 新编辑接口：editing_stage.v1
 
+## 攻击入口时间字段与配置错误（2026-11-14修复）
+
+攻击backend内部约束使用独立字段：`observation_end_s`表示观察历史（当前1.5秒），`attack_prefix_lock_s`表示攻击轨迹固定前缀（当前0秒，只锁初始位置）。事件窗口单独由`event_window_s`表示（当前2–7秒）。构造/检查使用攻击前缀，不能把它与观察历史强制相等。07默认仍评估1.5–7.5秒，本次没有修改窗口或放宽物理/道路检查。
+
+确定的配置冲突返回`editing_configuration_error`及`failure_stage=configuration`、`retryable=false`、`error_details`、`recovery_hint`和日志路径。主Agent应修正有证据的参数或报告后端阻塞，不应不断重新检索场景。修复后同作用域的失败缓存需要显式重试。验证范围见KNOWN_ISSUES.md的EDIT-003。
+
+## 当前进度与任务目标约定（2026-11-14）
+
+- 取消系统自动加入的50%行驶距离和转角完成门槛；构造器、速度/路线编辑检查和独立复核的默认路径不再补回该比例。进度、安全余量、平顺性仍用于候选比较。用户明确提供的实验约束仍保留，历史文件不重写。
+- `require_route_progress`仅表示最终目标倾向继续行驶/通行，null时从`target_effect`推断；不自动设置距离门槛或禁止停车。先停车等待后继续转弯，属于继续行驶目标；最终停在安全位置，属于停车目标。文本推断是给Agent的提示，不是任务完成证据。
+- `allow_safe_stop=false`是显式的终端停车限制，仍按参数执行；不再因为目标含有转弯/通行就自动把默认true改成false。
+- 07行为摘要只报告窗口内事实：末尾仍在运动或已停止、实际距离、进度比例、停车时间和有符号转角。`turn_completed`为兼容旧读取方固定返回null；`maneuver_completion_status=not_assessed`，不再输出“走够/转够一半所以完成”的结论。`yaw_change_ratio_vs_recorded`是测量值，无准入阈值。
+- 原始任务是否实现由Agent结合场景、冲突区、轨迹和测量证据判断。数值/道路/碰撞检查通过不自动代表用户任务已完成；合理等待也不自动代表失败。
+- 官方PDM公式、08零分筛选、09训练数据规则与1.5–7.5秒窗口保持不变。
+
 最新业务规则已实现，见[攻防循环最新规则](EDITING_INTERFACES.md)。tool05结果为 `completed | unable_to_complete`，tool06为 `completed | defense_not_found`；只有completed攻击可进入防御。默认仅测试编辑场景PDM，原始对照可显式开启且不作为验收门槛。
 
 本接口参考《全流程智能编辑》中的三个阶段：攻击车编辑、自车冲突理解、自车轨迹编辑。
@@ -86,7 +101,7 @@ EgoOutput 保留相同的场景身份、target_track、frozen_scene_path，并�
 | annotation_changes | 默认导出自车轨迹，不改写攻击冻结标注 |
 | simulation_input | 后端真正导出的原生场景及资产信息，默认 null |
 | ilft_training_data | 后端真正导出的 ann_file、token_file，默认 null |
-| rendered_videos | 可交给 tool10 的已编辑渲染视频，默认空 |
+| rendered_videos | 已编辑渲染视频，默认空 |
 
 CSV 约定包含 time_s、ego_x_m、ego_y_m、ego_yaw_rad，每个原始帧一行。
 time_s 来自冻结场景实际微秒时间戳，允许 1 ms 浮点误差，不按固定帧率外推。
@@ -112,7 +127,7 @@ mcp_servers/scene_editing/adapter/settings.json 的 commands.attack_editing 与 
 命令以项目根目录为 cwd，运行环境可在 argv 中选择不同解释器，不使用 shell 拼接。统一 JSON 由后端桥转换，既有 CLI 不直接接受该协议。
 AttackInput 的 task_contract、acceptance_policy 分别携带调用方合同和验收配置；revision_feedback 携带前一轮紧凑评测结果，进入攻击对象选择与编辑上下文。回攻仍使用原始场景和原任务，不叠加上轮新增车、不引入旧对话或新硬门槛。AttackOutput.operation 记录攻击操作类型，供下游渲染使用。
 
-候选级自检通过 pdm_self_check=true 启用，pdm_probe_budget 控制一次攻击内共享的模拟次数。AttackOutput.pdm_probe_result_path 可传 tool08.challenge_probe_result_path；后端核对完整场景和运行语义后复用，pdm_challenge.probe_reused 明确标记。
+候选级自检通过 pdm_self_check=true 启用，pdm_probe_budget 控制一次攻击内共享的模拟次数。AttackOutput.pdm_probe_result_path 可传 tool07.challenge_probe_result_path；后端核对完整场景和运行语义后复用，pdm_challenge.probe_reused 明确标记。
 
 完整有界工具验收入口为 scripts/run_adversarial_validation.py；PDM 成功后自动回攻，达到预算停止。主 Agent 对应规则已在 agent/prompt.md，示例中的成功攻击不应直接跳过 PDM 进入防御。
 
@@ -134,10 +149,10 @@ arguments 是校验后的完整阶段输入。后端 stdout 只输出符合 Atta
 
 ## 下游衔接
 
-- tool10：选择 rendered_videos 中的真实视频，结合原场景需求检查；没有渲染输出就不能宣称视觉通过。
-- tool08：simulation_input 非空时，可合并 config_path、checkpoint_path、model_name、data_type 等必填模型参数。冻结 metadata 目录本身不是原生场景 pkl。
-- tool10 IL：ilft_training_data 非空时，可作为 training_data；还需 base_checkpoint、与新数据相符的 config_path。CSV 不能当作 ann_file。
-- tool10 RL：仍先由 tool08 生成稠密候选轨迹奖励和 rollout，再交给训练工具。新专家 CSV 本身不是 RL 奖励。
+- 视觉检查：选择 rendered_videos 中的真实视频，结合原场景需求检查；没有渲染输出就不能宣称视觉通过。（原回放工具已删除）
+- tool07：simulation_input 非空时，可合并 config_path、checkpoint_path、model_name、data_type 等必填模型参数。冻结 metadata 目录本身不是原生场景 pkl。
+- tool09 IL：ilft_training_data 非空时，可作为 training_data；还需 base_checkpoint、与新数据相符的 config_path。CSV 不能当作 ann_file。
+- tool09 RL：仍先由 tool07 生成稠密候选轨迹奖励和 rollout，再交给训练工具。新专家 CSV 本身不是 RL 奖励。
 
 参考轨迹回放与驾驶策略闭环评测是不同用途。专家轨迹通过检查不代表 VADv2 已经成功驾驶；本次不修改训练损失或 synthetic imitation mask。
 
@@ -158,11 +173,13 @@ mock 返回显式 mode=mock 的接口样例，不生成真实数据。桥接测�
 
 EgoInput.reuse_completed_from 可指向同一攻击版本的失败防御任务。后端核对攻击输出、目标、停车策略、FOCI开关、理解配置，以及完整场景/地图/标线/政策/候选预算/实现绑定后，才复制已完成理解和兼容构造器；模型编辑请求重新构建，不继承旧对话。来源单独归档，不伪装成新的模型理解。
 
+defense_understanding、defense_constructor、defense_foci 分别采用默认300秒准备阶段墙钟，超时返回 preparation_timeout 和具体阶段证据。显式重试可传入同一中断运行目录，复用校验通过的已完成阶段；视觉编辑仍使用其独立阶段超时和请求恢复机制。constructor 每个候选完成或拒绝后写入 constructor-progress.json，使用 --resume 时校验场景、策略、决策序列及候选证据，仅重建缺失候选。
+
 EgoInput.max_edit_candidates 默认None，采用原有5条新增编辑预算；显式0只允许选择、看图和提交已有候选，原有验收门槛不变。视觉请求v12采用阶段工具子集+tool_choice=auto，本地继续检查暴露工具、必需/额外字段、枚举和看图提交状态。此调整没有消除所有上游连接故障。
 
 probe_pdm.defense_feasibility.witnesses 同时返回native_max_acceleration_mps2和generated_curve_max_acceleration_mps2；max_acceleration_mps2取最大值。当前参考检查、连续曲线运动极值与物理执行仍分别标明。
 
-AttackInput.pdm_ignore_traffic_lights与tool08.challenge_ignore_traffic_lights默认false。显式true用于忽略信号灯的研究运行：源标注不改，PDM不接收灯态，结果traffic_light_policy.mode=ignored、traffic_light_compliance=not_evaluated；缓存绑定该开关。不是交通灯状态转换。
+AttackInput.pdm_ignore_traffic_lights与tool07.challenge_ignore_traffic_lights默认false。显式true用于忽略信号灯的研究运行：源标注不改，PDM不接收灯态，结果traffic_light_policy.mode=ignored、traffic_light_compliance=not_evaluated；缓存绑定该开关。不是交通灯状态转换。
 
 
 ## 十工具调整
@@ -172,7 +189,7 @@ AttackInput.pdm_ignore_traffic_lights与tool08.challenge_ignore_traffic_lights�
 
 ### Agent v16先编辑后比较
 
-新受控防御运行增加refinement_workflow_version=refine_then_compare.v1。refinement_workflow给出pending、checked_changed_candidate_ids、unchanged_attempt_candidate_ids、保留的初始候选和剩余资源。资源足够时需实际生成/检查有变化的编辑候选后才开放最终提交；直接编辑、修复或父候选FOCI均可，来源不限。失败编辑仍可完成尝试，最终可选原候选；仅追加构造、空调用和无变化不计。资源不足明确记录未尝试，硬验收不变。旧运行不自动开启新阶段。
+新受控防御运行增加refinement_workflow_version=refine_then_compare.v1。refinement_workflow给出pending、checked_changed_candidate_ids、unchanged_attempt_candidate_ids、保留的初始候选和剩余资源。已经通过参考检查且图像已交付的初始候选可在符合任务目标时直接提交，不要求为证明搜索工作量而编辑；存在明确改进需求时，直接编辑、修复或父候选FOCI均可，来源不限。发生编辑后仍需检查并复核图像，最终可选原候选；仅追加构造、空调用和无变化不构成有效改进。资源不足明确记录未尝试，硬验收不变。旧运行不自动开启新阶段。
 
 ## 历史速度入口：先表达目标，再由后端算参数（已由下方统一接口替代）
 
@@ -194,18 +211,30 @@ AttackInput.pdm_ignore_traffic_lights与tool08.challenge_ignore_traffic_lights�
 
 `preview_only=true`返回可行性与参考检查，不创建候选、不消耗候选额度，仍消耗一次模型动作；预览不可提交。确认执行时使用相同参数并去掉预览标志。目标不可达会返回所需制动强度或时间界限，属于该请求的局部失败。低层位置、路径进度和偏移工具继续可用。
 
+初始运动预检在tool04计划生成和tool05后端执行前各执行一次：倒车、后轴侧滑或转向超出既有生成器范围时，提前返回更换对象、添加车辆或换场景的建议，不进入长时间候选搜索。预检只拦截确定的初始不兼容，不把可通过优化修复的道路或关键帧问题提前拒绝。
+
+攻击轨迹阶段默认墙钟为600秒（`attack_stage_timeout_s`），防御视觉编辑阶段默认墙钟为900秒（`stage_timeout_s`）；每次模型请求使用剩余时间。相同参数错误连续2次、同类候选失败连续3次且候选成本没有至少5%下降时提前停止；有明确测量改善则继续。关键帧保持时长在实际计算前校验，错误反馈带合法范围和下一步建议。原始结果完整归档，下一轮仅携带决策摘要、失败测量值和证据路径。
+
+初始 FOCI 默认不执行：constructor 完成后直接进入视觉 Agent 审查，`use_foci=true`只表示允许后续按需优化。Agent选择父候选后，存在明确的进度、安全余量或平顺性改善需求时才调用`optimize_defense_candidate`；硬检查和提交门禁不变。实验需要旧的预生成行为时，可显式设置`initial_foci=true`；注册后端也可由`defense_initial_foci_enabled`开启。状态`foci-stage.json=on_demand`表示尚未预先运行，并不禁用按需工具。
+
 FOCI的`optimize_defense_candidate`可选`preserve_route=true`、`terminal_behavior=stop`、`improvement_goal=balanced|recover_progress|smoother_motion`。保持路线采用沿父路线调整进度；停车目标要求窗口覆盖末尾两段采样，并在最后一个采样区间保持不动。这是显式采样端点约束，不宣称FOCI具备连续动力学保证。原三参数请求仍可用，默认自由末态、平衡目标。
+
+FOCI候选优化默认最多2路进程并行（`FOCI_PARALLEL_WORKERS=1..2`），worker根据可序列化的场景、轨迹与道路路径独立重建问题，避免共享Shapely prepared geometry。单候选默认超时280秒（`FOCI_CANDIDATE_TIMEOUT_S`），一路失败或超时保留其他候选的结果；候选编号、归档、行为评估、排序和最终验收仍由主进程统一执行，硬检查不变。
+
+纯制动或仅调整时序的FOCI请求应优先使用`preserve_route=true`，将搜索从48个位置/朝向控制量降为16个路线进度控制量；需要横向避让时仍使用完整控制量。普通自由末态采用混合梯度：高斯重叠、偏差、jerk和横向运动使用解析梯度，路线投影、安全余量、道路和可选速度目标保留数值梯度；保留路线或显式末端停车使用原数值梯度。道路软惩罚通过Shapely 2批量计算全部车体角点，仍使用精确几何内外距离，不采用近似距离场。
+
+优化迭代按60、60、剩余预算分阶段执行，总预算仍不超过250轮；求解器收敛即停止，第二阶段相对改善不超过`1e-5`时以`stage_plateau`停止。收敛容差`ftol=1e-10`只控制软优化，不改变任何硬验收。归档的`gradient_method`、`iteration_stages`和`stop_reason`记录实际策略；混合梯度下SciPy的`function_evaluations`是目标加梯度的合并调用次数，不再等同于旧数值梯度中的全部内部函数计算次数。
 
 连续制动轨迹在任意接管时刻使用重建曲线的位置和导数；只有CSV依据时明确使用采样估计。停车意图检查认可重建曲线中明确的零速度保持段，不再要求停车之前的倒数第二帧也必须静止。道路、碰撞及运动硬检查保持原策略。曲线系数只保存在本地证据中，不发送到Agent上下文。
 
-## 当前速度接口：edit_speed_profile（2026-11-09）
+## 当前速度接口：edit_speed_profile（2026-11-10）
 
-Agent侧直接轨迹编辑只保留`edit_speed_profile`和`edit_route`。旧`brake_along_path`、`adjust_trajectory_speed`及坐标/偏移入口不再同时发布；底层旧操作仍能重建历史实验。
+Agent侧直接轨迹编辑只保留`edit_speed_profile`和`edit_route`。当前不发布`brake_along_path`、`adjust_trajectory_speed`及坐标/偏移入口；速度工具中的相对制动平移由绝对时间开始的按位置停车替代。
 
 速度工具有两种操作：
 
 - `set_speed_targets`：提供`parent_candidate_id`、`start_time_s`、`targets`与`reason`。每个目标只有绝对`time_s`和有符号`speed_mps`。正值前进，0停车，负值倒车但车头不翻转；前进/倒车之间必须显式给出零速目标。两个零速目标之间保持静止，后接正速度可重新起步。最后目标速度保持到场景结束，不强制停车。
-- `retime_braking`：提供父候选、`braking_start_shift_s`、`preserve=stop_position|stop_time`及理由。正值推迟制动、负值提前。后端从最早受影响时刻重建原制动，保留指定停车目标，另一个停车结果重新计算并报告误差。只有可重建的明确制动段支持此操作；FOCI采样轨迹不凭空识别制动按钮，应使用速度目标。
+- `stop_at_position`：提供父候选、绝对开始时间`start_time_s`、`stop_target=parent_stop_position`及理由。从实际继承的前进速度开始减速，停在父候选已验证的停车位置，之后保持静止；后端计算制动强度和停车时间，不先加速。支持构造器和确有静止尾段的FOCI采样候选。父候选末端仍在运动时明确返回无可继承停车点，不把最后一帧当成停车目标。要指定停车时间，使用第一种操作的零速目标。
 
 例如保留FOCI前段，只修末端停车：
 
@@ -219,19 +248,19 @@ Agent侧直接轨迹编辑只保留`edit_speed_profile`和`edit_route`。旧`bra
 }
 ```
 
-例如推迟已有制动、保留原停车位置：
+例如从指定时刻开始减速、保留父候选停车位置：
 
 ```json
 {
   "parent_candidate_id": "constructor_024",
-  "operation": "retime_braking",
-  "braking_start_shift_s": 0.1,
-  "preserve": "stop_position",
-  "reason": "推迟制动介入，保留停车位置，检查新制动强度是否合适"
+  "operation": "stop_at_position",
+  "start_time_s": 4.0,
+  "stop_target": "parent_stop_position",
+  "reason": "保留前段和停车位置，重新安排减速过程，比较舒适性与中间进度"
 }
 ```
 
-上述时间只是参数示例，不保证任意输入可行。默认`path_source=parent`。新速度目标默认`transition_style=smooth`；`retime_braking`省略此参数时继承父候选制动方式，不再自动换成平顺过渡。可显式选择`recorded_baseline`作为空间参考或指定速度过渡方式。更长路线、后方路线必须来自已知参考，不能凭空外推。空间路线不是随时间运动的偏移锚点；倒车沿已知路线反向走，不把车头旋转180度。参考路线存在不等于后方观测完整，道路、其他车辆、接触与运动检查照常执行。
+上述时间只是参数示例，不保证任意输入可行。默认`path_source=parent`。两种操作都默认`transition_style=smooth`，可显式选择`constant_acceleration`。按位置停车严格保持开始前轨迹，开始前已有的减速也保留；不会为了推迟制动而补一次加速。返回`stop_position`证据中的停车时间、剩余路线长度和位置误差，并使用同一套停车目标验收。可显式选择`recorded_baseline`作为空间参考或指定速度过渡方式。更长路线、后方路线必须来自已知参考，不能凭空外推。空间路线不是随时间运动的偏移锚点；倒车沿已知路线反向走，不把车头旋转180度。参考路线存在不等于后方观测完整，道路、其他车辆、接触与运动检查照常执行。
 
 `max_acceleration_mps2`只能降低既有上限；切向加速度满足上限不保证曲率导致的平面加速度合格。后端计算连续位置/速度，严格保持接管前轨迹和前三秒历史；显式速度目标不悄悄挪动。派生时间网格合并与目标相差1ms以内的构造点，但目标时间本身不合并或移动。显式等待按独立阶段积分，零速段不积累位置漂移。
 
@@ -378,7 +407,7 @@ ready 时，tool04.result.attack_input 已包含原始场景、操作、对象�
 `edit_speed_profile`有两种操作：
 
 - `set_speed_targets`：指定`start_time_s`和若干`{time_s,speed_mps}`。正值前进、零停车、负值倒车；反向前要显式经过零速。连续两个零速目标表示等待。最后目标速度保持到场景末尾。
-- `retime_braking`：对已有明确停车制动段，指定`braking_start_shift_s`（正值推迟）和`preserve=stop_position|stop_time`。省略`transition_style`继承父候选的制动方式。普通FOCI采样轨迹没有可凭空移动的制动段，应使用速度目标。
+- `stop_at_position`：指定绝对`start_time_s`和`stop_target=parent_stop_position`，从继承的实际前进速度减速到父候选已验证的停车点。工具计算减速度与停车时间，默认平顺过渡。支持已停车的FOCI采样候选；末端仍在行驶则返回无停车点。保持指定时间停车则使用`set_speed_targets`的零速目标。
 
 `path_source`默认`parent`，不会自动延长停车候选的路线。明确选择`recorded_baseline`才表示沿已知原始路线继续。预览使用`preview_only=true`，不创建候选。
 
@@ -410,6 +439,10 @@ ready 时，tool04.result.attack_input 已包含原始场景、操作、对象�
 - 过快的侧移、已知路线不够长、道路/车体/运动检查不通过，都会返回具体失败。合法但不可达的请求返回`not_feasible`；真正生成但检查失败的候选仍保存，供后续修复。
 
 两类工具都继承接管位置与速度，前三秒及接管前的交付轨迹保持不变。空间编辑后的候选仍可接着调速。
+
+2026-11-10完整性修复：`left_offset_m=0`表示无空间编辑，完整保留父候选原生位置与车身朝向；05同时保留密集交付轨迹，不重新积分或重算车头。资格仍由原阶段检查决定。两种`speed_policy`都禁止在父轨迹静止时继续改变偏移，返回`stationary_lateral_motion`和发生时间；已完成侧移后正常停车、保持偏移仍支持。需起步时先显式使用速度工具。路线意图检查同时核对生成运动的实际朝前方向，避免未声明倒车。
+
+旧候选缺失连续前段时，在原1厘米位置误差约束内选择C2平滑连接，保留已定义的连续后段，报告连接窗口、误差和实际加速度峰值，避免微小时间间隔引入人为高峰。已声明停车的旧连续曲线补齐至场景末尾，采样停车插值限制末端反向过冲；无可行连接时明确失败，不提高运动上限。零编辑绕过不必要的路线反投影，消除同一路线在末端因重复数值积分被误拒的情况；非零编辑仍禁止超出已知路线。
 
 速度目标表达沿路线行驶的有符号总车速；05车体中心在转弯时的朝前分量可能略小，两者分别返回，不能把它们混为一个测量值。检查反馈的`target_evidence`给出实际总车速及`actual_body_forward_speed_mps`。
 
@@ -446,3 +479,77 @@ ready 时，tool04.result.attack_input 已包含原始场景、操作、对象�
 两个工具说明各加入一个经过自身schema校验的最小预览示例。05候选列表和06候选摘要共用`candidate_card`身份、参考检查、任务检查和关键指标字段；06的时序、行为和曲线细节仍按原视图保留。新提示词要求先读决策摘要，再按需查看原始证据。
 
 最新接管与反馈修复、原57次请求对照和真实Agent试用见`outputs/case3/20261109_attack_continuity_fix/README.md`。同样请求的新编辑通过调用从8增至20，历史前缀及旧版本重放通过；真实Agent本轮只做了一次预览并回退原候选，不将直接工具成功当作模型自主生成成功。
+### 公共回放目录配置
+
+`public_pipeline_root` 仅在 `mcp_servers/scene_editing/adapter/settings.json` 配置。
+相对路径以 AdAgent 项目根目录解析，默认 `outputs/rendered`。
+adapter 将绝对路径通过子进程变量 `ADVERSARIAL_FULL_PIPELINE_ROOT` 传给内置后端；
+后端不再从 backend_settings.json 读取此项。未配置时，后端使用本次 output/rendered，
+产物仍在任务输出目录内。该变量为内部传递方式，无需写入 .env。
+
+
+## tool06 已完成准备阶段复用
+
+重试时可将上一轮 tool06 的服务运行目录传入 `reuse_completed_from`。
+新运行分别检查 `defense_understanding`、`defense_constructor`、
+`defense_foci` 中的 `completed-stage.json`，只复制已完成且内容一致的阶段。
+场景/地图、原始图片（理解阶段）、攻击结果、自车目标、验收配置、
+候选预算、后端代码和模型配置变化时，对应阶段重新计算。
+下游阶段还校验上游准备产物的内容。缺少完成记录或产物损坏同样重算，
+原因写入 `output/<stage>-reuse.json`。
+
+复制后将阶段内部的工作目录引用改为新目录，保留原始数据和攻击场景来源。
+复用记录位于各阶段的 `reuse-provenance.json`；旧 API 请求和计时日志不会复制。
+FOCI 的“搜索完成但无候选”也可复用；运行中、失败和被中断的搜索不可复用。
+编辑 Agent、最终独立复核、渲染与导出仍重新执行，此接口不是整个编辑过程的断点恢复。
+
+本机制只使用生成时写下的完成记录，不为旧运行补造校验依据。
+没有完成记录的历史运行首次重试会重新计算，并生成可供后续使用的记录。
+
+## tool06 候选比较与附图闭环
+
+视觉编辑运行记录 `decision_loop_version=focused_comparison.v1`。
+直接编辑、修复、按需构造和 FOCI 产生的每条新候选，均在下一次请求自动附上各自的轨迹图，
+不消耗人工检查预算。一次生成最多三条，附图只随下一次请求发送；不累积历史图片。
+图片投递只在请求成功后记账；失败恢复保留整批待投递图片。
+图中展示新候选、编辑父轨迹及保留的初始候选，并比较速度与车身净距随时间的变化。
+图像和数值检查均为参考几何证据，不代表物理回放通过。
+
+`candidate_differences` 最多两组：初始候选对本轮最新候选，以及不同的编辑父轨迹对最新候选。
+进度主展示为 `reference_progress_percent`：固定历史结束后，沿原路线的净前进距离，
+除以同一原路线在历史结束后可用的路程，乘以100。倒退和侧向绕行不会额外增加进度。
+差值使用百分点；不设50%等门槛。余量、舒适性、偏离路线和检查证据共同支持取舍，
+不因净距更大就自动认为候选更好；最终仍可选择原候选。
+加速度差值仅对比两侧的原生采样值，避免将解析上界与采样峰值相减。
+缺测差值返回 null，完整连续曲线证据仍可查看。
+
+上下文保留全部候选的身份、验收状态、失败项、未知项和比较指标。
+原候选、当前父轨迹、最新候选和本次附图候选展开时间曲线及编辑详情；
+其他候选可按 ID 检查。工具反馈通过目录引用去重，但独有的目标反馈与错误证据保留。
+完整报告及轨迹仍归档在本地。本次视图变化不修改构造器/FOCI优化目标或验收阈值。
+旧版本中断运行不能跨版本恢复；必须使用新目录运行，避免更改已归档请求。
+
+## 当前时间规则与评分调度（2026-11-10更新）
+
+新编辑运行使用 `reference_acceptance.v2`：攻击车、自车专家轨迹均允许从0秒起编辑，
+取消默认的“前三秒不可编辑”和“攻击危险必须三秒后发生”。
+`edit_start_s=0`、`attack_danger_start_s=0` 是新运行默认值；
+观察窗口、模型历史帧数不构成轨迹编辑禁区。显式任务窗口和道路、其他车辆、
+速度、加速度、初始状态及运动连续性检查仍然执行。
+进度和余量诊断覆盖完整可编辑时段，避免遗漏0–3秒的修改。
+
+速度编辑、转向编辑、攻击控制构造、专家候选构造和FOCI使用可编辑时间边界。
+专家原生导出允许历史轨迹变化，并同步更新自车状态、相机位姿及其他车辆的相对标注，
+WE读取相同场景版本的编辑后历史。源数据文件不修改。
+
+当前主流程为：`05攻击编辑 → 06专家编辑及视频 → main调用07(native)正式仿真评分`。
+05公开输入移除了内部PDM自检和防御反馈参数，后端也会拒绝绕过接口开启内部PDM。
+编辑结果不需要通过快速PDM挑战才能进入06。
+07的`native`模式运行配置指定的驾驶策略并启用完整评分；
+由main读取实际评分产物，必要时调用08筛选。专家轨迹回放和驾驶策略得分分别报告。
+本次不改变正式PDM评分数学定义，只改变调用阶段及责任归属。
+
+旧`reference_acceptance.v1`归档按原规则重建；公共05/06的新运行即使使用旧场景，
+也会迁移为当前时间规则。旧PDM辅助模块仅保留用于历史兼容，不在新05工具中开放。
+旧任务中明确写下的时间窗口不自动抹除；任务变化时应重新生成相符的计划，
+不能将原有检查结果或评分冒充为新版本的验证。

@@ -35,7 +35,7 @@ class RouteTests(unittest.TestCase):
         self.assertGreater(c['route_edit_summary']['max_speed_change_at_construction_knots_mps'],.01)
     def test_lateral_movement_while_stopped_and_horizon_violation_are_rejected(self):
         t,xy,yaw=self.fixture();xy[:]=0
-        with self.assertRaisesRegex(ValueError,'route_exhausted'):self.edit.generate(t,lambda _: (xy,yaw),self.request(),3.)
+        with self.assertRaisesRegex(ValueError,'stationary_lateral_motion'):self.edit.generate(t,lambda _: (xy,yaw),self.request(),3.)
         t,xy,yaw=self.fixture()
         with self.assertRaisesRegex(ValueError,'target_unreachable'):self.edit.generate(t,lambda _: (xy,yaw),self.request(left_offset_m=4.,transition_duration_s=.1),3.)
         with self.assertRaisesRegex(ValueError,'beyond scene end'):self.edit.generate(t,lambda _: (xy,yaw),self.request(return_duration_s=20.),3.)

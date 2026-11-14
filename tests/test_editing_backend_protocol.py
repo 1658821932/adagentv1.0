@@ -15,7 +15,7 @@ BACKEND = Path(__file__).resolve().parents[1] / 'mcp_servers/scene_editing/core/
 def backend(monkeypatch):
     monkeypatch.syspath_prepend(str(BACKEND.parent))
     exports = {
-        'acceptance_policy': [], 'experiment_runtime': ['atomic_json'],
+        'experiment_runtime': ['atomic_json'],
         'review_attack_workflow': ['review'],
         'run_adversarial_loop': ['pipeline_video_dir', 'run_command', 'run_constructor', 'run_independent', 'run_render'],
         'run_attack_workflow': ['run'], 'run_ego_conflict_brief': ['run'],
@@ -59,6 +59,21 @@ def test_exception_after_logging_is_json(backend, monkeypatch, capsys, tmp_path)
     captured = capsys.readouterr()
     assert json.loads(captured.out) == dict(status='backend_error', error_type='ValueError', error='test stage failure')
     assert 'starting stage' in captured.err
+
+
+def test_configuration_error_exports_setting_values_and_recovery(backend,monkeypatch,capsys,tmp_path):
+    from attack_configuration import AttackConfigurationError
+    def fail(*args):
+        raise AttackConfigurationError('Conflicting task and acceptance setting: observation_end_s',
+            setting='observation_end_s',task_value=0.,acceptance_value=1.5)
+    monkeypatch.setattr(backend,'attack_output',fail)
+    monkeypatch.setattr(sys,'stdin',io.StringIO(json.dumps(dict(stage='attack_editing',arguments={},output_dir=str(tmp_path)))))
+    backend.main();result=json.loads(capsys.readouterr().out)
+    assert result['error_code']=='editing_configuration_error'
+    assert result['failure_stage']=='configuration' and result['retryable'] is False
+    assert result['error_details']['task_value']==0.
+    assert result['error_details']['acceptance_value']==1.5
+    assert 'changing the scene' in result['recovery_hint']
 
 
 @pytest.mark.parametrize("prebuilt", [False, True])
@@ -154,7 +169,8 @@ def test_revision_feedback_reaches_attack_without_changing_contract(backend, mon
     feedback=dict(stage='pdm',outcome='pdm_defense_succeeded',evidence=dict(min_target_gap_m=.425))
     contract=dict(schema_version='attack_task.v2',objective=dict(interaction='allowed'))
     captured={}
-    monkeypatch.setattr(backend.policy,'resolve',lambda value:dict(official_margin_m=.1),raising=False)
+    from attack_configuration import policy as actual_policy
+    monkeypatch.setattr(backend.policy,'for_new_run',actual_policy.for_new_run,raising=False)
     def attack(scene,folder,instruction,assets,constraints,**kwargs):
         captured.update(constraints)
         archive=folder/'trajectory_editing/output.json'
@@ -164,10 +180,11 @@ def test_revision_feedback_reaches_attack_without_changing_contract(backend, mon
     monkeypatch.setattr(backend,'run_attack',attack)
     arguments=dict(scene_ref=dict(sample_root=str(tmp_path)),instruction='Keep the vehicle stationary',
         operation='add_vehicle',maneuver='stationary',task_contract=contract,
-        revision_feedback=feedback,timeout=3600)
+        revision_feedback=feedback,timeout=3600,vadv2_self_test=False)
     result=backend.attack_output(arguments,tmp_path)
     assert result['status']=='unable_to_complete'
     assert captured['revision_feedback']==feedback
     assert captured['task_contract']==contract
     assert captured['stationary_target'] is True
-    assert captured['observation_end_s']==3.
+    assert captured['observation_end_s']==1.5
+    assert captured['attack_prefix_lock_s']==0.

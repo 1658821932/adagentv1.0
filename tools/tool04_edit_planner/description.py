@@ -8,4 +8,5 @@ DESCRIPTION=make_description(name='edit_planner',
     rules=['Initial observation is 12 CAM_F0 frames in three chronological 2x2 contact sheets. The VLM may request other available cameras internally, up to two cameras per round and two extra rounds.',
            'This quick review does not run trajectory optimization, PDM or scene rendering.',
            'Existing targets must be valid vehicles observed throughout the scene. Added-car assets and dimensions come from supplied input, not model estimates.',
-           'Non-ready outputs have attack_input=null; a coarse plan alone is not an executable attack request.'])
+           'Non-ready outputs have attack_input=null; a coarse plan alone is not an executable attack request.',
+           'Canonical added-vehicle asset: /inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/assets/vehicle_01.ply with size_m [4.432, 2.033, 1.637] (length, width, height; see data/assets/manifest.json). When the caller supplies it, add_vehicle is executable: prefer operation add_vehicle with maneuver left_cut_in (or stationary) over needs_information for scenes whose observed vehicles are only parked or otherwise not editable.'])

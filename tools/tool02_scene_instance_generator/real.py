@@ -17,10 +17,23 @@ def _validate_result(data, output):
         raise ValueError("Provide three distinct base-video and editing-strategy alternatives")
 
 
+# Only the mechanism reaches the model; per-step evidence stays in the tool01 record.
+ANALYSIS_FIELDS = ("failure_reason", "wrong_behavior", "expected_behavior",
+                   "failure_type", "name", "group_id", "id")
+
+
+def _payload(data):
+    payload = data.model_dump(mode="json")
+    analysis = payload.get("failure_analysis")
+    if isinstance(analysis, dict):
+        payload["failure_analysis"] = {k: v for k, v in analysis.items() if k in ANALYSIS_FIELDS}
+    return payload
+
+
 TOOL = LLMTool(
     name="scene_instance_generator", directory=Path(__file__).resolve().parent,
     input_model=Input, response_model=Response, output_model=Output,
-    payload_builder=lambda data: data.model_dump(mode="json"),
+    payload_builder=_payload,
     validate_result=_validate_result,
 )
 

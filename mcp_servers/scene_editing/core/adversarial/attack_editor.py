@@ -50,6 +50,9 @@ class AttackEditor:
         self.target = selection['target']
         from copy import deepcopy
         self.constraints = deepcopy(constraints)
+        effective=policy.resolve(self.constraints.get('acceptance_policy'))
+        self.edit_start_s=float(self.constraints.get('attack_prefix_lock_s',policy.edit_start(effective)))
+        self.danger_start_s=policy.danger_start(effective)
         self.frames = json.loads((self.scene / 'metadata/frames.json').read_text())
         self.times, self.ego, self.ego_yaw = ego_path_from_frames(self.frames)
         # Decode other observations with any present track; new-object construction
@@ -58,7 +61,7 @@ class AttackEditor:
         if self.constraints.get('task_contract'):
             from attack_task_contract import validate_task_contract
             validate_task_contract(self.constraints['task_contract'], self.times,
-                                   self.constraints.get('observation_end_s', 3.))
+                                   self.danger_start_s,edit_start_s=self.edit_start_s)
         seed_times, self.seed_xy, self.seed_yaw = read_seed(selection['seed_trajectory_path'])
         if seed_times.shape != self.times.shape or not np.allclose(seed_times, self.times, atol=1e-6, rtol=0):
             raise ValueError('Object-selection seed differs from the scene timestamps')
@@ -68,12 +71,14 @@ class AttackEditor:
             from road_height import RoadHeightMap, read_recon_translation
             self.road_surface = RoadHeightMap.load(self.scene)
             self.recon_translation = read_recon_translation(self.scene)
-        self.dense_times = attack_time_grid(self.times, self.constraints.get('observation_end_s', 3.))
+        self.dense_times = attack_time_grid(self.times, self.edit_start_s)
         self.geometry_cache = {}
         self.nodes = {}
         self.inspected = set()
+        self.inspections = {}
         self.submitted = None
         self.pdm_probe = None
+        self.policy_probe = None
         self.history = []
         self._add('seed_000', None, 'object_selection', self.seed_xy, self.seed_yaw,
                   sample_xy(self.times, self.seed_xy, self.dense_times),
@@ -249,7 +254,7 @@ class AttackEditor:
     def construct(self, arguments):
         xy, yaw, dense_times, dense_xy, dense_yaw = construct_trajectory(
             self.times, self.seed_xy, self.seed_yaw, arguments['points'], arguments['end_velocity_mps'],
-            immutable_until_s=self.constraints.get('observation_end_s', 3.))
+            immutable_until_s=self.edit_start_s)
         if not np.array_equal(dense_times, self.dense_times):
             raise ValueError('Constructor dense timestamps differ from editor timestamps')
         return self._new('construct_trajectory', arguments, None, xy, yaw, dense_xy, dense_yaw)
@@ -265,7 +270,7 @@ class AttackEditor:
         if (self.constraints.get('vehicle_motion_model') == 'bicycle.v1' or motion_parent) and operation not in ('construct_vehicle_motion', 'construct_vehicle_controls','edit_speed_profile','edit_route'):
             xy,yaw,dense_xy,dense_yaw = simulate_motion(self.times,self.seed_xy,self.seed_yaw,self.dense_times,
                 self.target['size_m'],self.nodes[parent_id]['result'].get('motion_parameters',{}) if motion_parent else {},self.ego,self.ego_yaw,
-                observation_end_s=self.constraints.get('observation_end_s',3.),reference_xy=dense_xy,reference_yaw=dense_yaw, acceptance=self.constraints.get('acceptance_policy'))
+                observation_end_s=self.edit_start_s,reference_xy=dense_xy,reference_yaw=dense_yaw, acceptance=self.constraints.get('acceptance_policy'))
             projected = True
         candidate_id = f'candidate_{len(self.history) + 1:03d}'
         result = self._add(candidate_id, parent_id, dict(tool=operation, input=arguments),
@@ -284,10 +289,10 @@ class AttackEditor:
         xy = parent['xy'] + offsets
         dense_xy = parent['dense_xy'] + spline(self.dense_times)
         dense_yaw = motion_heading(self.dense_times, dense_xy, parent['dense_yaw'][0])
-        prefix = self.dense_times <= self.constraints.get('observation_end_s', 3.)
+        prefix = self.dense_times <= self.edit_start_s
         dense_yaw[prefix] = parent['dense_yaw'][prefix]
         yaw = np.interp(self.times, self.dense_times, dense_yaw)
-        native_prefix = self.times <= self.constraints.get('observation_end_s', 3.)
+        native_prefix = self.times <= self.edit_start_s
         yaw[native_prefix] = parent['yaw'][native_prefix]
         return xy, yaw, dense_xy, dense_yaw
 
@@ -299,7 +304,7 @@ class AttackEditor:
     def _motion_arrays(self, arguments):
         return simulate_motion(self.times,self.seed_xy,self.seed_yaw,self.dense_times,
             self.target['size_m'],arguments['parameters'],self.ego,self.ego_yaw,
-            observation_end_s=self.constraints.get('observation_end_s',3.), acceptance=self.constraints.get('acceptance_policy'))
+            observation_end_s=self.edit_start_s, acceptance=self.constraints.get('acceptance_policy'))
 
     def construct_motion(self, arguments):
         return self._new('construct_vehicle_motion',arguments,arguments['parent_candidate_id'],
@@ -308,7 +313,7 @@ class AttackEditor:
     @timed_operation('attack.construct_controls', None)
     def construct_controls(self, arguments):
         arrays, _ = integrate_controls(self.times, self.seed_xy, self.seed_yaw, self.dense_times,
-            self.target['size_m'], arguments['controls'], self.constraints.get('observation_end_s', 3.), acceptance=self.constraints.get('acceptance_policy'))
+            self.target['size_m'], arguments['controls'], self.edit_start_s, acceptance=self.constraints.get('acceptance_policy'))
         return self._new('construct_vehicle_controls', arguments, arguments['parent_candidate_id'], *arrays)
 
     @timed_operation('attack.construct_pool', None)
@@ -317,8 +322,12 @@ class AttackEditor:
             raise ValueError('A stationary target has no motion controls; evaluate seed_000 or request a new placement')
         if self.constraints.get('task_contract') and 'objective' not in arguments:
             raise ValueError('Task-contract runs require structured planning preferences')
-        prefix = float(self.constraints.get('observation_end_s', 3.))
-        validate_goal(arguments, self.times, prefix)
+        prefix = self.edit_start_s
+        if 'objective' in arguments:
+            from attack_objective import validate_objective
+            validate_objective(arguments,self.times,self.danger_start_s,edit_start_s=self.edit_start_s)
+        else:
+            validate_goal(arguments, self.times, prefix)
         if 'objective' in arguments:
             from optimized_attack_pool import construct_pool
             return construct_pool(self, arguments)
@@ -465,21 +474,22 @@ class AttackEditor:
         if args['edit_mode']=='route_edit':args.setdefault('route_edit_version','state_continuity.v2')
         lookup=lambda key:(self.seed_xy,self.seed_yaw) if key=='recorded_baseline' else (self.nodes[key]['xy'],self.nodes[key]['yaw'])
         try:
-            xy,yaw,curve=modern_edit(self.times,lookup,args,self.constraints.get('observation_end_s',3.),
+            xy,yaw,curve=modern_edit(self.times,lookup,args,self.edit_start_s,
                 parent_curve=parent['result'].get('generation_curve'),acceptance=self.constraints.get('acceptance_policy'),
                 parent_context=dict(reference_point='target_body_center',rear_axle_offset_m=.3*float(self.target['size_m'][0]),
                     samples=(self.dense_times,parent['dense_xy'],parent['dense_yaw'])))
         except ValueError as error:
             from edit_feedback import failure_feedback
-            feedback=failure_feedback(error,args,self.constraints.get('observation_end_s',3.),float(self.times[-1]))
+            feedback=failure_feedback(error,args,self.edit_start_s,float(self.times[-1]))
             if feedback is not None:return feedback
-            if not any(label in str(error) for label in ('route_unavailable:','route_exhausted:','target_unreachable:','retiming_unavailable:','direction_change_requires_stop:','state_incompatible:')):raise
+            if not any(label in str(error) for label in ('route_unavailable:','route_exhausted:','target_unreachable:','stop_position_unavailable:','stop_position_off_route:','direction_change_requires_stop:','state_incompatible:')):raise
             return dict(status='preview' if args.get('preview_only') else 'not_feasible',feasible=False,candidate_created=False,
                 error=str(error),next_action='Adjust the offset/duration/speed or choose a known longer route. The original attack objective and checks still apply.')
         cont=curve['continuous_state'];spline=PPoly(np.asarray(cont['xy_coefficients']),np.asarray(cont['times_s']))
         angles=PPoly(np.asarray(cont['yaw_coefficients']),np.asarray(cont['times_s']))
         dense_xy=parent['dense_xy'].copy();dense_yaw=parent['dense_yaw'].copy();mask=self.dense_times>spline.x[0]
-        dense_xy[mask]=spline(self.dense_times[mask]);dense_yaw[mask]=angles(self.dense_times[mask])
+        if not (curve.get('route_edit_summary') or {}).get('identity_edit'):
+            dense_xy[mask]=spline(self.dense_times[mask]);dense_yaw[mask]=angles(self.dense_times[mask])
         if args.get('preview_only'):
             result=self._evaluate(xy,yaw,dense_xy,dense_yaw)
             result=self._motion_curve_checks(result,curve)
@@ -533,13 +543,15 @@ class AttackEditor:
         parent, target = self.nodes[parent_id], self.nodes[arguments['target_candidate_id']]
         dense_xy, dense_yaw = apply_candidate_repair(self.dense_times, parent['dense_xy'],
             parent['dense_yaw'], target['dense_xy'], target['dense_yaw'], arguments['ratio'],
-            arguments.get('window_s'))
+            arguments.get('window_s'),edit_start_s=self.edit_start_s)
         return self._new('repair_candidate', arguments, parent_id,
             sample_xy(self.dense_times, dense_xy, self.times),
             np.interp(self.times, self.dense_times, dense_yaw), dense_xy, dense_yaw)
 
     @timed_operation('attack.inspect', None)
     def inspect(self, candidate_id):
+        if candidate_id in self.inspections:
+            return dict(self.inspections[candidate_id], cached=True)
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
@@ -584,8 +596,10 @@ class AttackEditor:
         axes[1].set_title(f'{focus_label} neighborhood, t={self.times[index]:.3f}s')
         fig.suptitle(f'{candidate_id} | gap={node["result"]["min_ego_clearance_m"]:.3f}m | geometry, not physical execution')
         fig.tight_layout(); fig.savefig(path); plt.close(fig)
-        return dict(status='inspection_ready', candidate_id=candidate_id, path=str(path),
+        record = dict(status='inspection_ready', candidate_id=candidate_id, path=str(path),
                     focus_label=focus_label, focus_time_s=float(self.times[index]), metrics=self.public(candidate_id))
+        self.inspections[candidate_id] = record
+        return record
 
     @timed_operation('attack.evaluate_candidate', None)
     def evaluate_candidate(self, candidate_id):
@@ -611,6 +625,10 @@ class AttackEditor:
             if self.pdm_probe is None:
                 raise ValueError('PDM self-check was enabled but its controller is unavailable')
             self.pdm_probe.require_challenge(candidate_id)
+        if self.constraints.get('vadv2_self_test'):
+            if self.policy_probe is None:
+                raise ValueError('VADv2 self-test enabled but its controller is unavailable')
+            self.policy_probe.require_challenge(candidate_id)
         self.submitted = candidate_id
         atomic_json(self.run_dir / 'accepted-submission.json', dict(candidate_id=candidate_id,
             reason=reason, physical_collision='undetermined', metrics=self.public(candidate_id)))
@@ -641,9 +659,10 @@ class AttackEditor:
             catalog.append(item)
         return dict(target=self.target, constraints=self.constraints,
             pdm_self_check=self.pdm_probe.context() if self.pdm_probe is not None else dict(enabled=False),
+            vadv2_self_test=self.policy_probe.context() if self.policy_probe is not None else dict(enabled=False),
             interaction_planning_hints=dict(
                 aligned_noncontact_forward_center_distance_m=(self.target['size_m'][0]+EGO_FRONT+EGO_REAR)/2+.15,
-                note='Body-center forward distance, aligned same-lane approximation. Near miss is contact-free over the entire horizon. A stationary lead on recorded ego path may require contact mode; contact mode allows later ego defense and still forbids observation contact.'),
+                note='Body-center forward distance, aligned same-lane approximation. Near miss is contact-free over the entire horizon. A stationary lead on recorded ego path may require contact mode. Contact timing follows explicit task bounds; WE history is not an implicit forbidden interval.'),
             constructor_budget=dict(**budget, remaining_evaluations=MAX_INTERNAL_PER_RUN-budget['evaluations'],
                                     per_call_limit=MAX_INTERNAL_PER_CALL, per_run_limit=MAX_INTERNAL_PER_RUN),
             coordinate_frame='scene-local metres, x=initial ego forward, y=left; target positions are body centers',

@@ -1,11 +1,12 @@
 """Bounded on-demand visual inspection for the ego trajectory editor."""
-from llm_profile import load_llm_profile
+from llm_profile import load_llm_profile,reasoning_effort
 from visual_review import review_state, tool_contract as visual_tool_contract, rejection
 from workflow_timing import timed_operation
 
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 import httpx
 from openai import OpenAI
@@ -20,13 +21,14 @@ from streaming_requests import StreamingRequestArchive
 from model_context import compact_model_context
 from defense_refinement import refinement_state, VERSION as REFINEMENT_VERSION, GUIDANCE as REFINEMENT_GUIDANCE
 from kimi_request_parameters import normalize_kimi_parameters
-from ego_tool_transport import constrained_auto, validate_exposed_call
+from ego_tool_transport import (require_native_call, validate_exposed_call,
+    NativeToolProtocolError, protocol_rejection, restore_protocol_feedback)
 
 INSPECT = {'type':'function','function':{'name':'inspect_trajectory', 'description':'Inspect a generated map and candidate/parent trajectory diagram, not a camera image.', 'parameters':{'type':'object','properties':{'candidate_id':{'type':'string'}},'required':['candidate_id'],'additionalProperties':False}}}
 
 
 @timed_operation('ego.visual_agent', 'run_dir')
-def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_turns=10, max_edit_candidates=5, max_inspections=2, point_only=False, max_tokens=6144, target_track=DEFAULT_TARGET_TRACK, conflict_brief=None, resume=False, allow_timeout_change=False, controlled_generation=False, target_effect=None, foci_enabled=True):
+def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_turns=10, max_edit_candidates=5, max_inspections=2, point_only=False, max_tokens=6144, target_track=DEFAULT_TARGET_TRACK, conflict_brief=None, resume=False, allow_timeout_change=False, controlled_generation=False, target_effect=None, foci_enabled=True, stage_timeout_s=900):
     run_dir = Path(run_dir).resolve()
     if (experiments_root()) not in run_dir.parents or (run_dir.exists() and not resume):
         raise ValueError('Visual run must be a new directory under experiments or explicitly resumed')
@@ -43,6 +45,7 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
         from run_ego_conflict_brief import validate_brief
         validate_brief(brief, float(editor.times[-1]))
     archived = json.loads((run_dir/'config.json').read_text()) if resume else None
+    profile = load_llm_profile()
     context_view = archived.get('context_view_version') if resume else 'lossless_context.v1'
     if context_view != 'lossless_context.v1':
         raise ValueError('Unsupported archived context view version')
@@ -75,6 +78,12 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
         physical_execution='not_run', resume_supported=True, final_review_limit=1)
     if controlled_generation:
         config.update(controlled_generation=True,foci_enabled=foci_enabled,target_effect=target_effect)
+    config['decision_loop_version']='focused_comparison.v1'
+    config['tool_transport_version']='native_result_with_image_capability.v2'
+    config['image_tool_choice']=profile.get('image_tool_choice','required')
+    if profile.get('thinking_mode'):
+        config['request_policy'] = {key:profile.get(key) for key in
+            ('request_dialect','thinking_mode','reasoning_effort','tool_choice_policy','max_tokens')}
     if refinement_version is not None:
         config['refinement_workflow_version']=refinement_version
     if candidate_view is not None:
@@ -107,7 +116,6 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             raise ValueError('Resume tool schema differs from original run')
     else:
         atomic_json(run_dir/'tools.json', enabled_tools+[INSPECT])
-    profile = load_llm_profile()
     client = OpenAI(api_key=profile['api_key'], base_url=profile['base_url'], max_retries=0,
         http_client=httpx.Client(trust_env=False, follow_redirects=False, timeout=float(timeout_seconds)))
     archive = StreamingRequestArchive(run_dir/'requests', client, profile)
@@ -117,13 +125,23 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     def manual_count():
         return sum(not row.get('automatic',False) for row in inspections)
 
+    def pending_records():
+        return [] if pending is None else pending.get('batch',[pending])
+
     def inspect(candidate_id, automatic=False, closing_review=False):
         nonlocal pending
+        cached = next((row for row in inspections if row['candidate_id']==candidate_id), None)
+        if cached is not None:
+            batch=pending_records()+[cached]
+            pending = cached if len(batch)==1 else dict(cached,batch=batch)
+            return dict(cached,cached=True)
         number = len(inspections)+1
         path = run_dir/'inspections'/f'inspection_{number:02d}.png'
         record = create_inspection(editor,candidate_id,path)
         record.update(path=str(path.relative_to(run_dir)),inspection_id=number,automatic=automatic,closing_review=closing_review)
-        inspections.append(record); pending = record
+        batch=pending_records()+[record]
+        inspections.append(record)
+        pending = record if len(batch)==1 else dict(record,batch=batch)
         atomic_json(run_dir/'inspections'/f'inspection_{number:02d}.json',record)
         return record
 
@@ -133,8 +151,16 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             raise ValueError('Only a failed, unsubmitted request can be resumed')
         actions = old['model_actions']; invalid = old['invalid_tool_calls']
         folders = sorted((run_dir/'tool-exchanges').glob('turn_*'))
-        if [p.name for p in folders] != [f'turn_{i:02d}' for i in range(1, actions+1)]:
+        protocol_records = {int(p.stem.split('_')[1]): p for p in (run_dir/'protocol-errors').glob('turn_*.json')}
+        if ({int(p.name.split('_')[1]) for p in folders} & set(protocol_records)
+                or sorted([int(p.name.split('_')[1]) for p in folders] + list(protocol_records)) != list(range(1, actions+1))):
             raise ValueError('Archived tool actions are not contiguous')
+        restored_invalid = 0
+        for number, path in protocol_records.items():
+            if json.loads(path.read_text()).get('turn') != number:
+                raise ValueError('Archived protocol turn differs')
+            restore_protocol_feedback(path, run_dir, profile)
+            restored_invalid += 1
         for folder in folders:
             attempts = list((run_dir/'requests').glob(folder.name+'_*/attempt_001'))
             completed = [a for a in attempts if (a/'response.json').is_file() and (a/'result.json').is_file()
@@ -146,6 +172,9 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             calls = response['choices'][0]['message'].get('tool_calls') or []
             if request.get('endpoint') != profile['base_url'] or request['payload'].get('model') != profile['model'] or len(calls) != 1 or calls[0] != json.loads((folder/'call.json').read_text()):
                 raise ValueError('Archived action provenance or model does not match')
+            restored_invalid += json.loads((folder/'result.json').read_text()).get('status') in {'invalid','rejected'}
+        if restored_invalid != invalid or invalid >= 3:
+            raise ValueError('Archived invalid-call budget differs or is exhausted')
         failed = list((run_dir/'requests').glob(f'turn_{actions+1:02d}_*/attempt_001'))
         if failed:
             if len(failed) > 2 or any(not (a/'error.json').is_file() or (a/'response.json').exists() for a in failed):
@@ -161,28 +190,42 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
         inspections = old['inspections']; deliveries = old['completed_image_deliveries']
         pending_review = old.get('pending_review_candidate_id')
         delivered = {d['inspection_id'] for d in deliveries}
-        pending = next((i for i in inspections if i['inspection_id'] not in delivered), None)
-        feedback = json.loads((folders[-1]/'result.json').read_text()) if folders else None
+        undelivered=[i for i in inspections if i['inspection_id'] not in delivered]
+        pending = None if not undelivered else undelivered[-1] if len(undelivered)==1 else dict(undelivered[-1],batch=undelivered)
+        feedback = (restore_protocol_feedback(protocol_records[actions], run_dir, profile) if actions in protocol_records
+            else json.loads((run_dir/'tool-exchanges'/f'turn_{actions:02d}'/'result.json').read_text()) if actions else None)
+        if isinstance(feedback, dict) and feedback.get('archive_ref'):
+            from agent_tool_view import compact_action_feedback
+            feedback = compact_action_feedback(feedback)
         history = run_dir/'status-history'; history.mkdir(exist_ok=True)
         snapshot = history/f'visual-before-resume-{len(list(history.iterdir()))+1:02d}.json'
         with snapshot.open('x') as stream: json.dump(old, stream, indent=2)
     resume_turn = actions+1 if resume else None
+    if type(stage_timeout_s) not in (int, float) or stage_timeout_s <= 0:
+        raise ValueError('stage_timeout_s must be positive')
+    deadline = time.perf_counter() + stage_timeout_s
     try:
         for turn in range(actions+1, max_turns+1):
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                stop = 'stage_timeout_exhausted'
+                break
             visual = review_state(editor.nodes, inspections, deliveries, pending, pending_review, max_inspections)
-            context = editor.model_context(max_turns-turn+1, max_edit_candidates-editor.edit_count, feedback, pending_review_candidate_id=pending_review)
+            context = editor.model_context(max_turns-turn+1, max_edit_candidates-editor.edit_count, feedback, pending_review_candidate_id=pending_review,
+                inspection_candidate_ids=[row['candidate_id'] for row in pending_records()])
             if generation is not None:
                 context['generation_budget']=generation.context()
             if target_effect is not None:
                 context['target_effect']=target_effect
-            refinement=refinement_state(editor,generation.remaining() if generation is not None else max(0,max_edit_candidates-editor.edit_count),max_turns-turn+1,refinement_version is not None)
+            refinement=refinement_state(editor,generation.remaining() if generation is not None else max(0,max_edit_candidates-editor.edit_count),max_turns-turn+1,refinement_version is not None,
+                reviewed_candidate_ids=visual['submittable_candidate_ids'])
             if refinement_version is not None:
                 context['refinement_workflow']=refinement
                 context['refinement_task']=REFINEMENT_GUIDANCE
             if candidate_view is not None:
                 context = unranked_view(context)
                 context['candidate_order_note']='Generation order, no ranking or recommended ID.'
-                context['comparison_guidance']=GUIDANCE
+                context.setdefault('comparison_guidance',GUIDANCE)
             if context_view is not None:
                 context = compact_model_context(context)
             if brief is not None:
@@ -213,7 +256,8 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                     "Numerical checks determine reference-screen eligibility.\nState:\n"
                     + json.dumps(context, ensure_ascii=False, separators=(',',':')))
 
-            content = prompt if pending is None else [{'type':'text','text':prompt+'\nRequested diagram for '+pending['candidate_id']}, image_part(run_dir/pending['path'])]
+            content = prompt if pending is None else [{'type':'text','text':prompt+'\nRequested diagram for '+', '.join(row['candidate_id'] for row in pending_records())},
+                *[image_part(run_dir/row['path']) for row in pending_records()]]
             messages = [{'role':'user','content':content}]
             choice, tools = _tool_contract(editor, turn, max_turns, max_edit_candidates, require_edit=point_only)
             if generation is not None:
@@ -225,48 +269,76 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                 tools = [tool for tool in tools if tool['function']['name'] != 'repair_candidate']
             if refinement['pending']:
                 tools=[t for t in tools if t['function']['name']!='submit_candidate']
+            from agent_tool_view import creation_contract
+            from visual_review import finalization_tools
+            creation_choice, tools = creation_contract(tools, feedback) if turn < max_turns else (None, tools)
+            finalizing = False
+            if creation_choice is not None:
+                choice = creation_choice
+            else:
+                before = tools
+                tools = finalization_tools(tools, visual, feedback, refinement_pending=refinement['pending'])
+                finalizing = tools is not before
             choice, tools = visual_tool_contract(tools, INSPECT, visual,
                 selected=editor.current, first_inspection=not inspections,
-                closing=turn >= max_turns-1 and not refinement['pending'], final=turn == max_turns,
-                edit_names=EDIT_TOOL_NAMES | generation_names, require_edit=point_only or refinement['pending'],
+                closing=turn >= max_turns-1 and not refinement['pending'] and creation_choice is None,
+                final=turn == max_turns, edit_names=EDIT_TOOL_NAMES | generation_names,
+                require_edit=point_only or refinement['pending'],
                 edit_count=0 if refinement['pending'] else editor.edit_count)
-            choice, tools = constrained_auto(choice, tools)
+            if creation_choice is not None or finalizing:
+                tools=[tool for tool in tools if tool['function']['name']!='inspect_trajectory']
+            choice, tools = require_native_call(choice, tools, messages=messages,
+                image_tool_choice=profile.get('image_tool_choice','required'),
+                tool_choice_policy=profile.get('tool_choice_policy','preserve'))
             if resume and prior_request is not None and turn == resume_turn:
                 payload = prior_request['payload']
                 expected = normalize_kimi_parameters(profile['model'], dict(messages=messages,
-                    tools=tools, tool_choice=choice, max_tokens=max_tokens, reasoning_effort='high',
+                    tools=tools, tool_choice=choice, max_tokens=max_tokens, reasoning_effort=reasoning_effort(),
                     extra_body={'thinking':{'type':'enabled'}}, parallel_tool_calls=False))
                 if any(payload.get(field) != expected.get(field) for field in (
                         'messages','tools','tool_choice','max_tokens','reasoning_effort','extra_body','parallel_tool_calls')):
                     raise ValueError('Restored request differs from the archived failed request')
             print('Visual editor turn', turn, 'started', flush=True)
-            _, attempt = archive.complete(f'turn_{turn:02d}', messages, total_seconds=timeout_seconds,
-                max_tokens=max_tokens, extra_body={'thinking':{'type':'enabled'}}, reasoning_effort='high',
+            _, attempt = archive.complete(f'turn_{turn:02d}', messages, total_seconds=min(timeout_seconds, max(1, remaining)),
+                no_output_seconds=min(60, max(1, remaining)), retries=2,
+                max_tokens=max_tokens, extra_body={'thinking':{'type':'enabled'}}, reasoning_effort=reasoning_effort(),
                 tools=tools, tool_choice=choice, parallel_tool_calls=False, allow_tool_calls=True)
             if pending is not None:
-                deliveries.append(dict(inspection_id=pending['inspection_id'], candidate_id=pending['candidate_id'], request_turn=turn, request_path=str(attempt.relative_to(run_dir))))
+                delivered_ids={row['inspection_id'] for row in deliveries}
+                deliveries.extend(dict(inspection_id=row['inspection_id'], candidate_id=row['candidate_id'], request_turn=turn, request_path=str(attempt.relative_to(run_dir)))
+                    for row in pending_records() if row['inspection_id'] not in delivered_ids)
                 pending = None
                 if pending_review in {d['candidate_id'] for d in deliveries}:
                     pending_review = None
             message = json.loads((attempt/'response.json').read_text())['choices'][0]['message']
             calls = message.get('tool_calls') or []; actions += 1
             if len(calls) != 1:
-                stop = 'invalid_or_missing_tool_call'; break
+                invalid += 1
+                record = protocol_rejection(run_dir, attempt, turn, calls)
+                atomic_json(run_dir/'protocol-errors'/f'turn_{turn:02d}.json', record)
+                feedback = record['feedback']
+                if invalid >= 3 or turn == max_turns:
+                    raise NativeToolProtocolError('Native tool-call protocol correction budget exhausted; no text command was executed')
+                continue
             call = calls[0]; name = call['function']['name']
+            tool_started = time.perf_counter()
             try:
                 args = _arguments(call)
                 validate_exposed_call(name, args, tools)
                 if name == 'select_constructor_candidate' and set(args) == {'candidate_id','reason'}:
                     result = editor.select_constructor(args)
                 elif name == 'inspect_trajectory' and set(args) == {'candidate_id'}:
+                    cached = any(row['candidate_id']==args['candidate_id'] for row in inspections)
                     allowance = review_state(editor.nodes, inspections, deliveries, None, pending_review, max_inspections)
                     extra = allowance['manual_inspections_remaining'] == 0
-                    if extra and (turn < max_turns-1 or not allowance['final_review_remaining']):
+                    if not cached and extra and (turn < max_turns-1 or not allowance['final_review_remaining']):
                         raise ValueError('Inspection budget exhausted; choose a submittable candidate or finish')
                     record = inspect(args['candidate_id'], closing_review=extra)
                     result = dict(status='inspection_ready', **record)
                 elif name in generation_names:
+                    previous_ids=set(editor.nodes)
                     result=generation.execute(name,args)
+                    result['automatic_inspections']=[inspect(cid,automatic=True) for cid in editor.nodes if cid not in previous_ids]
                 elif name in EDIT_TOOL_NAMES | {'repair_candidate'}:
                     if point_only and name not in EDIT_TOOL_NAMES:
                         raise ValueError('Only trajectory-point editing is enabled')
@@ -310,12 +382,19 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                 folder.mkdir(parents=True,exist_ok=False)
                 atomic_json(folder/'call.json',call)
                 atomic_json(folder/'result.json',dict(status='execution_failed',error_type=type(error).__name__))
+                from common.llm_audit import record_tool_exchange
+                record_tool_exchange(call, dict(status='execution_failed',error_type=type(error).__name__), folder,
+                                     elapsed_seconds=time.perf_counter()-tool_started)
                 raise
             if candidate_view is not None:
                 result = unranked_view(result)
             folder = run_dir/'tool-exchanges'/f'turn_{turn:02d}'; folder.mkdir(parents=True, exist_ok=False)
+            result['archive_ref'] = str(folder)
             atomic_json(folder/'call.json', call); atomic_json(folder/'result.json', result)
-            feedback = result
+            from common.llm_audit import record_tool_exchange
+            record_tool_exchange(call, result, folder, elapsed_seconds=time.perf_counter()-tool_started)
+            from agent_tool_view import compact_action_feedback
+            feedback = compact_action_feedback(result)
             print('Tool', name, 'returned', result['status'], flush=True)
             if result['status'] in {'invalid','rejected'}:
                 invalid += 1
@@ -328,9 +407,15 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     except KeyboardInterrupt:
         stop = 'interrupted_by_operator'
         raise
-    except Exception:
-        stop = 'request_or_execution_failed'
+    except NativeToolProtocolError:
+        stop = 'native_tool_protocol_failed'
         raise
+    except Exception as error:
+        if time.perf_counter() >= deadline and type(error).__name__ in {'TimeoutExpired', 'TimeoutError', 'APITimeoutError'}:
+            stop = 'stage_timeout_exhausted'
+        else:
+            stop = 'request_or_execution_failed'
+            raise
     finally:
         client.close()
         summary = _summary(editor, stop, actions, invalid, max_turns, max_edit_candidates, 3)
@@ -341,7 +426,8 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             if editor.submitted is not None and hasattr(editor,'_public'):
                 summary['selected_candidate_evidence']=editor._public(editor.submitted)
         if refinement_version is not None:
-            summary['refinement_workflow']=refinement_state(editor,generation.remaining() if generation is not None else max(0,max_edit_candidates-editor.edit_count),max(0,max_turns-actions),True)
+            summary['refinement_workflow']=refinement_state(editor,generation.remaining() if generation is not None else max(0,max_edit_candidates-editor.edit_count),max(0,max_turns-actions),True,
+                reviewed_candidate_ids=[row['candidate_id'] for row in deliveries])
         summary.update(pending_review_candidate_id=pending_review, visual_submission_state=review_state(editor.nodes, inspections, deliveries, pending, pending_review, max_inspections), inspection_calls=manual_count(),automatic_inspection_count=len(inspections)-manual_count(), inspections=inspections, completed_image_deliveries=deliveries,
             visual_input_used=bool(deliveries), visual_scope='generated map and trajectory diagram',
             visual_influence='not established without response analysis')

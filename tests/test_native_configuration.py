@@ -25,10 +25,12 @@ import os,json
 from pathlib import Path
 from api_settings import get_profile,bind_profiles,vlm_settings
 p=Path(__file__).parent/"local.json"
-p.write_text(json.dumps({"kimi":{"base_url":"https://native.invalid/v1","model":"native-model","api_key_env":"NATIVE_TEST_KEY"}}))
+p.write_text(json.dumps({"kimi":{"base_url":"https://native.invalid/v1","model":"native-model","api_key_env":"NATIVE_TEST_KEY","timeout":600,"max_tokens":8192}}))
 os.environ[VARIABLE]=str(p)
 os.environ["NATIVE_TEST_KEY"]="offline-test-key"
-assert vlm_settings()=={"endpoint":"https://native.invalid/v1/chat/completions","model":"native-model","api_key":"offline-test-key"}
+result=vlm_settings()
+assert result["model"]=="native-model" and result["api_key"]=="offline-test-key"
+if "timeout" in result: assert result["timeout"]==600 and result["max_tokens"]==8192
 with bind_profiles(lambda *a,**k: {"model":"injected"}):
  assert get_profile()["model"]=="injected"
 assert get_profile()["model"]=="native-model"

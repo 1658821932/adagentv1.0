@@ -1,4 +1,4 @@
-"""Canonical ten-tool registry; numbering matches the public workflow order."""
+"""Canonical nine-tool registry; numbering matches the public workflow order."""
 from __future__ import annotations
 from typing import Callable
 from tools.contracts import validated
@@ -15,12 +15,12 @@ from tools.tool05_attack_vehicle_editor.mock import run as mock_attack_vehicle_e
 from tools.tool05_attack_vehicle_editor.real import run as real_attack_vehicle_editor
 from tools.tool06_ego_trajectory_editor.mock import run as mock_ego_trajectory_editor
 from tools.tool06_ego_trajectory_editor.real import run as real_ego_trajectory_editor
-from tools.tool08_policy_runner.mock import run as mock_policy_runner
-from tools.tool08_policy_runner.real import run as real_policy_runner
-from tools.tool09_failure_case_filter.mock import run as mock_failure_case_filter
-from tools.tool09_failure_case_filter.real import run as real_failure_case_filter
-from tools.tool10_policy_trainer.mock import run as mock_policy_trainer
-from tools.tool10_policy_trainer.real import run as real_policy_trainer
+from tools.tool07_policy_runner.mock import run as mock_policy_runner
+from tools.tool07_policy_runner.real import run as real_policy_runner
+from tools.tool08_failure_case_filter.mock import run as mock_failure_case_filter
+from tools.tool08_failure_case_filter.real import run as real_failure_case_filter
+from tools.tool09_policy_trainer.mock import run as mock_policy_trainer
+from tools.tool09_policy_trainer.real import run as real_policy_trainer
 
 ToolCallable = Callable[[dict], dict]
 
@@ -53,9 +53,9 @@ _BACKEND_MODULES = {
     "video_retriever": "tools.tool03_video_retriever",
     "attack_vehicle_editor": "tools.tool05_attack_vehicle_editor",
     "ego_trajectory_editor": "tools.tool06_ego_trajectory_editor",
-    "policy_runner": "tools.tool08_policy_runner",
-    "failure_case_filter": "tools.tool09_failure_case_filter",
-    "policy_trainer": "tools.tool10_policy_trainer",
+    "policy_runner": "tools.tool07_policy_runner",
+    "failure_case_filter": "tools.tool08_failure_case_filter",
+    "policy_trainer": "tools.tool09_policy_trainer",
 }
 for _name, _module in _BACKEND_MODULES.items():
     MOCK_TOOL_REGISTRY[_name] = validated(_name, _module, MOCK_TOOL_REGISTRY[_name])

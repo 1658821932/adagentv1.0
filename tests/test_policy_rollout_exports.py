@@ -14,12 +14,20 @@ class RolloutExportTests(unittest.TestCase):
         result = root / "simulation"
         (result / "WE_output/openscene_format").mkdir(parents=True, exist_ok=True)
         payload = {"status":"success","result":{"result_dir":str(result),"reports":[{"succeeded":True}]}}
-        args = dict(config_path="config.py", checkpoint_path="base.pth", model_name="test",
+        cfg = root / 'config.py'; cfg.write_text('# offline fixture')
+        weights = root / 'base.pth'; weights.write_bytes(b'offline fixture')
+        args = dict(config_path=str(cfg), checkpoint_path=str(weights), model_name="test",
                     data_type="sample", max_frame_per_scene=12, with_dense_reward_manager=dense)
         with patch.dict(os.environ, {"ADAGENT_RUNTIME_ROOT":str(root / "runtime")}), \
              patch.object(client, "AGENT_PYTHON", Path(sys.executable)), \
-             patch.object(client, "run_logged", return_value=CompletedProcess([], 0, json.dumps(payload), "")):
-            return client.run_policy(args)
+             patch.object(client, "run_logged", side_effect=[
+                 CompletedProcess([],0,json.dumps(payload),""),
+                 CompletedProcess([],0,json.dumps({"rlft_training_data":None,
+                     "rlft_data_report":{"status":"no_eligible_scenes","manifest_path":"/manifest.json",
+                                         "frame_count":12,"reward_frame_count":9,"eligible_scene_count":0}}),"")]) as logged:
+            result=client.run_policy(args)
+            self.logged_calls=logged.call_args_list
+            return result
 
     def test_il_collection_does_not_require_rewards(self):
         with tempfile.TemporaryDirectory() as d:
@@ -45,6 +53,10 @@ class RolloutExportTests(unittest.TestCase):
             (plans / "plan_idx.csv").write_text(text)
             result = self.invoke(root, True)
             self.assertTrue(result["candidate_rewards_present"])
+            self.assertEqual(result["rlft_data_report"]["status"],"no_eligible_scenes")
+            self.assertIsNone(result["rlft_training_data"])
+            self.assertEqual(len(self.logged_calls),2)
+            self.assertIn("rl_annotations.py",self.logged_calls[1].args[0][1])
             self.assertEqual((rewards / "plan_idx.csv").read_text(), text)
 
 if __name__ == "__main__":

@@ -1,28 +1,38 @@
 {
-  "public_pipeline_root": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/outputs/rendered",
   "defaults": {
     "attack_max_turns": 12,
     "defense_max_turns": 10,
     "defense_max_edit_candidates": 5,
     "defense_max_inspections": 3,
     "defense_constructor_candidates": 24,
-    "defense_initial_foci_candidates": 2
+    "defense_initial_foci_enabled": true,
+    "defense_initial_foci_candidates": 2,
+    "defense_preparation_timeout_seconds": 300
+  },
+  "vadv2": {
+    "python": "environments/agent/.venv/bin/python",
+    "worldengine_root": "mcp_servers/worldengine/core",
+    "config_path": "mcp_servers/worldengine/core/projects/AlgEngine/configs/worldengine/e2e_vadv2_50pct.py",
+    "checkpoint_path": "mcp_servers/worldengine/core/data/alg_engine/ckpts/e2e_vadv2_50pct_ep8.pth",
+    "model_name": "attack_vadv2_50pct",
+    "num_history": 4,
+    "timeout_seconds": 600
   },
   "pdm": {
-    "python": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/environments/simengine/bin/python",
-    "worldengine": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/WorldEngine/projects/SimEngine",
-    "system_lib": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ly/external/system-libs/usr/lib/x86_64-linux-gnu",
-    "map_root": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/WorldEngine/data/raw/nuplan/dataset/maps",
+    "python": "environments/simengine/bin/python",
+    "worldengine": "mcp_servers/worldengine/core/projects/SimEngine",
+    "system_lib": "/usr/lib/x86_64-linux-gnu",
+    "map_root": "mcp_servers/worldengine/core/data/raw/nuplan/dataset/maps",
     "timeout_seconds": 300,
     "cpu_threads": 1
   },
   "render": {
     "enabled": true,
-    "python": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/environments/scene_render/bin/python",
-    "worldengine_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/WorldEngine/projects/SimEngine",
-    "system_lib": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ly/external/system-libs/usr/lib/x86_64-linux-gnu",
-    "include_root": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ly/external/system-libs/usr/include",
+    "python": "environments/scene_render/bin/python",
+    "worldengine_dir": "mcp_servers/worldengine/core/projects/SimEngine",
+    "system_lib": "/usr/lib/x86_64-linux-gnu",
+    "include_root": "/usr/include",
     "timeout_seconds": 1800,
-    "gsplat_extension": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/scene_editing/runtime/case1_reliability_fix01/prebuilt-gsplat/gsplat_cuda.so"
+    "gsplat_extension": null
   }
 }

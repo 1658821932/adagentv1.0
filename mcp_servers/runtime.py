@@ -70,7 +70,7 @@ class Run:
             self.manifest = json.loads((self.root / "manifest.json").read_text())
         if "owner_pid" not in self.manifest:
             self.manifest["owner_pid"] = os.getpid()
-        for field in ("agent_run_id", "tool_call_id", "parent_run_id"):
+        for field in ("agent_run_id", "tool_call_id", "parent_run_id", "agent_log_dir", "stage", "step"):
             value = _TRACE.get().get(field) or os.getenv("ADAGENT_" + field.upper())
             if value:
                 self.manifest[field] = value
@@ -82,7 +82,7 @@ class Run:
 
     def child_env(self):
         env = {**os.environ, "ADAGENT_ACTIVE_SERVICE": self.service, "ADAGENT_ACTIVE_RUN": str(self.root)}
-        for field in ("agent_run_id", "tool_call_id", "parent_run_id"):
+        for field in ("agent_run_id", "tool_call_id", "parent_run_id", "agent_log_dir", "stage", "step"):
             if self.manifest.get(field):
                 env["ADAGENT_" + field.upper()] = str(self.manifest[field])
         return env

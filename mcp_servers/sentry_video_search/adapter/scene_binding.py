@@ -66,25 +66,29 @@ def bind_scene(source_file, output_dir):
                            "frame_token": frame.get("token"),
                            "image_path": str(image.absolute()), "available": image.is_file()})
         available = sum(item["available"] for item in images)
-        video = Path(source_file).expanduser().absolute() if name == camera else None
-        # Only bind additional videos when their sidecars confirm the same scene/camera.
-        if video is None:
-            for folder in dict.fromkeys((sidecar.parent, sample / "preview")):
-                for candidate in sorted(folder.glob("*.scene.json")):
-                    other = json.loads(candidate.read_text())
-                    other_root = Path(other.get("sample_root", ".")).expanduser()
-                    if not other_root.is_absolute():
-                        other_root = candidate.parent / other_root
-                    if (other.get("camera") == name and other_root.resolve() == sample
-                            and other.get("scene_token", token) == token):
-                        path = Path(other.get("video_path") or candidate.with_suffix("").with_suffix(".mp4"))
-                        if not path.is_absolute():
-                            path = candidate.parent / path
-                        if path.is_file():
-                            video = path
-                            break
-                if video is not None:
-                    break
+        # cameras 里的 video_path 一律指向数据集内的视频（sample_root 内）；
+        # 仅当数据集缺该路视频时，命中相机才退回检索库的 source_file。
+        video = None
+        for folder in dict.fromkeys((sample / "preview", sidecar.parent)):
+            for candidate in sorted(folder.glob("*.scene.json")):
+                other = json.loads(candidate.read_text())
+                other_root = Path(other.get("sample_root", ".")).expanduser()
+                if not other_root.is_absolute():
+                    other_root = candidate.parent / other_root
+                if (other.get("camera") == name and other_root.resolve() == sample
+                        and other.get("scene_token", token) == token):
+                    path = Path(other.get("video_path") or candidate.with_suffix("").with_suffix(".mp4"))
+                    if not path.is_absolute():
+                        path = candidate.parent / path
+                    path = path.expanduser().resolve()
+                    # 只接受落在数据集样本目录内的视频，跳过指向检索库的 sidecar
+                    if path.is_file() and sample in path.parents and path.suffix.lower() == ".mp4":
+                        video = path
+                        break
+            if video is not None:
+                break
+        if video is None and name == camera:
+            video = Path(source_file).expanduser().absolute()
         summary = {"video_path": str(video) if video is not None and video.is_file() else None,
                    "frame_count": len(images), "available_images": available,
                    "images_complete": available == len(images)}

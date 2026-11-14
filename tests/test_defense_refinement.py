@@ -35,3 +35,24 @@ def test_parent_based_foci_counts_and_resource_waivers_are_explicit():
     assert refinement_state(editor(),0,7,True)['status']=='not_attempted_resource_limit'
     assert refinement_state(editor(),5,1,True)['status']=='not_attempted_resource_limit'
     assert refinement_state(editor(),5,7,False)['status']=='disabled'
+
+
+def test_reviewed_passing_initial_candidate_does_not_require_artificial_edit():
+    e=editor()
+    e.nodes['initial']['result']=dict(status='reference_screen_passed')
+    state=refinement_state(e,5,8,True,reviewed_candidate_ids=['initial'])
+    assert not state['pending'] and state['status']=='reviewed_initial_candidate_available'
+    assert refinement_state(e,5,8,True)['pending']
+    e.nodes['initial']['result']['status']='reference_screen_failed'
+    assert refinement_state(e,5,8,True,reviewed_candidate_ids=['initial'])['pending']
+
+
+def test_checked_is_not_reviewed_but_attached_image_allows_same_turn_comparison():
+    e=editor();child(e,'foci_edit',source='foci')
+    state=refinement_state(e,4,7,True,reviewed_candidate_ids=['initial'])
+    assert state['status']=='comparison_review_pending' and state['pending']
+    assert state['unreviewed_passing_refinement_ids']==['foci_edit']
+    ready=refinement_state(e,4,7,True,reviewed_candidate_ids=['initial','foci_edit'])
+    assert not ready['pending'] and ready['retained_initial_candidate_id']=='initial'
+    failed=editor();child(failed,'failed',passed=False)
+    assert not refinement_state(failed,4,7,True,reviewed_candidate_ids=['initial'])['pending']

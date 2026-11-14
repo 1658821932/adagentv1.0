@@ -8,6 +8,13 @@ import numbers
 from pathlib import Path
 import pickle
 import re
+import sys
+
+# This file is also an entry point (adapter subprocess), where the script
+# directory - not the project root - is on sys.path.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def aliases(value):
@@ -118,15 +125,9 @@ def reported_scenes(result_dir, index):
 def evaluate_official_pdm(scenario_path, result_dir, index, selected):
     """Select PDM-zero scenes using saved scores and matched execution metadata."""
     import csv
+    from common.pdm_scores import score_file as resolve_score_file
     root = Path(result_dir)
-    candidates = sorted((root / "WE_output/openscene_format").glob("all_scenes_pdm_averages_*.csv"))
-    if not candidates:
-        candidates = sorted(root.glob("all_scenes_pdm_averages_*.csv"))
-    if not candidates:
-        raise FileNotFoundError(f"No official PDM score file in {root}; run policy_runner with PDM evaluation first")
-    if len(candidates) != 1:
-        raise ValueError("Expected one official PDM score file")
-    score_file = candidates[0]
+    score_file = resolve_score_file(root)
     rows = {}
     with score_file.open(newline="") as stream:
         for row in csv.DictReader(stream):

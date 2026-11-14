@@ -15,10 +15,15 @@ def initial_state(times, xy, yaw, size, boundary, acceptance):
     angle = float(np.interp(boundary, times, np.unwrap(yaw)))
     before = max(float(times[0]), boundary - .1)
     if before >= boundary:
-        raise ValueError('Initial bicycle state needs recorded motion before the boundary')
-    velocity = (centre - sample_xy(times, xy, [before])[0]) / (boundary - before)
-    before_angle = float(np.interp(before, times, np.unwrap(yaw)))
-    yaw_rate = (angle - before_angle) / (boundary - before)
+        # At scene start inherit the first native interval, without inventing
+        # pre-scene observations. Later takeovers retain their left derivative.
+        span=float(times[1]-times[0])
+        velocity=(np.asarray(xy[1])-np.asarray(xy[0]))/span
+        yaw_rate=float(np.arctan2(np.sin(yaw[1]-yaw[0]),np.cos(yaw[1]-yaw[0])))/span
+    else:
+        velocity = (centre - sample_xy(times, xy, [before])[0]) / (boundary - before)
+        before_angle = float(np.interp(before, times, np.unwrap(yaw)))
+        yaw_rate = (angle - before_angle) / (boundary - before)
     forward = np.array([math.cos(angle), math.sin(angle)])
     left = np.array([-math.sin(angle), math.cos(angle)])
     speed = float(velocity @ forward)

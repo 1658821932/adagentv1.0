@@ -10,7 +10,8 @@ import time
 
 
 def build_commands(args, environ):
-    env = dict(environ)
+    from .config import runtime_env
+    env = runtime_env(environ)
     root = Path(env["WORLDENGINE_ROOT"]).expanduser().resolve()
     project = Path(__file__).resolve().parents[3]
     result = Path(env["WORLDENGINE_TEST_PATH"]).expanduser().resolve()
@@ -25,11 +26,15 @@ def build_commands(args, environ):
         folder = root / folder
     scenario_file = folder.resolve() / env.get("SCENARIO_PKL_FILE_NAME", "all_scenarios.pkl")
     assets = Path(env.get("SCENARIO_ASSET_FOLDER_PATH") or root / "data/sim_engine/assets" / args.asset_name / "assets").expanduser().resolve()
-    history = int(env.get("NUM_HISTORY", "4"))
-    frames = int(env.get("MAX_FRAME_PER_SCENE", str(history + int(env.get("NUM_FUTURE", "36")))))
+    from .evaluation_horizon import DEFAULT_NATIVE_HISTORY, DEFAULT_NATIVE_FRAMES
+    history = int(env.get("NUM_HISTORY", str(DEFAULT_NATIVE_HISTORY)))
+    default_frames = history + int(env['NUM_FUTURE']) if env.get('NUM_FUTURE') else DEFAULT_NATIVE_FRAMES
+    frames = int(env.get("MAX_FRAME_PER_SCENE", str(default_frames)))
     future = int(env.get("NUM_FUTURE", str(frames - history)))
     if history < 1 or future < 1 or history + future != frames:
         raise ValueError("num_history + num_future must equal max_frame_per_scene")
+    from mcp_servers.worldengine.adapter.evaluation_horizon import full_horizon
+    horizon=full_horizon(history,frames,int(env['SAMPLING_POSES']) if env.get('SAMPLING_POSES') else None)
     for unsupported in ("PLANNER_INTERVAL_FRAMES", "PLANNER_HISTORY_STRIDE", "MULTI_AGENT_VADV2"):
         if env.get(unsupported):
             raise ValueError(f"{unsupported} is not supported by the native runner")
@@ -47,7 +52,8 @@ def build_commands(args, environ):
         "visualize_video": env.get("VISUALIZE_VIDEO", "false"), "visualize_BEV": env.get("VISUALIZE_BEV", "false"),
         "distributed_mode": "SINGLE_NODE", "enable_resume": "false",
         "completed_scenarios_dir": str(result / "completed_scenarios"),
-        "num_history": history, "num_future": future, "sampling_poses": int(env.get("SAMPLING_POSES", "8")),
+        "num_history": history, "num_future": future, "sampling_poses": horizon['sampling_poses'],
+        "buffer_size": horizon['buffer_size'],
     }
     for key in ("agent_policy", "agent_navigation", "agent_client"):
         if env.get(key.upper()):
@@ -56,7 +62,8 @@ def build_commands(args, environ):
             options[key] = "idm_policy" if key == "agent_policy" else "idm_navigation"
     if env.get("NUM_SCENARIOS"):
         options["+num_scenarios"] = int(env["NUM_SCENARIOS"])
-    sim = [sim_python, "worldengine/runner/run_simulation.py", *[f"{k}={json.dumps(v) if isinstance(v,str) and (' ' in v or '[' in v or ',' in v) else v}" for k,v in options.items()]]
+    native_adapter = Path(__file__).with_name('native_simulation.py')
+    sim = [sim_python, str(native_adapter), str(simroot / "worldengine/runner/run_simulation.py"), *[f"{k}={json.dumps(v) if isinstance(v,str) and (' ' in v or '[' in v or ',' in v) else v}" for k,v in options.items()]]
     planner_options = {
         "sim.monitored_folder": str(result / "frames"), "sim.plan_save_path": str(result / "plan_traj"),
         "sim.merged_ann_save_dir": str(result / "merged_ann_files"), "sim.clean_temp_files": False,
@@ -64,13 +71,16 @@ def build_commands(args, environ):
         "sim.maximum_step": frames, "queue_length": history, "model.queue_length": history,
         "data_root": str(result / "WE_output/openscene_format") + "/",
     }
-    alg = [alg_python, "closed_loop/sim_test.py", args.config, args.checkpoint,
+    alg = [alg_python, str(Path(__file__).with_name('native_planner.py')), '--scene-frames', str(frames),
+           str(algroot / "closed_loop/sim_test.py"), args.config, args.checkpoint,
            "--log-dir", str(result / "WE_output"), "--cfg-options",
            *[f"{k}={v}" for k,v in planner_options.items()]]
     env["PYTHONPATH"] = os.pathsep.join([str(simroot), str(algroot), str(project)])
     env["PYTHONUNBUFFERED"] = "1"
     effective = {"scenario_file": str(scenario_file), "num_history": history, "num_future": future,
-                 "max_frame_per_scene": frames, "simulator": options, "planner": planner_options,
+                 "native_libraries": {"directory": env.get('WORLDENGINE_LIBRARY_DIR'),
+                                      "search_path": env.get('LD_LIBRARY_PATH')},
+                 "max_frame_per_scene": frames, "evaluation_horizon":horizon,"simulator": options, "planner": planner_options,
                  "commands": {"simulator": sim, "planner": alg}}
     return sim, alg, simroot, algroot, result, env, effective
 

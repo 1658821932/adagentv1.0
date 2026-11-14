@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 import sys
 import types
+from time import perf_counter
 
 import pytest
+
+from mcp_servers.scene_editing.core.adversarial.action_validation import prevalidate_action, invalid_action_result
+from mcp_servers.scene_editing.core.adversarial.agent_tool_view import compact_action_feedback
+from mcp_servers.scene_editing.core.adversarial.attack_stop_policy import repetition
 
 CORE=Path(__file__).resolve().parents[1]/'mcp_servers/scene_editing/core/adversarial'
 
@@ -15,7 +20,7 @@ def test_probe_overlay_then_trajectory_inspection_before_submit(monkeypatch,tmp_
     calls=[('probe_pdm',dict(candidate_id='seed_000')),('inspect_trajectory',dict(candidate_id='seed_000')),
            ('submit_candidate',dict(candidate_id='seed_000',reason='tested and viewed'))]
     editor=types.SimpleNamespace(run_dir=tmp_path,constraints=dict(stationary_target=True,pdm_self_check=True),
-        history=[],nodes=dict(seed_000=dict(result=dict(reference_screen_passed=True))),inspected=set(),submitted=None,target=dict(track_id='target'))
+        history=[],nodes=dict(seed_000=dict(result=dict(reference_screen_passed=True))),pdm_probe=None,policy_probe=None,inspected=set(),submitted=None,target=dict(track_id='target'))
     class Probe:
         def __init__(self,owner):self.owner=owner;self.tested=False
         def context(self):return dict(candidates={'seed_000':{}} if self.tested else {},remaining=0 if self.tested else 1)
@@ -43,16 +48,58 @@ def test_probe_overlay_then_trajectory_inspection_before_submit(monkeypatch,tmp_
     def write(path,value):Path(path).write_text(json.dumps(value))
     from mcp_servers.scene_editing.core.adversarial.attack_tool_contract import constructor_exhaustion, trajectory_tools
     from mcp_servers.scene_editing.core.adversarial.model_context import compact_model_context
-    namespace=dict(json=json,compact_model_context=compact_model_context,trajectory_tools=trajectory_tools,constructor_exhaustion=constructor_exhaustion,TRAJECTORY_TOOLS=[dict(function=dict(name=name,parameters=dict(properties=dict(candidate_id=dict(type='string'))))) for name in tools],
+    namespace=dict(reasoning_effort=lambda:'low',json=json,compact_model_context=compact_model_context,trajectory_tools=trajectory_tools,constructor_exhaustion=constructor_exhaustion,TRAJECTORY_TOOLS=[dict(function=dict(name=name,parameters=dict(properties=dict(candidate_id=dict(type='string'))))) for name in tools],
         STATIC_EDIT_PROMPT='static',EDIT_PROMPT='moving',PDM_PROBE_PROMPT='PDM self-check',
         atomic_json=write,image_part=lambda path:dict(path=path),
-        decode_call=lambda index:(dict(),*calls[index]),archive_exchange=lambda *args:None)
+        decode_call=lambda index:(dict(id='fixture'),*calls[index]),archive_exchange=lambda *args,**kwargs:None,perf_counter=perf_counter,
+        repetition=repetition,prevalidate_action=prevalidate_action,
+        invalid_action_result=invalid_action_result,compact_action_feedback=compact_action_feedback)
     node=next(n for n in ast.parse((CORE/'run_attack_workflow.py').read_text()).body
               if isinstance(n,ast.FunctionDef) and n.name=='edit_object');node.decorator_list=[]
     exec(compile(ast.Module(body=[node],type_ignores=[]),'edit_object','exec'),namespace)
     result=namespace['edit_object'](editor,dict(instruction='stationary'),Archive(),300,16384,3)
     assert result=='seed_000' and len(observed)==3
     assert 'PDM self-check' in observed[0][0]['content']
+
+
+def test_stationary_seed_fast_path_only_reviews_image_then_submits(tmp_path):
+    from mcp_servers.scene_editing.core.adversarial.attack_tool_contract import candidate_eligibility,constructor_exhaustion,trajectory_tools
+    from mcp_servers.scene_editing.core.adversarial.model_context import compact_model_context
+    editor=types.SimpleNamespace(run_dir=tmp_path,constraints=dict(stationary_target=True),
+        history=[],nodes={'seed_000':dict(result=dict(reference_screen_passed=True))},
+        pdm_probe=None,policy_probe=None,inspected=set(),submitted=None,target=dict(track_id='target'))
+    editor.public=lambda candidate:dict(candidate_id=candidate,reference_screen_passed=True)
+    editor.context=lambda:dict(constructor_budget=dict(calls=0,evaluations=0))
+    editor.inspect=lambda candidate:dict(status='inspection_ready',candidate_id=candidate,path='/seed.png')
+    def submit(candidate,reason):
+        assert candidate in editor.inspected
+        editor.submitted=candidate
+        return dict(status='accepted',candidate_id=candidate)
+    editor.submit=submit
+    observed=[]
+    class Archive:
+        def complete(self,label,messages,**kwargs):
+            observed.append(kwargs)
+            return '',len(observed)-1
+    def decode(attempt):
+        name=observed[attempt]['tool_choice']['function']['name']
+        args=dict(candidate_id='seed_000') if name=='inspect_trajectory' else dict(candidate_id='seed_000',reason='reviewed stationary seed')
+        return dict(id='fixture'),name,args
+    def write(path,value):Path(path).write_text(json.dumps(value))
+    tools=['evaluate_candidate','inspect_trajectory','submit_candidate','finish_search']
+    namespace=dict(reasoning_effort=lambda:'low',json=json,compact_model_context=compact_model_context,
+        candidate_eligibility=candidate_eligibility,trajectory_tools=trajectory_tools,constructor_exhaustion=constructor_exhaustion,
+        TRAJECTORY_TOOLS=[dict(function=dict(name=name,parameters=dict(properties=dict(candidate_id=dict(type='string'))))) for name in tools],
+        STATIC_EDIT_PROMPT='static',EDIT_PROMPT='moving',atomic_json=write,image_part=lambda path:dict(path=path),
+        decode_call=decode,archive_exchange=lambda *args,**kwargs:None,perf_counter=perf_counter,
+        repetition=repetition,prevalidate_action=prevalidate_action,
+        invalid_action_result=invalid_action_result,compact_action_feedback=compact_action_feedback)
+    node=next(n for n in ast.parse((CORE/'run_attack_workflow.py').read_text()).body
+        if isinstance(n,ast.FunctionDef) and n.name=='edit_object');node.decorator_list=[]
+    exec(compile(ast.Module(body=[node],type_ignores=[]),'edit_object','exec'),namespace)
+    assert namespace['edit_object'](editor,dict(instruction='stationary'),Archive(),300,16384,4)=='seed_000'
+    assert [item['tool_choice']['function']['name'] for item in observed]==['inspect_trajectory','submit_candidate']
+    assert len(observed)==2 and editor.inspected=={'seed_000'}
 
 
 @pytest.mark.parametrize('initial_remaining',[0,1])
@@ -62,7 +109,7 @@ def test_loop_refreshes_budget_tools_and_never_forces_exhausted_constructor(tmp_
     from mcp_servers.scene_editing.core.adversarial.model_context import compact_model_context
     budget=dict(calls=0,evaluations=1000-initial_remaining,remaining_evaluations=initial_remaining)
     editor=types.SimpleNamespace(run_dir=tmp_path,constraints=dict(object_reselection_count=reselection_count),
-        history=[],nodes={'seed_000':dict(result=dict(reference_screen_passed=True))},pdm_probe=None,submitted=None,target=dict(track_id='target'))
+        history=[],nodes={'seed_000':dict(result=dict(reference_screen_passed=True))},pdm_probe=None,policy_probe=None,submitted=None,target=dict(track_id='target'))
     editor.public=lambda candidate:dict(candidate_id=candidate)
     editor.context=lambda:dict(constructor_budget=dict(budget))
     def construct(args):
@@ -82,13 +129,15 @@ def test_loop_refreshes_budget_tools_and_never_forces_exhausted_constructor(tmp_
             return '',len(observed)
     def decode(attempt):
         name='construct_attack_candidates' if initial_remaining and attempt==1 else 'finish_search'
-        return {},name,dict(reason='bounded search')
+        return dict(id='fixture'),name,dict(reason='bounded search')
     def write(path,value):Path(path).write_text(json.dumps(value))
-    namespace=dict(json=json,trajectory_tools=trajectory_tools,constructor_exhaustion=constructor_exhaustion,compact_model_context=compact_model_context,
+    namespace=dict(reasoning_effort=lambda:'low',json=json,trajectory_tools=trajectory_tools,constructor_exhaustion=constructor_exhaustion,compact_model_context=compact_model_context,
         TRAJECTORY_TOOLS=[dict(function=dict(name=name)) for name in (
             'construct_attack_candidates','request_object_reselection','finish_search')],
         STATIC_EDIT_PROMPT='static',EDIT_PROMPT='moving',atomic_json=write,
-        decode_call=decode,archive_exchange=lambda *args:None)
+        decode_call=decode,archive_exchange=lambda *args,**kwargs:None,perf_counter=perf_counter,
+        repetition=repetition,prevalidate_action=prevalidate_action,
+        invalid_action_result=invalid_action_result,compact_action_feedback=compact_action_feedback)
     node=next(n for n in ast.parse((CORE/'run_attack_workflow.py').read_text()).body
               if isinstance(n,ast.FunctionDef) and n.name=='edit_object');node.decorator_list=[]
     exec(compile(ast.Module(body=[node],type_ignores=[]),'edit_object','exec'),namespace)
@@ -109,7 +158,7 @@ def test_exhausted_attack_without_qualified_candidate_stops_without_another_api(
     budget=dict(calls=0,evaluations=1000-initial_remaining,remaining_evaluations=initial_remaining)
     bad=dict(reference_screen_passed=False,failed_checks=['road_surface'])
     editor=types.SimpleNamespace(run_dir=tmp_path,constraints={},history=[],
-        nodes={'seed_000':dict(result=bad)},pdm_probe=None,submitted=None,target=dict(track_id='target'))
+        nodes={'seed_000':dict(result=bad)},pdm_probe=None,policy_probe=None,submitted=None,target=dict(track_id='target'))
     editor.public=lambda candidate:dict(candidate_id=candidate)
     editor.context=lambda:dict(constructor_budget=dict(budget))
     def construct(args):
@@ -124,12 +173,14 @@ def test_exhausted_attack_without_qualified_candidate_stops_without_another_api(
             observed.append(kwargs)
             return '',1
     def write(path,value):Path(path).write_text(json.dumps(value))
-    namespace=dict(json=json,trajectory_tools=trajectory_tools,constructor_exhaustion=constructor_exhaustion,
+    namespace=dict(reasoning_effort=lambda:'low',json=json,trajectory_tools=trajectory_tools,constructor_exhaustion=constructor_exhaustion,
         compact_model_context=compact_model_context,
         TRAJECTORY_TOOLS=[dict(function=dict(name='construct_attack_candidates'))],
         STATIC_EDIT_PROMPT='static',EDIT_PROMPT='moving',atomic_json=write,
-        decode_call=lambda attempt:({},'construct_attack_candidates',dict(reason='search')),
-        archive_exchange=lambda *args:None)
+        decode_call=lambda attempt:(dict(id='fixture'),'construct_attack_candidates',dict(reason='search')),
+        archive_exchange=lambda *args,**kwargs:None,perf_counter=perf_counter,
+        repetition=repetition,prevalidate_action=prevalidate_action,
+        invalid_action_result=invalid_action_result,compact_action_feedback=compact_action_feedback)
     node=next(n for n in ast.parse((CORE/'run_attack_workflow.py').read_text()).body
               if isinstance(n,ast.FunctionDef) and n.name=='edit_object');node.decorator_list=[]
     exec(compile(ast.Module(body=[node],type_ignores=[]),'edit_object','exec'),namespace)

@@ -23,6 +23,35 @@ def digest(path):
     return h.hexdigest()
 
 
+def native_types(scene):
+    """Match the official scenario pkl contract: calibration/pose fields are
+    numpy arrays, not JSON lists (MTGS get_transform_matrix and the navformer
+    calibration parser call ndarray/tensor methods on them). The field set
+    mirrors the official navtrain pkls; lidar2ego_rotation stays a list there,
+    so it stays a list here too."""
+    frame_fields=('lidar2ego','lidar2global','ego2global','can_bus','driving_command',
+        'ego2global_translation','ego2global_rotation','lidar2ego_translation')
+    cam_fields=('sensor2lidar_rotation','sensor2lidar_translation','sensor2ego_rotation',
+        'sensor2ego_translation','cam_intrinsic','intrinsic')
+    converted=[0]
+    def arrays(mapping,fields):
+        for key in fields:
+            value=mapping.get(key)
+            if isinstance(value,list):
+                mapping[key]=np.asarray(value)
+                assert np.array_equal(np.asarray(value),mapping[key]);converted[0]+=1
+    arrays(scene['lidar'],('sensor2ego_rotation','sensor2ego_translation'))
+    for camera in scene['cameras'].values():arrays(camera,('sensor2ego_rotation','sensor2ego_translation'))
+    for frame in scene['metadata']['openscene_data_infos_dict'].values():
+        arrays(frame,frame_fields)
+        for camera in frame.get('cams',{}).values():arrays(camera,cam_fields)
+    ego2globals=scene['metadata'].get('digitaltwin_ego2globals')
+    if isinstance(ego2globals,list) and ego2globals and isinstance(ego2globals[0],list):
+        scene['metadata']['digitaltwin_ego2globals']=[np.asarray(m) for m in ego2globals]
+        converted[0]+=len(ego2globals)
+    return converted[0]
+
+
 def build(frames,cameras,scene_id,asset_id,*,expert=None):
     """WE states use body centres in world-axis coordinates translated by the first rear axle."""
     times,recorded_xy,recorded_yaw=ego_path_from_frames(frames)
@@ -33,8 +62,8 @@ def build(frames,cameras,scene_id,asset_id,*,expert=None):
         et,xy,yaw=expert
         if not np.allclose(et,times,atol=1e-6,rtol=0):raise ValueError('Expert timestamps differ from frozen attack')
         if not np.isfinite(xy).all() or not np.isfinite(yaw).all():raise ValueError('Expert poses must be finite')
-        if not np.array_equal(np.asarray(xy)[times<=3],recorded_xy[times<=3]) or not np.array_equal(np.asarray(yaw)[times<=3],recorded_yaw[times<=3]):
-            raise ValueError('Expert changed the immutable first three seconds')
+        if not np.allclose(np.asarray(xy)[0],recorded_xy[0],atol=1e-6,rtol=0) or abs(float(np.arctan2(np.sin(yaw[0]-recorded_yaw[0]),np.cos(yaw[0]-recorded_yaw[0]))))>1e-6:
+            raise ValueError('Expert changed the initial scene pose')
     # WE requires a uniform sample interval. Keep native poses at native indices,
     # retain original timestamps in metadata and report the small grid drift.
     step=float(np.median(np.diff(times)));sample_rate=round(step/.05)
@@ -89,13 +118,17 @@ def build(frames,cameras,scene_id,asset_id,*,expert=None):
         old_origin_in_current_coordinate=-first[:2,3],native_export=dict(version='edited_scene.v1',
             original_timestamps_us=[f['timestamp'] for f in frames],max_uniform_grid_drift_s=drift,
             ego_position_reference='body_center; rear axle offset '+str(offset)+'m',
-            ego_calibration_frame='global',planar_geometry=True,physical_execution_certified=False))
+            ego_calibration_frame='global',planar_geometry=True,physical_execution_certified=False,
+            recorded_ego_time_s=times.tolist(),
+            recorded_ego_rear_axle_global=(first[:2,3]+recorded_xy@rotation.T).tolist(),
+            recorded_ego_heading_rad=(recorded_yaw+yaw0).tolist()))
     scene=dict(id=scene_id,name=scene_id,token=frames[0].get('scene_token',scene_id),dataset='digitaltwin.nuplan',
         map=frames[0]['map_location'],log_length=n,sample_rate=sample_rate,base_timestamp=frames[0]['timestamp'],
         sdc_id='ego',cameras=deepcopy(cameras),lidar=dict(channel='LIDAR_TOP',sensor2ego_rotation=frames[0]['lidar2ego_rotation'],sensor2ego_translation=frames[0]['lidar2ego_translation']),
         object_track=tracks,metadata=metadata,dynamic_map_states={},map_features={})
     # Signal states/positions are attached after the real lane-map binding.
-    return scene,dict(max_uniform_grid_drift_s=drift,original_ego_preserved=expert is None,
+    typed_fields=native_types(scene)
+    return scene,dict(max_uniform_grid_drift_s=drift,typed_calibration_fields=typed_fields,original_ego_preserved=expert is None,
         frame_count=n,tracks=list(tracks),source_ego2globals_preserved_for_reconstruction=True)
 
 
@@ -132,8 +165,10 @@ def export(source_ref,frozen_scene,output,*,expert_trajectory=None,attack_result
         if not official.is_file():raise ValueError('Official map with explicit coordinate provenance is required')
         road=json.loads(official.read_text())
         if not road.get('frame_convention','').startswith('trajectory-local:'):raise ValueError('Unknown official map coordinate convention')
-        yaw0=road['first_frame_yaw_rad'];rot=np.array([[np.cos(yaw0),-np.sin(yaw0)],[np.sin(yaw0),np.cos(yaw0)]])
-        origin=np.asarray(road['first_frame_rear_axle_global']);first=np.asarray(frames[0]['ego2global'])[:2,3]
+        # 数据集把这两项存成字符串；显式转 float，否则 np.cos 会抛 TypeError
+        yaw0=float(road['first_frame_yaw_rad']);rot=np.array([[np.cos(yaw0),-np.sin(yaw0)],[np.sin(yaw0),np.cos(yaw0)]])
+        origin=np.asarray(road['first_frame_rear_axle_global'],dtype=float)
+        first=np.asarray(frames[0]['ego2global'],dtype=float)[:2,3]
         if not np.allclose(origin,first,atol=1e-6,rtol=0):raise ValueError('Official map origin differs from edited scene')
         from native_scene_map import align
         full_map_path=source/'metadata/map_features.json'
@@ -157,7 +192,8 @@ def export(source_ref,frozen_scene,output,*,expert_trajectory=None,attack_result
         if added is None:
             native_checkpoint.symlink_to(checkpoint.resolve())
         else:
-            settings=json.loads((Path(__file__).with_name('backend_settings.json')).read_text())['render']
+            from backend_configuration import load_settings
+            settings=load_settings()['render']
             request=dict(source_checkpoint=str(checkpoint.resolve()),output_checkpoint=str(native_checkpoint.resolve()),
                 asset_path=str(Path(added['asset_path']).resolve()),size_m=added['size_m'],track_id=added['track_id'],
                 source_scene=str(source.resolve()),frames_path=str(frames_path.resolve()),report_path=str((output/'added-asset-report.json').resolve()))
@@ -172,7 +208,9 @@ def export(source_ref,frozen_scene,output,*,expert_trajectory=None,attack_result
             checks['added_vehicle_asset']=dict(status='merged',track_id=added['track_id'],asset_point_count=added_report['point_count'],max_footprint_flatness_m=added_report['max_footprint_flatness_m'])
         scenario=output/'all_scenarios.pkl'
         with scenario.open('xb') as stream:pickle.dump({source_ref['scene_id']:scene},stream,protocol=4)
-        package=dict(scenario_data_folder_path=str(output.resolve()),asset_folder_path=str(assets.resolve()),scenario_pkl_file_name=scenario.name)
+        # The rollout horizon is a property of this scene; exporting it removes any
+        # chance that a downstream runner re-invents a different frame budget.
+        package=dict(scenario_data_folder_path=str(output.resolve()),asset_folder_path=str(assets.resolve()),scenario_pkl_file_name=scenario.name,frame_count=len(frames))
         report.update(status='exported',scene_id=source_ref['scene_id'],simulation_input=package,checks=checks,
             scenario_sha256=digest(scenario),asset_checkpoint=str(native_checkpoint.resolve()),asset_checkpoint_sha256=digest(native_checkpoint),source_checkpoint_sha256=digest(checkpoint),
             added_asset_report_path=str(output/'added-asset-report.json') if added_report else None,added_ply_sha256=digest(added['asset_path']) if added else None,camera_calibration_sha256=digest(camera_path),full_map_sha256=digest(full_map_path),

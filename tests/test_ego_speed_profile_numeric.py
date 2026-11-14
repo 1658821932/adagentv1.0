@@ -49,8 +49,8 @@ class SpeedProfileTests(unittest.TestCase):
         state=self.edit.inherited_brake_state(times,px,pa,3.25,continuous)
         self.assertAlmostEqual(state['velocity_xy_mps'][0],1.875,places=7)
         self.assertAlmostEqual(state['xy_m'][0],6.+2*.25-.25*.25**2,places=7)
-        op=dict(edit_mode='speed_profile',parent_candidate_id='parent',start_time_s=3.25,goal='stop',
-            braking_style='constant_deceleration',reach_target_time_s=6.8,reason='Stop earlier on same route')
+        op=dict(edit_mode='speed_schedule',operation='set_speed_targets',parent_candidate_id='parent',start_time_s=3.25,
+            transition_style='constant_acceleration',targets=[dict(time_s=6.8,speed_mps=0.)],reason='Stop earlier on same route')
         first=self.edit.modern_edit(times,lookup,op,3.,parent_curve=old_curve,acceptance=self.policy)
         second=self.edit.modern_edit(times,lookup,op,3.,parent_curve=old_curve,acceptance=self.policy)
         self.assertTrue(self.np.array_equal(first[0],second[0]));self.assertEqual(first[2],second[2])

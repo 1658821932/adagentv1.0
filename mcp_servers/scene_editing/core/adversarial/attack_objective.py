@@ -6,7 +6,7 @@ import shapely
 from run_ego_reference import EGO_FRONT, EGO_REAR, EGO_WIDTH
 
 
-def validate_objective(arguments, times, prefix):
+def validate_objective(arguments, times, prefix, edit_start_s=None):
     required = {'parent_candidate_id', 'objective', 'max_candidates', 'reason'}
     if not required <= set(arguments) or set(arguments) - required - {'edit_window_s', 'preserve_outside_window'}:
         raise ValueError('Provide parent_candidate_id, objective, max_candidates and reason')
@@ -17,7 +17,8 @@ def validate_objective(arguments, times, prefix):
     objective = arguments['objective']
     if not isinstance(objective, dict) or 'interaction' not in objective or set(objective) - {'interaction', 'interaction_window_s', 'keyframes'}:
         raise ValueError('objective requires interaction; interaction_window_s and keyframes are optional')
-    objective.setdefault('interaction_window_s', [float(np.nextafter(prefix, np.inf)), float(times[-1])])
+    earliest_event=float(prefix) if prefix==0 and edit_start_s==0 else float(np.nextafter(prefix,np.inf))
+    objective.setdefault('interaction_window_s', [earliest_event, float(times[-1])])
     objective.setdefault('keyframes', [])
     if objective['interaction'] not in ('contact', 'near_miss', 'either', 'allowed'):
         raise ValueError('interaction must be contact, near_miss, either or allowed')
@@ -39,14 +40,14 @@ def validate_objective(arguments, times, prefix):
         if minimum is not None and value[0] < minimum or maximum is not None and value[1] > maximum:
             raise ValueError(name + ' is outside its allowed range')
 
-    interval(objective['interaction_window_s'], 'interaction_window_s', float(np.nextafter(prefix, np.inf)), float(times[-1]))
+    interval(objective['interaction_window_s'], 'interaction_window_s', earliest_event, float(times[-1]))
     keyframes = objective['keyframes']
     if not isinstance(keyframes, list) or not 0 <= len(keyframes) <= 6:
         raise ValueError('Provide 0..6 keyframes')
     for frame in keyframes:
         if not isinstance(frame, dict) or not {'time_window_s', 'hold_duration_s'} <= set(frame) or set(frame) - {'time_window_s', 'hold_duration_s', 'relative_position', 'heading_difference_rad', 'speed_mps'}:
             raise ValueError('Invalid keyframe fields')
-        interval(frame['time_window_s'], 'keyframe time_window_s', prefix, float(times[-1]))
+        interval(frame['time_window_s'], 'keyframe time_window_s', prefix if edit_start_s is None else edit_start_s, float(times[-1]))
         hold = frame['hold_duration_s']
         if type(hold) not in (int, float) or not np.isfinite(hold) or hold < .1 or hold > frame['time_window_s'][1] - frame['time_window_s'][0] + 1e-9:
             raise ValueError('hold_duration_s must be >=0.1s and fit the keyframe window')
@@ -63,7 +64,7 @@ def validate_objective(arguments, times, prefix):
         if 'speed_mps' in frame:
             interval(frame['speed_mps'], 'speed_mps', 0.)
     if 'edit_window_s' in arguments:
-        interval(arguments['edit_window_s'], 'edit_window_s', prefix, float(times[-1]))
+        interval(arguments['edit_window_s'], 'edit_window_s', prefix if edit_start_s is None else edit_start_s, float(times[-1]))
         if arguments['edit_window_s'][1] - arguments['edit_window_s'][0] < .5:
             raise ValueError('edit_window_s must be at least 0.5s')
     if 'preserve_outside_window' in arguments and type(arguments['preserve_outside_window']) is not bool:

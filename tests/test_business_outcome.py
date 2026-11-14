@@ -27,6 +27,15 @@ def test_execution_error_cannot_become_attack_refusal(tmp_path):
         bounded_outcome('attack_editing',dict(status='not_submitted'),tmp_path)
 
 
+@pytest.mark.parametrize('stop', ['native_tool_protocol_failed','invalid_or_missing_tool_call',
+    'model_stopped_without_submission','invalid_call_budget_exhausted',
+    'repeated_invalid_tool_call','interrupted_by_operator'])
+def test_protocol_or_interruption_cannot_become_defense_not_found(tmp_path,stop):
+    (tmp_path/'summary.json').write_text(json.dumps(dict(status='not_submitted',stop_reason=stop)))
+    with pytest.raises(RuntimeError,match='normally'):
+        bounded_outcome('ego_editing',dict(status='not_submitted'),tmp_path)
+
+
 def test_object_selection_can_decline_without_fake_trajectory(tmp_path):
     archive=tmp_path/'object_selection/output.json';archive.parent.mkdir()
     archive.write_text(json.dumps(dict(status='not_submitted',stop_reason='object_selection_budget_exhausted')))

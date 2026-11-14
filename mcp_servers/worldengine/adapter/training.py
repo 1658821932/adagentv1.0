@@ -5,7 +5,7 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any
-from .config import WorldEngineConfig, ALGENGINE_PYTHON
+from .config import WorldEngineConfig, ALGENGINE_PYTHON, runtime_env
 from .schemas import TrainingResult
 from mcp_servers.process import run_logged
 from mcp_servers.runtime import runtime_task, current_run
@@ -25,11 +25,13 @@ def _path(value, name):
 @runtime_task("worldengine", "training")
 def train_policy(input_data: dict[str, Any]) -> TrainingResult:
     # Direct adapter calls receive the same validation as Agent tool calls.
-    from tools.tool10_policy_trainer.schemas import Input
+    from tools.tool09_policy_trainer.schemas import Input
     args = Input.model_validate(input_data).model_dump()
     mode, data = args["training_mode"], args["training_data"]
     root = Path(args["worldengine_root"] or DEFAULT_WORLDENGINE_ROOT).expanduser().resolve()
-    checkpoint = _path(args["base_checkpoint"], "base_checkpoint")
+    # One fixed policy artifact: reuse what policy_runner used when the caller omits it.
+    from .config import DEFAULT_POLICY_CHECKPOINT
+    checkpoint = _path(args.get("base_checkpoint") or str(DEFAULT_POLICY_CHECKPOINT), "base_checkpoint")
     _path(data["token_file"], "training_data.token_file")
     default = (root / "experiments/posttrain/e2e_vadv2_50pct_waymo_ilft.py" if mode == "ilft"
                else root / "projects/AlgEngine/configs/worldengine/e2e_vadv2_50pct_rlft_rare_rollout.py")
@@ -51,7 +53,7 @@ def train_policy(input_data: dict[str, Any]) -> TrainingResult:
     request_path = task.input / "training_request.json"
     request_path.write_text(json.dumps(request, indent=2))
     helper = Path(__file__).with_name("prepare_training.py")
-    env = task.child_env()
+    env = runtime_env(task.child_env())
     env["WORLDENGINE_ROOT"] = str(root)
     env["PYTHONPATH"] = os.pathsep.join([str(root / "projects/AlgEngine"),
         str(helper.parent), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)

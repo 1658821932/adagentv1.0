@@ -315,6 +315,11 @@ class RequestArchive:
             raise ValueError('LLM endpoint must use HTTPS without embedded credentials/query')
 
     def complete(self,label,messages,**parameters):
+        from common.llm_audit import audited_json_call
+        parameters = dict(parameters)
+        for field in ('timeout', 'max_tokens'):
+            if field in self.profile:
+                parameters[field] = self.profile[field]
         key=self.profile['api_key']
         if key and any(key in json.dumps(m,ensure_ascii=False) for m in messages):
             raise ValueError('Credential found in outgoing message; request blocked')
@@ -328,7 +333,8 @@ class RequestArchive:
                 'payload':payload},[key]))
             start=time.monotonic()
             try:
-                response=self.client.chat.completions.create(**payload)
+                response=audited_json_call(lambda: self.client.chat.completions.create(**payload),
+                    payload,endpoint=self.profile['base_url'],label=f'{label}/attempt_{index}',secrets=[key])
                 safe=redact(response.model_dump(),[key])
                 atomic_json(attempt/'response.json',safe)
                 content=safe['choices'][0]['message'].get('content') or ''

@@ -72,8 +72,11 @@ def freeze(scene_dir, attack_run, candidate_id, target_track, output):
         attack = polygon(*plan_xy[i], plan_yaw[i], target['length'], target['width'])
         if ego.intersection(attack).area > 1e-9:
             early_overlaps.append(i)
-    if not contact_after_observation(times, early_overlaps):
-        raise ValueError('Cannot freeze an attack with sampled ego contact at or before 3 seconds')
+    evaluation_path=attack_run/'candidates'/candidate_id/'evaluation.json'
+    acceptance=json.loads(evaluation_path.read_text()).get('acceptance_policy',{}) if evaluation_path.is_file() else {}
+    earliest_contact=float(acceptance.get('attack_danger_start_s',acceptance.get('observation_end_s',1.5)))
+    if not contact_after_observation(times, early_overlaps,earliest_contact):
+        raise ValueError('Cannot freeze an attack with contact before its explicit event boundary')
 
     ego_world = np.array([f['ego2global'] for f in frames], dtype=float)
     global_yaw = np.unwrap(np.arctan2(ego_world[:, 1, 0], ego_world[:, 0, 0]))

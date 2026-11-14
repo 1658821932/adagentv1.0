@@ -13,17 +13,22 @@ def retryable_request(run_dir):
     if summary.get('stop_reason') != 'request_or_execution_failed' or summary.get('selected_candidate_id') is not None:
         return None
     turn = summary['model_actions']+1
-    attempts = list((run_dir/'requests').glob(f'turn_{turn:02d}_*/attempt_001'))
-    if len(attempts) != 1 or (attempts[0]/'response.json').exists():
+    request_dirs = sorted((run_dir/'requests').glob(f'turn_{turn:02d}_*'))
+    if len(request_dirs) != 1:
         return None
-    path = attempts[0]/'error.json'
+    attempts = sorted(request_dirs[0].glob('attempt_*'))
+    if not attempts or any((item/'response.json').exists() for item in attempts):
+        return None
+    latest = attempts[-1]
+    path = latest/'error.json'
     if not path.is_file():
         return None
     error = json.loads(path.read_text())
-    if (error.get('error_type') not in {'APIConnectionError', 'APITimeoutError'}
-            or error.get('chunks_received') != 0 or error.get('failure_phase') != 'waiting_response_headers'):
+    retryable_types = {'APIConnectionError', 'APITimeoutError', 'NoOutputTimeout', 'RequestDeadlineExceeded'}
+    zero_output = error.get('chunks_received') == 0 or error.get('output_received') is False
+    if error.get('error_type') not in retryable_types or not zero_output:
         return None
-    return dict(turn=turn, failed_attempt=str(attempts[0]), error_type=error['error_type'])
+    return dict(turn=turn, failed_attempt=str(latest), error_type=error['error_type'])
 
 
 def run_with_one_retry(function, args, options, run_dir):

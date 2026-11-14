@@ -15,7 +15,9 @@ def failure_feedback(error,args,boundary,end):
         'route_exhausted':'The requested motion exceeds the known route. Reduce travel or explicitly select a different known route; no extrapolation is performed.',
         'route_unavailable':'The selected route cannot support this edit. Check its direction, geometric connection and available moving interval.',
         'state_incompatible':'The inherited state cannot be joined consistently. Choose a supported continuous parent or an explicit connection.',
-        'retiming_unavailable':'This parent has no explicit reconstructable braking phase. Use timed speed targets instead.',
+        'stationary_lateral_motion':'The parent is stopped during the requested lateral transition. Finish changing offset before stopping, or explicitly restart with edit_speed_profile. Holding an already reached offset while stopped is allowed.',
+        'stop_position_unavailable':'Choose a parent with a verified terminal stop, or use set_speed_targets with an explicit zero-speed time. A moving final position is not a stopping goal.',
+        'stop_position_off_route':'Keep the parent route or choose a different explicit goal. The inherited stopping position cannot be silently moved onto another route.',
         'direction_change_requires_stop':'Add a zero-speed target before changing direction; use two zero targets when waiting is intended.',
         'immutable_history':'The edit would change the fixed observation period. Keep the requested change at or after the earliest editable time.'}
     if code not in guidance:return None
@@ -24,12 +26,15 @@ def failure_feedback(error,args,boundary,end):
     retry=[]
     if code=='route_exhausted':
         retry.append(dict(change='Reduce the requested speed, offset or travel duration',condition='Retain the selected route'))
-        if args.get('edit_mode')=='speed_schedule' and args.get('path_source','parent')=='parent':
+        if args.get('edit_mode')=='speed_schedule' and args.get('operation')=='set_speed_targets' and args.get('path_source','parent')=='parent':
             retry.append(dict(change='Set path_source=recorded_baseline',condition='Only when continuing on the known recorded route is intended; checks still apply'))
         if args.get('edit_mode')=='route_edit' and args.get('speed_policy','preserve_speed')=='preserve_speed':
             retry.append(dict(change='Consider speed_policy=preserve_progress',condition='Only if the resulting total-speed increase is acceptable'))
+    summary=guidance[code]
+    if args.get('operation')=='stop_at_position' and code=='target_unreachable':
+        summary='Braking from this inherited speed to the fixed stopping position exceeds the available time or acceleration. Try a different absolute start_time_s or a different stopped parent. A later stop time cannot be chosen independently while keeping this position and braking style.'
     return dict(status='preview' if args.get('preview_only') else 'not_feasible',candidate_created=False,feasible=False,
-        error_code=code,error=text,error_summary=guidance[code],failure_kind='requested_goal_unreachable',
+        error_code=code,error=text,error_summary=summary,failure_kind='requested_goal_unreachable',
         feasibility_limits=limits,retry_options=retry,global_infeasibility_proven=False)
 
 
@@ -62,6 +67,13 @@ def intent_checks(curve):
         details['target_offset_error_m']=route['target_offset_error_m']
         if route.get('return_offset_error_m') is not None:
             checks['route_return']=bool(route['return_offset_error_m']<=1e-4)
+        cont=curve['continuous_state'];p=PPoly(np.asarray(cont['xy_coefficients']),np.asarray(cont['times_s']))
+        a=PPoly(np.asarray(cont['yaw_coefficients']),p.x)
+        query=np.unique(np.r_[p.x,(p.x[:-1]+p.x[1:])/2,np.arange(p.x[0],p.x[-1],.025)])
+        signed=np.sum(p(query,1)*np.column_stack([np.cos(a(query)),np.sin(a(query))]),axis=1)
+        minimum=float(np.min(signed))
+        checks['route_forward_motion']=bool(np.isfinite(minimum) and minimum>=-1e-6)
+        details['minimum_generated_body_forward_speed_mps']=minimum
     passed=bool(checks and all(checks.values()))
     return dict(passed=passed,checks=checks,details=details,declared='speed_targets' if speed else 'lateral_route_edit',
         declared_reverse=bool(curve.get('declared_reverse',False)),direction_sequence=curve.get('direction_sequence'),

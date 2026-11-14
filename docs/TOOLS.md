@@ -1,6 +1,6 @@
 # 当前工具列表
 
-预留 tool01–tool10 十个编号，当前主 Agent 注册九个工具；tool07 保留代码但不启用，注册名用于实际调用。
+预留 tool01–tool08 十个编号，当前主 Agent 注册九个工具；tool07 保留代码但不启用，注册名用于实际调用。
 
 | 编号 | 注册名 | 职责 |
 |---|---|---|
@@ -18,12 +18,12 @@
 ## 衔接
 
 - tool02 的选定候选检索需求原文传给 tool03；保留全局 scene_requirement、target_effect 与配对 edit_strategy。
-- tool04 通过 retrieval_result 读取 tool03 完整结果或保存的结果引用，不接受旧 scene_ref 参数。ready 才进入编辑；unsuitable 提供新检索方向，needs_information 返回缺失信息。它不运行轨迹优化或 PDM。
+- tool04 通过 retrieval_result 读取 tool03 完整结果或保存的结果引用，不接受旧 scene_ref 参数。ready 才进入编辑；unsuitable 提供新检索方向，needs_information 返回缺失信息。仅缺新增车辆资产时保存粗规划，补资产后在场景、目标和提示词不变的前提下免重复模型调用并重新校验 attack_input。它不运行轨迹优化或 PDM。
 - tool05 使用原 scene_ref 和粗计划的 operation、target_track/maneuver、instruction。新增车辆还需实际资产和尺寸。tool05/06 内部继续负责精细轨迹搜索。
 - tool06 使用冻结攻击结果及全局 target_effect，保持攻击场景不变。
 - tool07 使用准备好的原生 simulation_input 和精确 scene_id，以 trajectory_policy/log_play_controller 回放，不启动 AlgEngine。编辑结果的 simulation_input 为 null 时需要原生导出后才能回放，不能拿未编辑原场景冒充。
-- tool08 测试驾驶策略，tool07 执行给定轨迹。独立 PDM challenge 不等于官方 PDM 总分。
-- tool09 读取官方 PDM 总分，零匹配也是有效筛选结果。tool10 的训练完成不等于驾驶指标提升。
+- tool07 测试驾驶策略，tool07 执行给定轨迹。独立 PDM challenge 不等于官方 PDM 总分。
+- tool07 读取官方 PDM 总分，零匹配也是有效筛选结果。tool08 的训练完成不等于驾驶指标提升。
 
 ## 视觉工具删除
 
@@ -84,7 +84,7 @@ IL配置默认沿用既有Waymo适配配置，其他数据格式须显式传conf
 ## 上游工具的分工
 - policy_runner：IL沿用原有数据生成；RL调用时设置 with_dense_reward_manager=true，返回rollout_dir和reward_dir，并导出实际plan_idx.csv。
 - failure_case_filter：只读取官方 PDM 总分筛选失败案例，不提供几何碰撞诊断。
-- policy_trainer：ilft读取标注；rlft按整段场景闭环PDM总分==0筛选失败场景后，用真实候选轨迹奖励训练。RL可以直接由policy_runner接policy_trainer；tool09 同样只读取官方 PDM 结果进行筛选。
+- policy_trainer：ilft读取标注；rlft按整段场景闭环PDM总分==0筛选失败场景后，用真实候选轨迹奖励训练。RL可以直接由policy_runner接policy_trainer；tool07 同样只读取官方 PDM 结果进行筛选。
 
 仿真入口会使用仿真解释器在运行目录重存科学数据，以兼容NumPy 1/2的pickle模块路径，不修改源场景包。
 
@@ -96,8 +96,8 @@ IL配置默认沿用既有Waymo适配配置，其他数据格式须显式传conf
 - 这是工具级串联验证，不包含LLM自主决策、编辑场景接入或训练后性能评测；不代表批量训练已验证。
 
 ## 当前接口边界
-只接受当前字段：tool01.token、tool02.variation_hints、tool09.scenario_pkl、
-tool10.base_checkpoint、epochs 和结构化 training_data（token_file）。
+只接受当前字段：tool01.token、tool02.variation_hints、tool07.scenario_pkl、
+tool08.base_checkpoint、epochs 和结构化 training_data（token_file）。
 旧字段别名及扁平训练参数已删除。历史 scene_instance 摘要不再作为 existing_instances 输入。
 编辑只发布 edit_speed_profile 和 edit_route；旧轨迹算法与无版本历史编辑重放不再支持。
 攻击任务合同必须为 attack_task.v2。恢复任务必须使用当前上下文版本。

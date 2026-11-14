@@ -19,7 +19,7 @@
 
 tool02 与 tool04 共用 tools/llm_runtime.py：system 为任务提示词与 Response Schema；user 为任务上下文。
 tool04 的 user 内容可包含实际源关键帧；确定性的资源缺失检查在请求模型前执行。
-API 统一使用根 configs/api.json 的 Kimi 配置；阿里凭证仅用于检索嵌入和重排序。
+推理 API 使用根 configs/api.json 的公共选择及可选逐工具覆盖；密钥由相应环境变量提供。检索嵌入和重排序凭证独立管理。
 修改任务提示词时更新各自 config.json 的 prompt_version。不要重复注入工具内部提示词到主 Agent。
 
 接口文档更新：environments/test/.venv/bin/python scripts/generate_interface_docs.py。
@@ -99,14 +99,13 @@ mock 同样要求合法输入。它只验证接口与执行路径，不证明场
 
 ## 配置与密钥
 
-根 .env 只存密钥，沿用已有 OPENAI_API_KEY / LLM_API_KEY。
-默认模型与端点统一来自 configs/api.json 的 kimi profile；configs/agent.json 的 llm.api_profile 引用它，兼容原环境变量覆盖规则。
-llm.roles 当前定义 planner 角色；空对象表示沿用默认模型。
-角色只允许 model、timeout、max_tokens，不接受密钥或端点字段。
-各工具 config.json 选择 model_role，指定 timeout/max_tokens，并管理 prompt_version 和 validation_retries。
+根 .env 只存密钥；主推理使用 OPENAI_API_KEY，embedding/rerank 使用 DASHSCOPE_API_KEY。
+所有模型、端点、单次请求 timeout 和 max_tokens 统一由 configs/api.json 管理。
+Agent 与工具不再设置角色或模型参数覆盖；工具 config.json 只管理 prompt_version 和 validation_retries。
+失败分析、检索辅助推理与内置编辑服务通过各自适配层接收公共配置。
+各服务 core 中的独立运行示例不是 AdAgent 的生效配置入口。
+抽帧配置位于 tool04 的 observation.json；任务执行预算仍由各服务运行配置管理。
 
-角色中显式指定的 model 覆盖默认模型；工具 config.json 显式设置的 timeout/max_tokens 优先于角色和默认值，省略时继承角色或全局值。
-修改角色不改变主 Agent 的模型。
 修改 prompt.md 时应更新 prompt_version；运行时同时记录文件 SHA-256，便于追溯。
 _llm_client 是仅供 Python 测试注入的内部入口，不进入公开参数 Schema，也不会发送给外部模型。
 
@@ -143,3 +142,13 @@ smoke 通过公开注册表调用 tool02；其候选检索描述直接传给 too
 初始从完整绑定场景均匀选择12个时刻，固定看CAM_F0前视角，按时间顺序每4帧拼成一张2×2图，通常共3张。短场景只使用真实存在的帧；缺图单元标记缺失，不复制其他帧补齐。
 VLM可在工具内部返回request_views，指定实际相机名称和观察目的。每轮最多请求2路相机，最多补看2轮；补看沿用相同时间点，不新增主Agent工具或对外输入字段。最终仍返回原有粗规划结果。
 设置位于tools/tool04_edit_planner/observation.json；拼图和实际补看记录保存在忽略上传的logs/tool04_observations/下。evidence.visual_observation记录图片、是否成功送达、补看请求及model_calls；meta.attempts仍是外层格式校验尝试数。
+## 主 Agent 决策协议
+
+主 Agent 仅使用流式原生 Function Calling，不保留文本 JSON 决策回退。
+工具 Schema 通过 API tools 字段发送，任务消息不重复携带整个工具 Schema。
+每个业务函数参数为 reason、arguments（原工具 Input Schema），可选 execution.retry。
+finish(reason) 和 stop(reason) 为控制函数，不新增工具编号。
+每轮要求一个函数调用，流式参数完整收集后才进行本地 Pydantic 校验和任务登记。
+截断、缺少完成标记、多调用或非法参数均不会执行工具。
+校验纠错使用 assistant.tool_calls + 对应 tool 消息；网络错误不进入格式纠错。
+业务工具内部的内容生成 JSON 协议不属于主 Agent 决策协议，保持原用途。

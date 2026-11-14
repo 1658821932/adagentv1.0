@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -76,8 +77,19 @@ def _search_index(
     config: SearchConfig,
     *,
     source_files: list[str] | None = None,
+    timings: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
-    """Search the Qwen SentrySearch index, optionally restricted to source files."""
+    """Search the Qwen SentrySearch index, optionally restricted to source files.
+
+    ``timings`` 传入时会被填入分阶段耗时（store_init / embedding / vector_query），
+    便于定位是“加载库”还是“真检索”慢。
+    """
+    marks: dict[str, float] = {}
+
+    def mark(key: str) -> None:
+        if timings is not None and key in marks:
+            timings[key] = round(time.perf_counter() - marks[key], 3)
+
     db_path = config.runtime_home / ".sentrysearch" / "db"
     if not db_path.exists():
         return []
@@ -85,8 +97,10 @@ def _search_index(
     from .vendor.sentrysearch.embedder import get_embedder, reset_embedder
     from .vendor.sentrysearch.store import SentryStore
 
+    marks["store_init_seconds"] = time.perf_counter()
     store = SentryStore(db_path=db_path, backend="qwen_api")
     total = store.collection.count()
+    mark("store_init_seconds")
     if total <= 0:
         return []
 
@@ -95,7 +109,9 @@ def _search_index(
         allowed = sorted({str(Path(path).expanduser().resolve()) for path in source_files})
 
     try:
+        marks["embedding_seconds"] = time.perf_counter()
         embedding = get_embedder("qwen_api").embed_query(query)
+        mark("embedding_seconds")
         kwargs: dict[str, Any] = {
             "query_embeddings": [embedding],
             "n_results": min(config.search_results, total),
@@ -107,6 +123,7 @@ def _search_index(
             else:
                 kwargs["where"] = {"source_file": {"$in": allowed}}
 
+        marks["vector_query_seconds"] = time.perf_counter()
         raw = store.collection.query(**kwargs)
         metadatas = (raw.get("metadatas") or [[]])[0]
         distances = (raw.get("distances") or [[]])[0]
@@ -122,6 +139,7 @@ def _search_index(
                 }
             )
         hits.sort(key=lambda item: item["similarity_score"], reverse=True)
+        mark("vector_query_seconds")
         return hits
     finally:
         reset_embedder()
@@ -164,18 +182,26 @@ def _export_reranked_hits(
     output_config = replace(config, output_dir=current_run("sentry_video_search").output)
     candidates = {item["candidate_index"]: item for item in details["candidates"]}
     ranked = sorted(details["ranked_results"], key=lambda item: item["relevance_score"], reverse=True)
-    for rank, result in enumerate(ranked, start=1):
+
+    def export(job: tuple[int, dict[str, Any]]) -> None:
+        rank, result = job
         score = float(result["relevance_score"])
         label = f"rank{rank:02d}_score{score:.6f}"
+        hit = candidates[result["candidate_index"]]
         result["video_path"] = str(_trim_hit(
-            candidates[result["candidate_index"]], requirement, output_config,
+            hit, requirement, output_config,
             label=f"{label}_compressed", crf=28,
         ))
         if rank == 1:
             result["lossless_video_path"] = str(_trim_hit(
-                candidates[result["candidate_index"]], requirement, output_config,
+                hit, requirement, output_config,
                 label=f"{label}_lossless",
             ))
+
+    # 各排名候选导出互不依赖，并行执行
+    with ThreadPoolExecutor(max_workers=max(1, len(ranked))) as pool:
+        list(pool.map(export, list(enumerate(ranked, start=1))))
+
     details["ranked_results"] = ranked
     return Path(ranked[0]["lossless_video_path"])
 
@@ -281,7 +307,7 @@ def search_local(
 
     try:
         stage_start = time.perf_counter()
-        hits = _search_index(requirement, config)
+        hits = _search_index(requirement, config, timings=timings)
         timings["local_search_seconds"] = round(time.perf_counter() - stage_start, 3)
         _write_json(
             run_dir / "local_search.json",
@@ -303,8 +329,14 @@ def search_local(
 
         from .reranker import rerank_hits
 
+        stage_start = time.perf_counter()
         best, rerank_details = rerank_hits(requirement, hits, run_dir=run_dir)
+        timings["rerank_seconds"] = round(time.perf_counter() - stage_start, 3)
+        timings.update(rerank_details.get("timings") or {})
+
+        stage_start = time.perf_counter()
         video_path = _export_reranked_hits(rerank_details, requirement, config, run_dir)
+        timings["export_seconds"] = round(time.perf_counter() - stage_start, 3)
         _write_json(run_dir / RERANK_LOG, rerank_details)
         return _finish(
             requirement=requirement,

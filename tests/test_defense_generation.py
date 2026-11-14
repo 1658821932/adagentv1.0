@@ -67,6 +67,17 @@ def generator(monkeypatch,tmp_path,invalid_first=False,**options):
     return cls(editor,2,**options),calls
 
 
+def test_initial_foci_is_opt_in_without_disabling_agent_requests(monkeypatch,tmp_path):
+    gen,_=generator(monkeypatch,tmp_path)
+    should_prepare=gen.__class__.__init__.__globals__['should_prepare_initial_foci']
+    assert not should_prepare({})
+    assert not should_prepare(dict(use_foci=True))
+    assert not should_prepare(dict(use_foci=False,initial_foci=True))
+    assert should_prepare(dict(use_foci=True,initial_foci=True))
+    assert should_prepare({},default=True)
+    assert 'optimize_defense_candidate' in [tool['function']['name'] for tool in gen.tools()]
+
+
 def test_failure_candidates_and_rejected_attempts_are_retained_and_charged(monkeypatch,tmp_path):
     gen,calls=generator(monkeypatch,tmp_path,invalid_first=True)
     result=gen.execute('construct_defense_candidates',request())
@@ -115,7 +126,7 @@ def test_hard_policy_cannot_be_raised_by_search_ranges(monkeypatch,tmp_path):
 
 
 @pytest.mark.parametrize('has_candidates',[True,False])
-def test_default_foci_stage_reports_normal_empty_pool_and_correct_window(monkeypatch,tmp_path,has_candidates):
+def test_explicit_initial_foci_stage_reports_normal_empty_pool_and_correct_window(monkeypatch,tmp_path,has_candidates):
     gen,_=generator(monkeypatch,tmp_path)
     # Use the module of the loaded production class, which is deliberately isolated.
     globals_=gen.__class__.__init__.__globals__
@@ -143,7 +154,7 @@ def test_default_foci_stage_reports_normal_empty_pool_and_correct_window(monkeyp
     assert stage['status']==('completed' if has_candidates else 'no_candidates')
 
 
-def test_default_foci_execution_error_does_not_become_empty_pool(monkeypatch,tmp_path):
+def test_explicit_initial_foci_execution_error_does_not_become_empty_pool(monkeypatch,tmp_path):
     gen,_=generator(monkeypatch,tmp_path)
     function=gen.__class__.__init__.__globals__['prepare_initial_foci']
     constructor=tmp_path/'constructor';(constructor/'reference_screen').mkdir(parents=True)

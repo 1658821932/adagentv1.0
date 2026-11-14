@@ -40,17 +40,29 @@ class PdmFilterTests(unittest.TestCase):
         scores = {"log_a-aaa": 0.5, "log_b-bbb": 0.9}
         self.assertEqual(failed_scene_anchors(scores, {"aaa", "bbb"}), set())
 
+    def test_actual_scene_token_and_small_positive_score(self):
+        scores = {
+            "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9": 0.0,
+            "log_b-bbb": 0.000001,
+        }
+        self.assertEqual(
+            failed_scene_anchors(scores, {"54c166c4ad5c5ad9", "bbb"}),
+            {"54c166c4ad5c5ad9"},
+        )
+
     def test_missing_scores_file(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaises(FileNotFoundError):
                 load_scene_scores(d)
 
-    def test_multiple_react_type_files_are_rejected(self):
+    def test_multiple_react_type_files_follow_shared_resolver(self):
         with tempfile.TemporaryDirectory() as d:
             write_scores(d, "log_a-aaa,11,1,1,0,1,1,1,0.0,\n", "NR")
-            write_scores(d, "log_a-aaa,11,1,1,0,1,1,1,0.0,\n", "R")
-            with self.assertRaisesRegex(ValueError, "Multiple PDM average files"):
-                load_scene_scores(d)
+            reactive = write_scores(d, "log_a-aaa,11,1,1,0.4,1,1,1,0.76,\n", "R")
+            scores, path = load_scene_scores(d)
+            self.assertEqual(path, reactive)
+            self.assertEqual(scores, {"log_a-aaa": 0.76})
+            self.assertEqual(failed_scene_anchors(scores, {"aaa"}), set())
 
     def test_invalid_score_value(self):
         with tempfile.TemporaryDirectory() as d:

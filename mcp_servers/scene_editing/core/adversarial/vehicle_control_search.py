@@ -1,5 +1,6 @@
 """Parent-preserving bicycle controls and constraint-guided numerical search."""
 import numpy as np
+import acceptance_policy as policy
 import shapely
 from scipy.optimize import least_squares
 
@@ -122,7 +123,7 @@ class ControlSearch:
         self.ego = sample_xy(editor.times, editor.ego, self.times)
         self.ego_yaw = np.interp(self.times, editor.times, editor.ego_yaw)
         self.ego_center = self.ego+(EGO_FRONT-EGO_REAR)/2*np.column_stack([np.cos(self.ego_yaw), np.sin(self.ego_yaw)])
-        self.boundary = editor.constraints.get('observation_end_s', 3.)
+        self.boundary = getattr(editor,'edit_start_s',policy.edit_start(editor.constraints.get('acceptance_policy') or editor.constraints))
         self.base = self.parent['result'].get('control_sequence') or infer_controls(self.times,
             self.parent['dense_xy'], self.parent['dense_yaw'], editor.target['size_m'], self.boundary)
         self.control_times = np.asarray(self.base['times_s'])
@@ -175,7 +176,7 @@ class ControlSearch:
         window = objective['interaction_window_s']
         mask = (self.times >= window[0]) & (self.times <= window[1])
         if objective['interaction'] == 'allowed':
-            forbidden = self.times <= self.editor.constraints.get('observation_end_s', 3.)
+            forbidden = self.times <= getattr(self.editor,'danger_start_s',0.)
         elif objective['interaction'] == 'either':
             residuals.extend([5*max(0., float(gap[mask].min())-1.5)])
             forbidden = self.times < window[0]

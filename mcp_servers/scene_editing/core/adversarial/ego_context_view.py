@@ -7,7 +7,7 @@ CANDIDATE_FIELDS = (
     'lane_markings', 'input_qualification', 'native_max_acceleration_mps2', 'min_other_clearance_m',
     'min_road_margin_m', 'min_road_margin_official_m', 'terminal_speed_mps',
     'terminal_speed_source', 'terminal_sample_interval_speed_mps',
-    'terminal_target_clearance_rate_mps', 'progress_ratio_of_recorded',
+    'terminal_target_clearance_rate_mps',
     'comfort_reference_2_40_exceeded', 'clearance_periods', 'motion_timeline', 'motion_outcome', 'behavior_metrics', 'behavior_action_summary')
 CURVE_FIELDS = ('schema_version', 'max_speed_mps', 'max_acceleration_mps2',
     'tangential_deceleration_mps2', 'target_speed_mps', 'transition_time_s',
@@ -18,6 +18,8 @@ CURVE_FIELDS = ('schema_version', 'max_speed_mps', 'max_acceleration_mps2',
 def candidate_summary(value):
     result = candidate_card(value)
     result.update({key: value[key] for key in CANDIDATE_FIELDS if key in value})
+    if not value.get('behavior_metrics') and 'progress_ratio_of_recorded' in value:
+        result['progress_ratio_of_recorded']=value['progress_ratio_of_recorded']
     curve = value.get('generation_curve')
     if isinstance(curve, dict):
         result['curve_metrics'] = {key: curve[key] for key in CURVE_FIELDS if key in curve}
@@ -26,7 +28,7 @@ def candidate_summary(value):
     intent = value.get('motion_intent') or {}
     result['intent'] = {key: intent[key] for key in ('declared', 'passed', 'terminal_stopped', 'terminal_state_method', 'hold_matched', 'failure_kind') if key in intent}
     operation = value.get('operation') or {}
-    result['operation_summary'] = {key: operation[key] for key in ('mode', 'edit_mode', 'start_time_s', 'deceleration_mps2', 'target_speed_mps', 'lateral_offset_m', 'end_behavior', 'operation', 'targets', 'braking_start_shift_s', 'preserve') if key in operation}
+    result['operation_summary'] = {key: operation[key] for key in ('mode', 'edit_mode', 'start_time_s', 'deceleration_mps2', 'target_speed_mps', 'lateral_offset_m', 'end_behavior', 'operation', 'targets', 'stop_target') if key in operation}
     result['collision_geometry'] = {key: item for key, item in (value.get('collision_geometry') or {}).items() if key != 'scope'}
     return result
 
@@ -53,12 +55,29 @@ def compact_context(context):
         if isinstance(value, dict):
             lookup[value['candidate_id']] = value
     history = context.get('edit_history') or []
+    if len(history) > 3:
+        result['edit_history'] = history[-3:]
+        result['edit_history_omitted_count'] = len(history)-3
+        result['edit_history_archive'] = 'editor-state.json#history'
     latest = context.get('latest_generated_candidate_id') or (history[-1]['candidate_id'] if history else None)
     current = context.get('current_edit_parent_id') or (context.get('current') or {}).get('candidate_id')
-    active = [current, latest, context.get('pending_review_candidate_id')]
-    result['active_candidate_details'] = {key: candidate_details(lookup[key]) for key in dict.fromkeys(active)
-                                         if key in lookup}
+    active = [context.get('selected_initial_candidate_id'), current, latest, context.get('pending_review_candidate_id')]
+    active.extend(context.get('inspection_candidate_ids') or [])
+    expanded={}
+    for key in dict.fromkeys(active):
+        if key not in lookup:
+            continue
+        details=candidate_details(lookup[key])
+        repeated=set(candidate_summary(lookup[key]))-{'candidate_id','motion_timeline','curve_metrics','operation_summary'}
+        expanded[key]={name:value for name,value in details.items() if name not in repeated}
+        expanded[key]['summary_evidence']='candidate_catalog'
+    result['active_candidate_details']=expanded
     summaries = [candidate_summary(row) for row in catalog]
+    for row in summaries:
+        # Full time series are useful for the current comparison, not every retained seed.
+        row.pop('motion_timeline', None)
+        row.pop('curve_metrics', None)
+        row.pop('operation_summary', None)
     columns = list(dict.fromkeys(key for row in summaries for key in row))
     result['candidate_catalog'] = dict(columns=columns, rows=[[row.get(key) for key in columns] for row in summaries])
     for name in ('current', 'best'):
@@ -75,6 +94,17 @@ def compact_context(context):
     if isinstance(feedback, dict):
         feedback = dict(feedback)
         for key, value in list(feedback.items()):
+            if key in ('automatic_inspection','automatic_inspections'):
+                def inspection_reference(item):
+                    return {name:item[name] for name in ('candidate_id','inspection_id','path','time_s',
+                        'inspection_scope','comparison_fallback_candidate_id') if name in item}
+                feedback[key]=([inspection_reference(item) for item in value] if isinstance(value,list)
+                               else inspection_reference(value))
+            if key == 'candidates' and isinstance(value, list):
+                feedback[key] = [dict(candidate_id=item['candidate_id'],evidence='candidate_catalog',
+                                     **{name:entry for name,entry in item.items() if name not in lookup[item['candidate_id']]})
+                                 if isinstance(item, dict) and item.get('candidate_id') in lookup else item
+                                 for item in value]
             if isinstance(value, dict) and 'candidate_id' in value:
                 # Candidate details live in the catalog/active table; retain actual edit/error evidence.
                 if key in ('current', 'best', 'candidate', 'recommended_parent_preview'):
@@ -83,7 +113,8 @@ def compact_context(context):
     result['context_policy'] = ('candidate_catalog is a columns/rows table; each row uses exactly the declared column order. All identities, failures, unknown checks and selection metrics are retained. '
         'Curve generation definitions and acceptance rules are shared; expanded evidence appears once per active ID. '
         'Inspection returns other candidate details and a reference diagram. Full numeric evidence remains archived. '
+        'At most three recent edit records are inline; older history remains in editor-state.json. '
         'Current edit parent, latest generated candidate and numerical best are distinct; ranking never selects a final candidate.')
     if 'candidate_order_note' in context:
-        result['context_policy']='Candidate rows retain generation order, all IDs and checks; no quality ranking. Timelines use frame_times_s. Details expand for active IDs; full numeric evidence is archived.'
+        result['context_policy']='Candidate rows retain generation order, all IDs, check failures, unknowns and decision metrics; no quality ranking. Timelines use frame_times_s and expand only for fallback/current/latest/review and attached inspection IDs. Inspect any other ID for details. Summary metrics occur once in candidate_catalog. At most three recent edit records are inline; older history remains in editor-state.json. Full numeric evidence is archived; catalog references in feedback avoid duplication.'
     return result

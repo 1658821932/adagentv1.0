@@ -7,7 +7,11 @@ import time
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parent
-SETTINGS = json.loads((BACKEND_ROOT/'backend_settings.json').read_text())
+try:
+    from .backend_configuration import load_settings
+except ImportError:
+    from backend_configuration import load_settings
+SETTINGS = load_settings()
 
 
 def run_pdm_challenge(arguments, output_dir, log_path):
