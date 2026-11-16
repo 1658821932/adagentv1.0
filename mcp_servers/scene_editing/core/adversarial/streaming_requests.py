@@ -19,6 +19,16 @@ class NoOutputTimeout(TimeoutError):
     pass
 
 
+class StreamingRequestFailure(RuntimeError):
+    """Public failure metadata without discarding the original exception type."""
+    def __init__(self, message, *, failure_kind, error_type, phase, archive_ref):
+        super().__init__(message)
+        self.failure_kind=failure_kind
+        self.error_type=error_type
+        self.phase=phase
+        self.archive_ref=str(archive_ref)
+
+
 def _chunk_has_output(chunk):
     for choice in getattr(chunk, 'choices', None) or ():
         delta = getattr(choice, 'delta', None)
@@ -332,4 +342,5 @@ class StreamingRequestArchive(RequestArchive):
                     delay = retry_backoff_s[min(attempt_number - 1, len(retry_backoff_s) - 1)] if retry_backoff_s else 0.0
                     time.sleep(min(delay, max(0.0, remaining - 1.0)))
                     continue
-                raise RuntimeError('Streaming request failed; see archived attempt') from None
+                raise StreamingRequestFailure('Streaming request failed; see archived attempt',
+                    failure_kind=failure_kind,error_type=type(error).__name__,phase=phase,archive_ref=attempt) from error

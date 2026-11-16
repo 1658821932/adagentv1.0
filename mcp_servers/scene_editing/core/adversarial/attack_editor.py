@@ -12,14 +12,15 @@ from ego_editor import apply_candidate_repair, apply_point_edits
 from ego_road_checks import load_official_drivable
 from experiment_runtime import atomic_json
 from run_ego_reference import EGO_FRONT, EGO_REAR, ego_path_from_frames, observed_objects_from_frames
-from attack_tool_contract import candidate_eligibility, goal_diagnostics
+from attack_tool_contract import candidate_eligibility, goal_diagnostics, optimization_summary
 from vehicle_trajectory import attack_time_grid, construct_trajectory, motion_heading, sample_xy, screen_attack
 from displacement_tool import interpolate_offsets
 from vehicle_motion import simulate_motion, check_bicycle
 from attack_objective import goal_cost
+from attack_budget import constructor_budget_path
 from vehicle_control_search import integrate_controls, preservation_evidence
 from attack_constructor import (MAX_INTERNAL_PER_CALL, MAX_INTERNAL_PER_RUN,
-    goal_evidence, trial_specs, validate_goal)
+    goal_evidence, acceptance_goal_evidence, trial_specs, validate_goal)
 
 
 def write_trajectory(path, times, xy, yaw, size):
@@ -149,11 +150,12 @@ class AttackEditor:
     def _goal_result(self, result, xy, yaw, dense_xy, dense_yaw, arguments):
         ego = sample_xy(self.times, self.ego, self.dense_times)
         ego_yaw = np.interp(self.dense_times, self.times, self.ego_yaw)
-        dense = goal_evidence(self.dense_times, dense_xy, ego, ego_yaw, arguments,
-                              result['first_contact_time_s'], target_yaw=dense_yaw, target_size=self.target['size_m'], task_contract=self.constraints.get('task_contract'))
-        replay = goal_evidence(self.dense_times, sample_xy(self.times, xy, self.dense_times),
-            ego, ego_yaw, arguments, result['native_replay_first_contact_time_s'],
-            target_yaw=np.interp(self.dense_times,self.times,np.unwrap(yaw)),target_size=self.target['size_m'], task_contract=self.constraints.get('task_contract'))
+        def evidence(positions, angles, first_contact):
+            return acceptance_goal_evidence(self.dense_times,positions,ego,ego_yaw,arguments,first_contact,
+                target_yaw=angles,target_size=self.target['size_m'],constraints=self.constraints)
+        dense = evidence(dense_xy,dense_yaw,result['first_contact_time_s'])
+        replay = evidence(sample_xy(self.times,xy,self.dense_times),
+            np.interp(self.dense_times,self.times,np.unwrap(yaw)),result['native_replay_first_contact_time_s'])
         return dict(goal_met=dense['goal_met'] and replay['goal_met'], dense=dense, native_replay=replay)
 
     def _add(self, candidate_id, parent_id, operation, xy, yaw, dense_xy, dense_yaw):
@@ -185,6 +187,8 @@ class AttackEditor:
                 result['reference_screen_passed'] = all(result['checks'].values())
                 result['failed_checks'] = [key for key, value in result['checks'].items() if not value]
         feedback = result['geometry_feedback']
+        result['structured_objective_missing']=bool(self.constraints.get('require_structured_objective')
+            and not self.constraints.get('stationary_target') and goal is None)
         feedback.update(placement_valid=result['reference_screen_passed'] and
             (result.get('construction_goal') is None or result['construction_goal']['goal_met']),
             checks=dict(result['checks']), failed_checks=list(result['failed_checks']),
@@ -323,6 +327,11 @@ class AttackEditor:
         if self.constraints.get('task_contract') and 'objective' not in arguments:
             raise ValueError('Task-contract runs require structured planning preferences')
         prefix = self.edit_start_s
+        if self.constraints.get('agent_decides_interaction'):
+            if 'interaction' in arguments.get('objective',{}):
+                raise ValueError('Interaction classification has been removed; express motion preferences with keyframes')
+            arguments.setdefault('objective',{'keyframes':[]})
+            arguments['objective']['interaction_window_s']=list(self.constraints['event_window_s'])
         if 'objective' in arguments:
             from attack_objective import validate_objective
             validate_objective(arguments,self.times,self.danger_start_s,edit_start_s=self.edit_start_s)
@@ -349,7 +358,7 @@ class AttackEditor:
             raise ValueError('Goal window contains no dense samples; widen it')
         parent_id = arguments['parent_candidate_id']
         parent = self.nodes[parent_id]
-        budget_path = self.run_dir / 'constructor-budget.json'
+        budget_path = constructor_budget_path(self.run_dir)
         budget = json.loads(budget_path.read_text()) if budget_path.exists() else dict(evaluations=0, calls=0)
         if budget['evaluations'] >= MAX_INTERNAL_PER_RUN:
             raise ValueError('Active constructor run evaluation budget exhausted')
@@ -635,15 +644,10 @@ class AttackEditor:
         return dict(status='accepted', candidate_id=candidate_id)
 
     def context(self):
-        budget_path = self.run_dir / 'constructor-budget.json'
+        budget_path = constructor_budget_path(self.run_dir)
         budget = json.loads(budget_path.read_text()) if budget_path.exists() else dict(evaluations=0, calls=0)
-        snapshots = []
-        for index in sorted(set(np.linspace(0, len(self.times) - 1, min(6, len(self.times)), dtype=int))):
-            nearby = [actor for actor in self.actors[index]
-                      if actor['track'] != self.target['track_id'] and
-                      min(np.linalg.norm(np.array([actor['x'], actor['y']]) - self.ego[index]),
-                          np.linalg.norm(np.array([actor['x'], actor['y']]) - self.seed_xy[index])) <= 40]
-            snapshots.append(dict(time_s=float(self.times[index]), actors=nearby))
+        from decision_scene_view import actor_view, GUIDANCE
+        scene_view=actor_view(self.times,self.ego,self.actors,self.target['track_id'],self.seed_xy)
         from agent_tool_view import candidate_card
         catalog=[]
         for candidate_id in self.nodes:
@@ -656,18 +660,27 @@ class AttackEditor:
                     entry_time_s=goal['dense'].get('entry_time_s'),
                     sustained_duration_s=goal['dense'].get('sustained_duration_s'),
                     error=goal_cost(goal['dense']))
+                item['construction_goal']['acceptance_basis']=goal['dense'].get('acceptance_basis','declared_objective')
+                preferences=optimization_summary(goal)
+                if preferences is not None: item['optimization_preferences']=preferences
             catalog.append(item)
-        return dict(target=self.target, constraints=self.constraints,
+        constraints=dict(self.constraints)
+        if constraints.get('plan_options'):
+            constraints['plan_options']=[{key:option[key] for key in ('option_id','operation','target_track','maneuver') if key in option} for option in constraints['plan_options']]
+        if constraints.get('agent_decides_interaction'):
+            constraints.pop('max_ego_clearance_m',None)
+        return dict(target=self.target, constraints=constraints,
             pdm_self_check=self.pdm_probe.context() if self.pdm_probe is not None else dict(enabled=False),
             vadv2_self_test=self.policy_probe.context() if self.policy_probe is not None else dict(enabled=False),
-            interaction_planning_hints=dict(
+            interaction_planning_hints=(dict(note='Use measured gaps, overlap times and diagrams to judge the task. No contact class or fixed maximum clearance is required. The configured event window and explicit caller task remain binding.') if constraints.get('agent_decides_interaction') else dict(
                 aligned_noncontact_forward_center_distance_m=(self.target['size_m'][0]+EGO_FRONT+EGO_REAR)/2+.15,
-                note='Body-center forward distance, aligned same-lane approximation. Near miss is contact-free over the entire horizon. A stationary lead on recorded ego path may require contact mode. Contact timing follows explicit task bounds; WE history is not an implicit forbidden interval.'),
+                note='Body-center forward distance, aligned same-lane approximation. Near miss is contact-free over the entire horizon. A stationary lead on recorded ego path may require contact mode. Contact timing follows explicit task bounds; WE history is not an implicit forbidden interval.')),
             constructor_budget=dict(**budget, remaining_evaluations=MAX_INTERNAL_PER_RUN-budget['evaluations'],
                                     per_call_limit=MAX_INTERNAL_PER_CALL, per_run_limit=MAX_INTERNAL_PER_RUN),
             coordinate_frame='scene-local metres, x=initial ego forward, y=left; target positions are body centers',
             timeline=[dict(time_s=float(time), ego_xy_m=ego.tolist(), seed_xy_m=seed.tolist())
                       for time, ego, seed in zip(self.times, self.ego, self.seed_xy)],
             candidates=catalog,
-            other_actor_snapshots=snapshots,
+            scene_layout=scene_view, visual_guidance=GUIDANCE,
+            full_scene_evidence_path=str(self.run_dir/'scene-evidence.json'),
             image_delivered_candidates=sorted(self.inspected))

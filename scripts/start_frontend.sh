@@ -50,9 +50,22 @@ fi
 mkdir -p "$STATE_DIR"
 NODE_BIN="$(command -v node)"
 cd "$FRONTEND_DIR"
-nohup env HOST="$HOST" PORT="$PORT" ADAGENT_PROJECT_ROOT="$PROJECT_ROOT" \
-  "$NODE_BIN" server.mjs >>"$LOG_FILE" 2>&1 </dev/null &
-PID=$!
+PID="$(NODE_BIN="$NODE_BIN" FRONTEND_DIR="$FRONTEND_DIR" PROJECT_ROOT="$PROJECT_ROOT" \
+  LOG_FILE="$LOG_FILE" HOST="$HOST" PORT="$PORT" node <<'NODE'
+const fs = require('node:fs');
+const { spawn } = require('node:child_process');
+const log = fs.openSync(process.env.LOG_FILE, 'a');
+const child = spawn(process.env.NODE_BIN, ['server.mjs'], {
+  cwd: process.env.FRONTEND_DIR,
+  env: { ...process.env, ADAGENT_PROJECT_ROOT: process.env.PROJECT_ROOT },
+  detached: true,
+  stdio: ['ignore', log, log],
+});
+child.unref();
+fs.closeSync(log);
+process.stdout.write(String(child.pid));
+NODE
+)"
 printf '%s\n' "$PID" >"$PID_FILE"
 
 PID="$PID" NODE_BIN="$NODE_BIN" PROJECT_ROOT="$PROJECT_ROOT" FRONTEND_DIR="$FRONTEND_DIR" \

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { panelLoadingHtml, panelErrorHtml, readPanelData } from './panel-loading.mjs';
 import { chooseCurrentTool } from './tool-scroll-spy.js';
+import { groupConversationRuns } from './conversation.js';
 import { effectiveReasoning, reasoningOptions, reasoningSelection } from './reasoning.mjs';
 
 const appSource = await readFile(new URL('./app.js', import.meta.url), 'utf8');
@@ -126,7 +127,7 @@ test('failed history refresh keeps cached items and exposes retry feedback',asyn
   const end=appSource.indexOf('async function openRun(',start);
   const feedback={innerHTML:'',classList:{add(){},remove(){}}},items={innerHTML:''};let reads=0;
   const context=vm.createContext({historyPanel:{setAttribute(){}},historyFeedback:feedback,historyItems:items,
-    historyCount:{textContent:''},panelLoadingHtml,panelErrorHtml,readPanelData,escape:String,
+    historyCount:{textContent:''},panelLoadingHtml,panelErrorHtml,readPanelData,escape:String,groupConversationRuns,
     historyItemHtml:run=>`<button>${run.run_id}</button>`,Date,
     api:async()=>{if(++reads===2)throw new Error('network');return {runs:[{run_id:'cached'}]};}});
   vm.runInContext(appSource.slice(start,end),context);

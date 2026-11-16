@@ -15,6 +15,8 @@ def build_commands(args, environ):
     root = Path(env["WORLDENGINE_ROOT"]).expanduser().resolve()
     project = Path(__file__).resolve().parents[3]
     result = Path(env["WORLDENGINE_TEST_PATH"]).expanduser().resolve()
+    env['ADAGENT_STARTUP_TIMING_DIR'] = str(result / 'startup_timing')
+    env['ADAGENT_NATIVE_VIDEO_DIR'] = str(result / 'videos')
     simroot, algroot = root / "projects/SimEngine", root / "projects/AlgEngine"
     def interpreter(variable, default):
         path = Path(env.get(variable) or default).expanduser()
@@ -104,8 +106,10 @@ def main():
         raise KeyboardInterrupt("WorldEngine job interrupted")
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        children.append(subprocess.Popen(sim, cwd=simroot, env=env))
-        children.append(subprocess.Popen(alg, cwd=algroot, env=env))
+        sim_env = dict(env, ADAGENT_SIMULATOR_LAUNCHED_AT=str(time.time()))
+        children.append(subprocess.Popen(sim, cwd=simroot, env=sim_env))
+        alg_env = dict(env, ADAGENT_PLANNER_LAUNCHED_AT=str(time.time()))
+        children.append(subprocess.Popen(alg, cwd=algroot, env=alg_env))
         while True:
             sim_rc, alg_rc = [p.poll() for p in children]
             if sim_rc not in (None, 0) or alg_rc not in (None, 0):
@@ -128,6 +132,12 @@ def main():
             except subprocess.TimeoutExpired:
                 p.kill()
                 p.wait()
+        from .startup_timing import summarize
+        try:
+            summarize(result / 'startup_timing')
+        except OSError:
+            import warnings
+            warnings.warn('Cold-start timing summary could not be saved', RuntimeWarning)
 
 
 if __name__ == "__main__":

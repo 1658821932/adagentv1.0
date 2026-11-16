@@ -133,7 +133,7 @@ test('planner exposes keyframe sheets with only the first expanded', async () =>
   } }, f.options);
   assert.equal(media.length, 3);
   assert.deepEqual(media.map(item => item.primary), [true, false, false]);
-  assert.match(media[0].note, /编辑前画面/);
+  assert.equal(media[0].note, '');
 });
 
 test('editing previews bind selected candidates and use the project video route', async () => {
@@ -146,6 +146,7 @@ test('editing previews bind selected candidates and use the project video route'
   } }, f.options);
   assert.equal(attack.length, 1);
   assert.match(attack[0].title, /seed_000/);
+  assert.equal(attack[0].note, '');
 
   await f.file(join(runDir, 'output/defense_agent/inspections/inspection_01.png'));
   await f.file(join(runDir, 'output/defense_agent/inspections/inspection_02.png'));
@@ -164,5 +165,8 @@ test('editing previews bind selected candidates and use the project video route'
   assert.equal(ego[1].record, undefined);
   assert.match(ego[1].title, /最终专家轨迹 · edit_002/);
   assert.equal(ego[1].primary, true);
+  assert.equal(ego[1].note, '');
   assert.equal(ego[2].primary, false);
+  assert.equal(ego[2].note, '');
+  assert.ok(ego.every(item => !/非|编辑前画面/.test(item.note || '')));
 });

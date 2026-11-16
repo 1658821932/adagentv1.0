@@ -11,10 +11,19 @@ from mcp_servers.worldengine.adapter.native_simulation import activate_exported_
 def test_edited_scene_activates_pose_calibration_once(monkeypatch):
     install = Mock()
     monkeypatch.setitem(sys.modules,'replay_pose',SimpleNamespace(install=install))
-    scenes = {name:dict(metadata=dict(native_export=dict(version='edited_scene.v1')))
+    scenes = {name:dict(metadata=dict(native_export=dict(version='edited_scene.v2',ego_calibration_frame='reconstruction')))
               for name in ('first','second')}
     assert activate_exported_scene_adapter(scenes) == ['first','second']
     install.assert_called_once_with()
+
+
+def test_legacy_utm_export_is_rejected_before_loading_renderer(monkeypatch):
+    import pytest
+    install=Mock()
+    monkeypatch.setitem(sys.modules,'replay_pose',SimpleNamespace(install=install))
+    with pytest.raises(ValueError,match='must be re-exported'):
+        activate_exported_scene_adapter({'legacy':{'metadata':{'native_export':{'version':'edited_scene.v1','ego_calibration_frame':'global'}}}})
+    install.assert_not_called()
 
 
 def test_original_dataset_does_not_activate_edited_pose_adapter(monkeypatch):

@@ -86,6 +86,9 @@ for (const entry of ['standalone', 'production']) {
 test(`${entry}: HTTP follow-up inherits state; new chat resets; duplicate starts rejected`, { timeout: 40000 }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'adagent-http-continuation-'));
   await mkdir(join(root, 'logs'));
+  await mkdir(join(root,'configs'));
+  await writeFile(join(root,'configs/api.json'),JSON.stringify({active_profile:'offline',offline:{model:'offline-fixture',base_url:'https://example.invalid'}}));
+  await writeFile(join(root,'configs/agent.json'),JSON.stringify({agent:{max_steps:5},tools:{modes:{failure_analyzer:'mock'}}}));
   const launcher = join(root, 'offline-agent');
   await writeFile(launcher, `#!${join(project, 'environments/agent/.venv/bin/python')}\n${bootstrap}`, { mode: 0o700 });
   let output = '';

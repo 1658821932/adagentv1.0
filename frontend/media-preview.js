@@ -10,8 +10,7 @@ function mediaCard(item, extra) {
     return `<figure class="artifact-media artifact-video" data-video-src="${src}" data-state="idle">`
       + `<div class="artifact-video-frame">`
       + `<button class="artifact-video-load" type="button" data-load-video>`
-      + `<span class="artifact-play" aria-hidden="true"></span><span data-load-label>点击播放视频</span>`
-      + `<small>按需加载，不预先下载</small></button>`
+      + `<span class="artifact-play" aria-hidden="true"></span><span data-load-label>点击播放视频</span></button>`
       + `<video controls playsinline preload="none" data-artifact-video hidden></video>`
       + `<div class="artifact-media-status" role="status" hidden><span data-media-message></span>`
       + `<button type="button" data-retry-video hidden>重试</button></div>`
@@ -20,11 +19,11 @@ function mediaCard(item, extra) {
   }
   return `<figure class="artifact-media artifact-image" data-state="idle">`
     + `<div class="artifact-image-frame">`
-    + `<a href="${src}" target="_blank" rel="noopener" title="打开原图">`
+    + `<a href="${src}" target="_blank" rel="noopener" title="在新标签页打开原图">`
     + `<img data-artifact-image data-src="${src}"${extra ? '' : ` src="${src}"`} loading="lazy" decoding="async" alt="${title}"></a>`
     + `<div class="artifact-media-status" role="status" hidden><span>图片加载失败</span>`
     + `<button type="button" data-retry-image>重试</button></div></div>`
-    + `<figcaption><span>${title}</span><a href="${src}" target="_blank" rel="noopener">查看原图</a>${note}</figcaption>`
+    + `<figcaption><span>${title}</span><button type="button" class="artifact-zoom-btn" data-zoom-image="${src}" data-zoom-title="${title}">放大预览</button><a href="${src}" target="_blank" rel="noopener">查看原图</a>${note}</figcaption>`
     + `</figure>`;
 }
 
@@ -37,9 +36,9 @@ export function artifactPreviewHtml(media) {
   const extras = items.filter(item => !primary.includes(item));
   return `<section class="artifact-preview" aria-label="产物预览">`
     + `<div class="artifact-preview-heading"><b>产物预览</b><span>${items.length} 项</span></div>`
-    + `<div class="artifact-preview-list">${primary.map(item => mediaCard(item, false)).join('')}</div>`
+    + `<div class="artifact-preview-list" data-count="${primary.length}">${primary.map(item => mediaCard(item, false)).join('')}</div>`
     + (extras.length ? `<details class="artifact-preview-more"><summary>查看更多产物（${extras.length}）</summary>`
-      + `<div class="artifact-preview-list">${extras.map(item => mediaCard(item, true)).join('')}</div></details>` : '')
+      + `<div class="artifact-preview-list" data-count="${extras.length}">${extras.map(item => mediaCard(item, true)).join('')}</div></details>` : '')
     + `</section>`;
 }
 
@@ -77,6 +76,31 @@ export function bindArtifactPreview(root) {
       frame.dataset.state = 'loading';
       status.hidden = true;
       img.src = retryUrl(img.dataset.src, attempt);
+    });
+  });
+
+  root.querySelectorAll('[data-zoom-image]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const doc = root.ownerDocument || document;
+      if (!doc?.createElement || !doc?.body) return;
+      let overlay = doc.querySelector('.artifact-lightbox');
+      if (!overlay) {
+        overlay = doc.createElement('div');
+        overlay.className = 'artifact-lightbox';
+        overlay.innerHTML = `<div class="artifact-lightbox-card">`
+          + `<div class="artifact-lightbox-head"><b data-lb-title></b><button type="button" data-lb-close aria-label="关闭预览">✕</button></div>`
+          + `<img data-lb-img alt="">`
+          + `</div>`;
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay || e.target.closest('[data-lb-close]')) overlay.classList.add('hidden');
+        });
+        doc.body.append(overlay);
+      }
+      overlay.querySelector('[data-lb-title]').textContent = btn.dataset.zoomTitle || '图片预览';
+      const lbImg = overlay.querySelector('[data-lb-img]');
+      lbImg.src = btn.dataset.zoomImage || '';
+      lbImg.alt = btn.dataset.zoomTitle || '';
+      overlay.classList.remove('hidden');
     });
   });
 

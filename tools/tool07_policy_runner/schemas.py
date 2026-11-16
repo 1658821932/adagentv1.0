@@ -64,6 +64,7 @@ class Input(InputModel):
         return self
 
 class Output(OutputModel):
+    startup_timing_report: NonEmptyStr | None = Field(default=None, description='Per-process cold-start timing report: imports, configuration, model/checkpoint/CUDA setup, Gaussian asset loading, history wait and first plan. Nested and parallel durations overlap.')
     evaluation_scope: dict[str, Any] | None = Field(default=None, description='Verified full-rollout PDM window and actual state/reference/velocity/obstacle counts per scene. Extended-horizon score, not the standard fixed 4-second NAVSIM benchmark.')
     collision_report: dict[str, Any] | None = Field(default=None, description='Actual closed-loop contact with the requested attack track. target_collision_detected=true after policy takeover is the attack criterion; false requires complete coverage; null is unknown. Interpolated possible contact and pre-takeover contact do not establish policy failure.')
     pdm_subscores: dict[str, Any] | None = Field(default=None, description='Official PDM sub-scores read verbatim from all_scenes_pdm_averages_*.csv without altering PDM computation.')

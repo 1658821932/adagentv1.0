@@ -132,7 +132,7 @@ def test_real_archive_records_sizes_and_provider_usage_without_credentials(monke
     usage = types.SimpleNamespace(model_dump=lambda: dict(prompt_tokens=321, completion_tokens=2))
     chunk = types.SimpleNamespace(model='test', id='fixture', usage=usage, choices=[
         types.SimpleNamespace(delta=types.SimpleNamespace(content='{}', tool_calls=None), finish_reason='stop')])
-    monkeypatch.setattr(module, 'deadline_events', lambda *args: iter([('headers', None), ('chunk', chunk)]))
+    monkeypatch.setattr(module, 'deadline_events', lambda *args, **kwargs: iter([('headers', None), ('chunk', chunk)]))
     text, path = module.StreamingRequestArchive().complete('test', [dict(role='user', content='hello 场景')])
     metrics = json.loads((path/'input-metrics.json').read_text())
     assert metrics['prompt_tokens'] == 321 and metrics['token_count_source'] == 'provider_usage'
@@ -142,7 +142,7 @@ def test_real_archive_records_sizes_and_provider_usage_without_credentials(monke
 
 def test_failed_archive_retains_input_measurement_without_fake_token_count(monkeypatch, tmp_path):
     module = streaming_archive(monkeypatch, tmp_path)
-    def events(*args):
+    def events(*args, **kwargs):
         yield 'headers', None
         raise module.RequestDeadlineExceeded('fixture')
     monkeypatch.setattr(module, 'deadline_events', events)

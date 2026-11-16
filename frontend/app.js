@@ -1,8 +1,16 @@
 import { toolNames, stageMap } from './agent-ui.js';
-import { resetWorkbench, setWorkbenchState, updateCall } from './workbench.js';
+import { resetWorkbench, setWorkbenchState, updateCall, setCurrentCall } from './workbench.js';
+import { createToolScrollSpy } from './tool-scroll-spy.js';
+import { createArtifactPreview, unloadArtifactPreview } from './media-preview.js';
+import { submitConversation, groupConversationRuns } from './conversation.js';
 import { createApiClient } from './api-client.js';
 import { createConfigPanelController } from './config-panel-controller.mjs';
 import { panelLoadingHtml, panelErrorHtml, readPanelData } from './panel-loading.mjs';
+import {
+  firstSentence,
+  summaryFor,
+  renderStepStructured,
+} from './step-output.js';
 window.addEventListener('error', (e) => {
   const box = document.createElement('div');
   box.className = 'js-error';
@@ -11,6 +19,8 @@ window.addEventListener('error', (e) => {
 });
 
 const messages = document.querySelector('#messages');
+const toolScrollSpy = createToolScrollSpy(messages, setCurrentCall);
+const modelLabel = document.querySelector('#conversation-model');
 const stopBtn = document.querySelector('#stop');
 const replayBtn = document.querySelector('#replay-btn');
 const prompt = document.querySelector('#prompt');
@@ -40,7 +50,11 @@ let replaySpeed = 4;         // 4x 默认，录屏节奏比较合适
 let running = false;
 
 /* ---------- 基础渲染（结构同原版） ---------- */
-function scroll(){ messages.scrollTop = messages.scrollHeight; }
+let followLatest = true;
+messages.addEventListener('scroll', () => {
+  followLatest = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
+}, { passive: true });
+function scroll(){ if (followLatest) messages.scrollTop = messages.scrollHeight; }
 function message(role, html){
   const el = document.createElement('article');
   el.className = 'message ' + role;
@@ -51,6 +65,21 @@ function setRunning(value){
   running = value; send.disabled = value; prompt.disabled = value;
   stopBtn.classList.toggle('hidden', !value);
   status.textContent = value ? 'Agent 正在真实执行…' : '';
+}
+
+function showRunModel(d){
+  if (!modelLabel) return;
+  const effort = d.llm_reasoning_effort || '未记录';
+  modelLabel.textContent = d.llm_model ? `主 Agent · ${d.llm_model} · 思考 ${effort}` : '主 Agent';
+  modelLabel.title = `实际思考强度：${effort}`;
+}
+async function loadSelectedModel(){
+  try {
+    const cfg = await api('/api/config');
+    if (viewingRun) return;
+    const profile = cfg.profiles?.find(p => p.active);
+    showRunModel({ llm_model: profile?.model, llm_reasoning_effort: profile?.reasoning_effort });
+  } catch { /* 配置面板仍可独立重试 */ }
 }
 
 /* ---------- 步骤渲染 ---------- */
@@ -95,8 +124,10 @@ function renderStepCard(s, prevStep){
     + `<b class="step-name">${escape(nameOf(s.tool))}</b>`
     + `<code class="step-code" title="${escape(s.tool)}">${escape(s.tool)}</code>`
     + `<span class="step-times">${stepTimes(s)}</span></div>`
-    + (reason ? `<details class="step-reason" open><summary>调用原因</summary><p>${escape(reason)}</p></details>` : '')
-    + `<div class="step-body"></div>`;
+    + `<div class="step-body">`
+    + (reason ? `<div class="step-reason"><div class="raw-title">调用原因</div><p>${escape(reason)}</p></div>` : '')
+    + `<div class="step-main-output"></div>`
+    + `<div class="step-drawers"></div></div>`;
   return card;
 }
 
@@ -105,9 +136,11 @@ function stepTimes(s){
   if (s.llm && typeof s.llm.elapsed_seconds === 'number') bits.push('思考 ' + s.llm.elapsed_seconds.toFixed(1) + 's');
   if (typeof s.duration === 'number') {
     bits.push('执行 ' + fmtDuration(s.duration));
-  } else if (s.status === 'running' || typeof s.elapsed_seconds === 'number') {
+  } else if (s.status === 'running') {
     const base = typeof s.elapsed_seconds === 'number' ? s.elapsed_seconds : 0;
     bits.push(`执行 <span class="step-time-live" data-base="${base}" data-stamp="${Date.now()}">${fmtDuration(base)}</span>`);
+  } else if (s.status === 'interrupted' || s.output?.error?.type === 'job_interrupted') {
+    bits.push('实际耗时未知');
   }
   return bits.join(' · ');
 }
@@ -118,121 +151,53 @@ function stepStateHtml(s){
   return '✕';
 }
 
-const SUITABILITY = { ready: '可编辑', needs_information: '信息不足', unsuitable: '不适合编辑' };
-const OPERATION = { add_vehicle: '新增车辆', edit_existing: '修改现有车辆' };
-
-function firstSentence(text, limit = 90){
-  if (typeof text !== 'string') return '';
-  const cut = text.split(/[。；\n]/)[0].trim();
-  return cut.length > limit ? cut.slice(0, limit) + '…' : cut;
-}
-
-// 每个工具产出的一句话结论
-function summaryFor(s){
-  const r = s.output?.result;
-  if (!r || typeof r !== 'object') return '';
-
-  if (s.tool === 'failure_analyzer') {
-    const fa = r.failure_analysis || {};
-    return firstSentence(fa.failure_reason) || '';
-  }
-  if (s.tool === 'scene_instance_generator') {
-    return firstSentence(r.scene_requirement, 140) || '';
-  }
-  if (s.tool === 'video_retriever') {
-    const score = typeof r.match_score === 'number' ? `匹配度 ${r.match_score.toFixed(3)}` : '';
-    const scene = r.scene_ref && r.scene_ref.scene_token ? `场景 ${r.scene_ref.scene_token}` : '';
-    const req = firstSentence(r.requirement, 80);
-    return [req, score, scene].filter(Boolean).join(' · ');
-  }
-  if (s.tool === 'edit_planner') {
-    const verdict = SUITABILITY[r.suitability] || r.suitability || '';
-    const plan = r.edit_plan || {};
-    const op = OPERATION[plan.operation] || plan.operation || '';
-    const target = plan.target_track ? ` ${plan.target_track}` : '';
-    const head = [verdict, op ? op + target : ''].filter(Boolean).join(' · ');
-    const body = firstSentence(plan.instruction) || firstSentence((r.reasons || [])[0]);
-    return [head, body].filter(Boolean).join(' — ');
-  }
-  if (s.tool === 'attack_vehicle_editor' || s.tool === 'ego_trajectory_editor') {
-    const status = r.status === 'unable_to_complete' ? '未能完成' : r.status === 'defense_not_found' ? '未找到可行防御' : r.status || '';
-    return [status, firstSentence(r.reason || r.stop_reason)].filter(Boolean).join(' — ');
-  }
-  if (s.tool === 'policy_runner') {
-    const c = r.collision_report || {};
-    const bits = [];
-    if (typeof c.target_collision_detected === 'boolean') bits.push(c.target_collision_detected ? '目标碰撞已发生' : '未发生目标碰撞');
-    if (r.evaluation_scope) bits.push(String(r.evaluation_scope).slice(0, 40));
-    return bits.join(' · ');
-  }
-  if (s.tool === 'failure_case_filter') {
-    return r.is_failure_case === true ? `失败案例 · ${r.scene_count || 1} 个场景` : '非失败案例';
-  }
-  for (const path of ['summary', 'message', 'requirement', 'scene_requirement']) {
-    const v = path.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), r);
-    if (typeof v === 'string' && v) return firstSentence(v, 140);
-  }
-  return '';
-}
-
 const primaryOutput = summaryFor;
 
-// 官方评分字段的中文标签与展示优先级
-const METRIC_LABELS = {
-  score: '总分',
-  first_violation_step: '首次违规步',
-  no_at_fault_collisions: '碰撞',
-  drivable_area_compliance: '道路合规',
-  ego_progress: '行驶进度',
-  time_to_collision_within_bound: 'TTC 安全',
-  comfort: '舒适性',
-  driving_direction_compliance: '方向合规',
-  step: '评测步数',
+const ACTIVITY_LABELS = {
+  model_request:'模型 API 调用',
+  'attack.object_selection':'选择攻击车辆', 'attack.inspect':'查看攻击轨迹',
+  'attack.submit':'提交攻击轨迹', 'attack.materialize_added':'生成新增车辆',
+  'attack.independent_check':'独立检查攻击结果', 'ego.understanding':'理解冻结场景',
+  'ego.constructor':'生成防御候选', 'ego.foci':'FOCI 优化',
+  'ego.visual_agent':'防御编辑 Agent', 'ego.select_constructor':'选择防御候选',
+  'ego.edit':'编辑防御轨迹', 'ego.submit':'提交专家轨迹', 'ego.independent_check':'独立检查防御结果',
+  select_vehicle:'选择车辆', construct_attack_candidates:'构造攻击候选',
+  construct_trajectory:'构造轨迹', edit_speed_profile:'调整速度', edit_route:'调整行驶路线',
+  repair_candidate:'修复候选', inspect_trajectory:'查看轨迹图', evaluate_candidate:'检查候选',
+  submit_candidate:'提交候选', finish_search:'结束搜索', request_object_reselection:'重新选择车辆',
+  probe_vadv2:'VADv2 自测', probe_pdm:'PDM 自测',
 };
-const METRIC_ORDER = Object.keys(METRIC_LABELS);
-function metricLabel(key){ return METRIC_LABELS[key] || key; }
-function metricRank(key){
-  const i = METRIC_ORDER.indexOf(key);
-  return i === -1 ? METRIC_ORDER.length : i;
+function activityRow(a){
+  const labels = { invalid:'参数无效', error:'失败', failed:'失败', fallback:'未完全达标',
+    no_feasible_goal:'未找到达标候选', running:'执行中', started:'执行中',
+    preview:'预览', returned:'已返回', completed:'已完成', success:'已完成', constructed:'已生成',
+    selected:'已选择', submitted:'已提交', interrupted:'已中断' };
+  const failed = ['invalid','error','failed','interrupted'].includes(a.status);
+  const warning = ['fallback','no_feasible_goal'].includes(a.status);
+  const live = ['running','started'].includes(a.status) && !a.finished_at;
+  const state = failed ? 'failed' : warning ? 'warning' : a.status === 'preview' ? 'preview' : live ? 'running' : 'done';
+  const elapsed = typeof a.elapsed_seconds === 'number' ? fmtDuration(a.elapsed_seconds)
+    : live && a.timestamp ? fmtDuration(Math.max(0,(Date.now()-Date.parse(a.timestamp))/1000)) : '';
+  return `<li class="activity-row ${state}"><span>${failed ? '✕' : warning ? '△' : state === 'preview' ? '○' : live ? '◌' : '✓'}</span>`
+    + `<div><b>${escape(ACTIVITY_LABELS[a.name] || a.name)}</b><small>${escape(labels[a.status] || a.status || '')}${elapsed ? ' · ' + escape(elapsed) : ''}</small>`
+    + (a.summary ? `<p>${escape(a.summary)}</p>` : '') + `</div></li>`;
 }
-
-// 耗时分解：把 timings 的每个阶段渲染成带比例条的列表
-const TIMING_LABELS = {
-  store_init_seconds: '建立向量库连接（含 import chromadb）',
-  embedding_seconds: '文本转向量（embedding API）',
-  vector_query_seconds: '向量检索（chroma）',
-  local_search_seconds: '召回小计',
-  rerank_prep_seconds: '候选准备（剪辑 · 转码 · 上传）',
-  rerank_api_seconds: '多模态重排序推理',
-  rerank_seconds: '重排序小计',
-  export_seconds: '导出结果视频',
-  total_seconds: '全流程总计',
-};
-const TIMING_ORDER = ['store_init_seconds', 'embedding_seconds', 'vector_query_seconds', 'local_search_seconds',
-  'rerank_prep_seconds', 'rerank_api_seconds', 'rerank_seconds', 'export_seconds', 'total_seconds'];
-const TIMING_SUBTOTAL = new Set(['local_search_seconds', 'rerank_seconds', 'total_seconds']);
-
-function renderTimings(t){
-  if (!t || typeof t !== 'object') return '';
-  const numeric = Object.values(t).filter(v => typeof v === 'number');
-  if (!numeric.length) return '';
-  const total = Number(t.total_seconds) || Math.max(...numeric);
-  if (!(total > 0)) return '';
-  const keys = TIMING_ORDER.filter(k => typeof t[k] === 'number' && t[k] >= 0);
-  if (!keys.length) return '';
-  const rows = keys.map(k => {
-    const v = Number(t[k]);
-    const pct = Math.max(Math.min(100, (v / total) * 100), v > 0 ? 2 : 0);
-    const cls = 'timing-row'
-      + (TIMING_SUBTOTAL.has(k) ? ' subtotal' : '')
-      + (k === 'total_seconds' ? ' total' : '');
-    return `<div class="${cls}"><span class="t-label">${escape(TIMING_LABELS[k] || k)}</span>`
-      + `<span class="t-bar"><i style="width:${pct.toFixed(1)}%"></i></span>`
-      + `<span class="t-val">${v.toFixed(2)}s</span></div>`;
-  }).join('');
-  return `<details class="timing-breakdown"><summary><span class="timing-title">耗时分解</span>`
-    + `<b class="timing-total">${total.toFixed(2)}s</b></summary>`
-    + `<div class="timing-body">${rows}</div></details>`;
+function fillToolActivities(card, s){
+  if (!s.activities?.length) return;
+  let box = card.querySelector('.subagent-activity');
+  if (!box) {
+    box = document.createElement('details');
+    box.className = 'subagent-activity';
+    box.open = s.status === 'running';
+    box.innerHTML = '<summary></summary><ol></ol>';
+    const host = card.querySelector('.step-drawers') || card.querySelector('.step-body');
+    const jsonBlock = host.querySelector('.json-block');
+    if (jsonBlock) host.insertBefore(box, jsonBlock);
+    else host.append(box);
+  }
+  box.querySelector('summary').textContent = `子 Agent 活动 · ${s.activities.length} 条`;
+  const html = s.activities.map(activityRow).join('');
+  if (box._activityHtml !== html) { box.querySelector('ol').innerHTML = html; box._activityHtml = html; }
 }
 
 function fillToolResult(card, s){
@@ -241,40 +206,32 @@ function fillToolResult(card, s){
   const timesEl = card.querySelector('.step-times');
   if (timesEl) timesEl.innerHTML = stepTimes(s);
 
-  const body = card.querySelector('.step-body') || card;
-  const text = primaryOutput(s);
-  if (text) {
-    const wrap = document.createElement('div');
-    wrap.className = 'summary-block';
-    wrap.innerHTML = `<div class="raw-title">结果简述</div><p class="step-summary">${escape(text)}</p>`;
-    body.append(wrap);
-  }
+  const mainHost = card.querySelector('.step-main-output') || card.querySelector('.step-body') || card;
+  const drawerHost = card.querySelector('.step-drawers') || card.querySelector('.step-body') || card;
+  mainHost.replaceChildren();
+
+  const structuredHtml = renderStepStructured(s);
+  if (structuredHtml) mainHost.insertAdjacentHTML('beforeend', structuredHtml);
+
+  const rawMedia = (Array.isArray(s.media) && s.media.length)
+    ? s.media
+    : (s.evidence || []).map(v => ({ ...v, kind: 'video', primary: true }));
+  const preview = createArtifactPreview(rawMedia.map(item => ({ ...item, src: serviceUrl(item.src) })));
+  if (preview) mainHost.append(preview);
 
   const raw = [];
   if (s.input != null) raw.push(`<div class="raw-block"><div class="raw-title">输入 JSON</div><pre>${escape(JSON.stringify(s.input, null, 2))}</pre></div>`);
   if (s.output != null) raw.push(`<div class="raw-block"><div class="raw-title">输出 JSON</div><pre>${escape(JSON.stringify(s.output, null, 2))}</pre></div>`);
-  if (raw.length) {
-    const d = document.createElement('div');
+  if (raw.length && !drawerHost.querySelector('.json-block')) {
+    const d = document.createElement('details');
     d.className = 'json-block';
-    d.innerHTML = raw.join('');
-    body.append(d);
+    d.innerHTML = '<summary>查看输入与输出 JSON</summary>' + raw.join('');
+    drawerHost.append(d);
   }
 
-  const evidenceVideos = Array.isArray(s.evidence) ? s.evidence : [];
-  if (evidenceVideos.length) {
-    const box = document.createElement('div');
-    box.className = 'evidence-videos';
-    box.innerHTML = evidenceVideos.map(v =>
-      `<div class="raw-title">${escape(v.title)}</div>`
-      + `<video controls playsinline preload="auto" width="1920" height="1080" src="${escape(v.src)}"></video>`
-    ).join('');
-    box.querySelectorAll('video').forEach(vid => {
-      vid.addEventListener('play', e => {
-        messages.querySelectorAll('video').forEach(o => { if (o !== e.target) o.pause(); });
-      });
-    });
-    body.append(box);
-  }
+  fillToolActivities(card, s);
+  const actEl = card.querySelector('.subagent-activity');
+  if (actEl && s.status !== 'running') actEl.open = false;
 }
 
 /* ---------- run 渲染与轮询 ---------- */
@@ -297,17 +254,27 @@ function setProgressMeta(d, running){
 }
 
 function beginRunView(d){
+  unloadArtifactPreview(messages);
   messages.replaceChildren();
+  followLatest = true;
   rendered = new Map();
+  toolScrollSpy.reset();
   resetWorkbench();
   message('user', `<p>${escape(d.task || '(无任务描述)').replace(/\n/g, '<br>')}</p>`);
-  const response = message('assistant', `<div class="agent-progress"><span class="thinking-spinner"></span><b class="agent-phase">任务理解</b><span class="agent-activity">准备决策</span><span class="agent-count"></span></div><div class="answer-slot"></div><div class="tool-stream"></div>`);
+  mountAgentResponse(d);
+}
+function mountAgentResponse(d, continued = false){
+  rendered = new Map();
+  showRunModel(d);
+  const response = message('assistant', (continued ? '<p class="continuation-note">已接续历史对话，保留以上执行记录。</p>' : '')
+    + `<div class="agent-progress"><span class="thinking-spinner"></span><b class="agent-phase">任务理解</b><span class="agent-activity">准备决策</span><span class="agent-count"></span></div><div class="answer-slot"></div><div class="tool-stream"></div>`);
   streamEl = response.querySelector('.tool-stream');
   progressEl = response.querySelector('.agent-progress');
   phaseEl = response.querySelector('.agent-phase');
   activityEl = response.querySelector('.agent-activity');
   answerEl = response.querySelector('.answer-slot');
 }
+function continueRunView(d){ mountAgentResponse(d, true); }
 
 
 /* ---------- 重放：按记录的时间节奏逐步揭示历史步骤 ---------- */
@@ -384,7 +351,7 @@ async function playTimeline(d, token, speed, finalDoc = d) {
   let prevStep = null;
 
   let clock = 0;   // 已重放的“记录时间”（秒），从 0 开始
-  const keyOf = (s) => `s${s.step}_${s.tool}`;
+  const keyOf = (s) => `${d.run_id || viewingRun}_s${s.step}_${s.tool}`;
   for (const s of steps) {
     if (token !== replayToken) return;
     // 决策阶段
@@ -411,8 +378,9 @@ async function playTimeline(d, token, speed, finalDoc = d) {
     // 揭示这一步
     const card = renderStepCard(s, prevStep);
     streamEl.append(card);
+    toolScrollSpy.observe(card, keyOf(s));
     fillToolResult(card, s);
-    updateCall(keyOf(s), nameOf(s.tool), s.tool, s.status === 'error' ? 'error' : 'done', () => card.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    updateCall(keyOf(s), nameOf(s.tool), s.tool, ['error','interrupted','failed'].includes(s.status) ? 'error' : 'done', () => card.scrollIntoView({ behavior: 'smooth', block: 'start' }));
     prevStep = s;
     scroll();
   }
@@ -429,7 +397,9 @@ async function playTimeline(d, token, speed, finalDoc = d) {
   setProgressMeta(finalDoc, false);
   const finishDec = (finalDoc.extra_decisions || []).filter((x) => x.action === 'finish').pop() || null;
   const finishReason = finishDec && typeof finishDec.reason === 'string' ? finishDec.reason.trim() : '';
-  if (answerEl) answerEl.innerHTML = answerCard(finalDoc, finishReason || '任务已完成。', finishDec);
+  if (answerEl) {
+    answerEl.innerHTML = answerCard(finalDoc, finishReason || '任务已完成。', finishDec);
+  }
 }
 
 async function replayRun(runId) {
@@ -481,6 +451,12 @@ async function renderRun(runId){
   const d = await api(`/api/runs/${runId}`);
   if (viewingRun !== runId) return d;
   if (!streamEl) beginRunView(d);
+  return updateRunView(d);
+}
+function updateRunView(d){
+  const active = d.active ?? (d.status === 'running');
+  if (running !== active) setRunning(active);
+  showRunModel(d);
 
   setWorkbenchState(
     d.status === 'running' ? phaseNarrative(d) : statusLabel(d),
@@ -495,21 +471,29 @@ async function renderRun(runId){
   let prevStep = null;
   for (const s of d.steps) {
     try {
-    const key = `s${s.step}_${s.tool}`;
+    const key = `${d.run_id || viewingRun}_s${s.step}_${s.tool}`;
     let rec = rendered.get(s.step);
     if (!rec) {
       const card = renderStepCard(s, prevStep);
       streamEl.append(card);
+      toolScrollSpy.observe(card, key);
       rec = { card, filled: false };
       rendered.set(s.step, rec);
-      updateCall(key, nameOf(s.tool), s.tool, s.status === 'running' ? 'running' : 'selected', () => card.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-      if (s.status !== 'running') updateCall(key, nameOf(s.tool), s.tool, s.status === 'error' ? 'error' : 'done');
+      updateCall(key, nameOf(s.tool), s.tool, s.status === 'running' ? 'running' : 'selected', () => {
+        followLatest = false; toolScrollSpy.select(key);
+        card.scrollIntoView({ behavior:'smooth', block:'start' });
+      });
+      if (s.status !== 'running') updateCall(key, nameOf(s.tool), s.tool, ['error','interrupted','failed'].includes(s.status) ? 'error' : 'done');
       scroll();
+    }
+    fillToolActivities(rec.card, s);
+    if (s.status === 'running') {
+      rec.card.querySelector('.step-times').innerHTML = stepTimes(s);
     }
     if (s.status !== 'running' && !rec.filled) {
       rec.filled = true;
       fillToolResult(rec.card, s);
-      updateCall(key, nameOf(s.tool), s.tool, s.status === 'error' ? 'error' : 'done');
+      updateCall(key, nameOf(s.tool), s.tool, ['error','interrupted','failed'].includes(s.status) ? 'error' : 'done');
       scroll();
     }
     prevStep = s;
@@ -519,7 +503,8 @@ async function renderRun(runId){
   if (d.status === 'running') {
     const cur = d.steps.at(-1);
     phaseEl.textContent = phaseNarrative(d);
-    activityEl.textContent = '';
+    const latest = cur?.activities?.at(-1);
+    activityEl.textContent = latest ? `${ACTIVITY_LABELS[latest.name] || latest.name} · ${latest.summary || latest.status}` : '';
     setProgressMeta(d, true);
   } else if (!progressEl.classList.contains('finished')) {
     progressEl.classList.add('finished');
@@ -534,9 +519,12 @@ async function renderRun(runId){
       || ((d.status === 'success' || d.status === 'finished')
         ? '任务已完成。'
         : `运行结束（${statusLabel(d)}）${d.error ? '：' + d.error : ''}`);
-    if (answerEl) answerEl.innerHTML = answerCard(d, doneMsg, finishDec);
-    setRunning(false);
+    if (answerEl) {
+      answerEl.innerHTML = answerCard(d, doneMsg, finishDec);
+    }
+    setRunning(Boolean(d.active));
   }
+  toolScrollSpy.schedule();
   return d;
 }
 
@@ -553,21 +541,35 @@ setInterval(() => {
 // 耗时格式化
 function fmtDuration(sec){
   if (typeof sec !== 'number' || !Number.isFinite(sec)) return '';
+  if (sec > 0 && sec < .1) return `${Math.round(sec*1000)}ms`;
   return sec >= 60 ? `${Math.floor(sec / 60)}m${Math.round(sec % 60)}s` : `${Math.round(sec)}s`;
 }
 
 // 收尾卡片：标题为“任务总结”，右上角为该次总结的思考耗时
+function errorPresentation(d, text){
+  const detail = d.error || text || '';
+  if (/Native execution requires|config_path.*checkpoint_path|execution_mode=native/.test(detail))
+    return { title:'07 策略评测未启动', message:'模型配置校验未通过，WorldEngine 尚未执行。' };
+  if (/APIConnectionError|Connection error|frontend_network_error/.test(detail)) {
+    const retries = d.summary?.stages?.find(s => s.stage === 'main_agent')?.retry_requests;
+    return { title:'模型服务连接失败', message:typeof retries === 'number' && retries > 0 ? `已自动重试 ${retries} 次，仍未连接成功。` : '请检查本轮详细错误与服务连接。' };
+  }
+  return { title:statusLabel(d), message:firstSentence(detail, 180) };
+}
 function answerCard(d, text, dec){
   const ok = d.status === 'success' || d.status === 'finished';
   const mark = ok ? '✓' : '✕';
-  const title = ok ? '任务总结' : statusLabel(d);
+  const error = ok ? null : errorPresentation(d, text);
+  const title = ok ? '任务总结' : error.title;
   const think = dec && dec.llm && typeof dec.llm.elapsed_seconds === 'number'
     ? `思考 ${dec.llm.elapsed_seconds.toFixed(1)}s` : '';
   return `<div class="step-card answer-card">`
     + `<div class="step-head"><span class="step-state">${mark}</span>`
     + `<b class="step-name">${escape(title)}</b>`
     + (think ? `<span class="step-times">${escape(think)}</span>` : '')
-    + `</div><p class="answer-text">${escape(text)}</p></div>`;
+    + `</div><p class="answer-text">${escape(ok ? text : error.message)}</p>`
+    + (!ok && (d.error || text) ? `<details><summary>查看详细错误</summary><pre>${escape(d.error || text)}</pre></details>` : '')
+    + '</div>';
 }
 
 
@@ -587,10 +589,13 @@ function statusLabel(d){
 async function poll(){
   clearTimeout(pollTimer);
   if (!viewingRun) return;
+  const selected = viewingRun;
   try {
-    const d = await renderRun(viewingRun);
-    if (d.status === 'running') pollTimer = setTimeout(poll, 1000);
+    const d = await renderRun(selected);
+    if (viewingRun !== selected) return;
+    if (d.active || d.status === 'running') pollTimer = setTimeout(poll, 1000);
   } catch (e) {
+    if (viewingRun !== selected) return;
     status.textContent = '刷新失败：' + e.message;
     if (phaseEl) phaseEl.textContent = '读取失败';
     if (activityEl) activityEl.textContent = e.message;
@@ -602,29 +607,38 @@ async function poll(){
 async function run(text){
   if (running || !text.trim()) return;
   if (demoArmed) return playDemo(text.trim());
+  const parentRun = viewingRun;
   document.querySelector('#welcome')?.remove();
   prompt.value = '';
+  followLatest = true;
+  stopBtn.disabled = false;
   setRunning(true);
   replayBtn.classList.add('hidden');
   // 先把骨架画出来：服务器要等 Python 启动并打印日志才返回 run_id，
   // 不能让它决定首屏什么时候出现。
-  beginRunView({ task: text.trim(), steps: [], status: 'running' });
+  if (parentRun) message('user', `<p>${escape(text.trim()).replace(/\n/g, '<br>')}</p>`);
+  else beginRunView({ task: text.trim(), steps: [], status: 'running' });
   try {
-    const { run_id } = await api('/api/runs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task: text.trim() })
-    });
+    const { run_id } = await submitConversation(api, text, parentRun);
     viewingRun = run_id;
+    rememberRun(run_id);
+    const detail = await api(`/api/runs/${run_id}`);
+    if (parentRun) continueRunView(detail);
     closeHistory();
     loadHistory({ force:true });
     poll();
   } catch (e) {
+    prompt.value = text;
     phaseEl.textContent = '提交失败';
     activityEl.textContent = '';
     setWorkbenchState('提交失败', String(e.message || e), 'error');
     message('assistant', `<p>提交失败：${escape(e.message)}</p>`);
     setRunning(false);
   }
+}
+
+function rememberRun(id){
+  try { if (id) localStorage.setItem('adagent.selectedRun', id); else localStorage.removeItem('adagent.selectedRun'); } catch { /* 浏览器可能禁用存储 */ }
 }
 
 /* ---------- 历史运行 ---------- */
@@ -672,7 +686,7 @@ async function loadHistory({ force = false } = {}){
   historyRequest = (async () => {
     try {
       const { runs } = await readPanelData(options => api('/api/runs', options));
-      historyConversations = Array.isArray(runs) ? runs : [];
+      historyConversations = groupConversationRuns(Array.isArray(runs) ? runs : []);
       historyCount.textContent = String(historyConversations.length);
       const html = historyConversations.length ? historyConversations.map(historyItemHtml).join('')
         : '<p class="history-empty">还没有运行记录</p>';
@@ -690,18 +704,41 @@ async function loadHistory({ force = false } = {}){
   return historyRequest;
 }
 
+async function loadConversationChain(id){
+  const chain = [], seen = new Set();
+  while (id && !seen.has(id)) {
+    seen.add(id);
+    const detail = await api(`/api/runs/${id}`);
+    chain.unshift(detail);
+    id = detail.parent_run_id;
+  }
+  return chain;
+}
+
 async function openRun(id){
   if (!id) return;
   closeHistory();
   viewingRun = id;
+  rememberRun(id);
+  clearTimeout(pollTimer);
+  replayToken += 1;
+  unmountReplayBar();
   setRunning(false);
   try {
-    const d = await api(`/api/runs/${id}`);
+    const chain = await loadConversationChain(id);
     if (viewingRun !== id) return;
-    beginRunView(d);
-    replayBtn.classList.remove('hidden');
+    chain.forEach((d, index) => {
+      if (index === 0) beginRunView(d);
+      else {
+        message('user', `<p>${escape(d.user_messages?.at(-1)?.content || d.task || '').replace(/\n/g,'<br>')}</p>`);
+        continueRunView(d);
+      }
+      updateRunView(d);
+    });
+    replayBtn.classList.toggle('hidden', chain.at(-1).status === 'running');
     poll();
   } catch (e) {
+    if (viewingRun !== id) return;
     beginRunView({ task: '', steps: [], status: 'incomplete' });
     status.textContent = '读取运行失败：' + e.message;
   }
@@ -738,6 +775,7 @@ stopBtn.addEventListener('click', async () => {
   try {
     await api(`/api/runs/${viewingRun}/stop`, { method: 'POST' });
     status.textContent = '已请求停止';
+    await poll();
   } catch (e) {
     status.textContent = '停止失败：' + e.message;
   } finally {
@@ -753,7 +791,9 @@ document.querySelector('#replay-btn').addEventListener('click', () => {
 
 document.querySelector('#clear').addEventListener('click', () => {
   viewingRun = null; clearTimeout(pollTimer);
+  rememberRun(null);
   replayToken += 1; unmountReplayBar(); replayBtn.classList.add('hidden');
+  unloadArtifactPreview(messages); toolScrollSpy.reset();
   setRunning(false); messages.replaceChildren(); resetWorkbench();
   closeHistory();
   demoArmed = false; demoBtn?.classList.remove('hidden');
@@ -762,6 +802,8 @@ document.querySelector('#clear').addEventListener('click', () => {
 });
 
 loadHistory();
+try { const saved = localStorage.getItem('adagent.selectedRun'); if (saved) void openRun(saved); } catch { /* 无持久存储时仍可从历史打开 */ }
+void loadSelectedModel();
 
 /* ---------- 配置面板 ---------- */
 const modal = document.querySelector('#config-modal');

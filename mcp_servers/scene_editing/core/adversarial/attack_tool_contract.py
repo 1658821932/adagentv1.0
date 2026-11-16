@@ -28,10 +28,28 @@ def goal_diagnostics(goal):
 def candidate_eligibility(result):
     geometry = bool(result['reference_screen_passed'])
     goal = result.get('construction_goal')
-    task = goal is None or bool(goal['goal_met'])
+    task = (goal is None or bool(goal['goal_met'])) and not result.get('structured_objective_missing',False)
     failures,_ = goal_diagnostics(goal)
+    if result.get('structured_objective_missing'):
+        failures.append('declared_objective_missing')
     return dict(reference_geometry_passed=geometry,task_contract_passed=task,
                 pdm_probe_eligible=geometry and task,task_failed_checks=failures)
+
+
+def optimization_summary(goal):
+    reports=[(source,(goal or {}).get(source,{}).get('preferences')) for source in ('dense','native_replay')]
+    reports=[(source,report) for source,report in reports if isinstance(report,dict)]
+    if not reports: return None
+    missed=[source+'.'+check for source,report in reports for check in report.get('failed_checks',[])]
+    example=None
+    for source,report in reports:
+        frame=next((frame for frame in report.get('keyframes',[]) if not frame['passed']),None)
+        if frame is not None:
+            example=dict(source=source,requested=frame.get('requested'),
+                evaluated_interval_s=frame.get('evaluated_interval_s'),actual_ranges=frame.get('actual_ranges'))
+            break
+    return dict(met=all(report['goal_met'] for _,report in reports),missed_checks=missed,
+        first_missed_interval=example,scope='optimization preference; assess original instruction separately')
 
 
 def constructor_exhaustion(nodes, budget):
@@ -68,6 +86,12 @@ def trajectory_tools(tools, nodes, evaluated, tested, probes_remaining, *,
     available=[]
     for tool in deepcopy(tools):
         function=tool['function'];name=function['name']
+        if name in ('edit_speed_profile','edit_route','repair_candidate') and any(
+                'structured_objective_missing' in node['result'] for node in nodes.values()):
+            ids=[key for key,node in nodes.items() if not node['result'].get('structured_objective_missing')]
+            if not ids:
+                continue
+            function['parameters']['properties'].setdefault('parent_candidate_id',{'type':'string'})['enum']=ids
         if name=='construct_attack_candidates' and constructor_remaining is not None and constructor_remaining<=0:
             continue
         if name=='request_object_reselection' and reselections_remaining is not None and reselections_remaining<=0:

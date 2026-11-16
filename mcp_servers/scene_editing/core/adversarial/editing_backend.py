@@ -26,6 +26,11 @@ def check_status(checks):
     return {name: 'passed' if value else 'failed' for name, value in checks.items()}
 
 
+def native_export_view(report):
+    from native_scene_export import export_summary
+    return export_summary(report)
+
+
 def attack_output(arguments, output_dir):
     source = arguments['scene_ref']
     scene = Path(source['sample_root'])
@@ -34,19 +39,28 @@ def attack_output(arguments, output_dir):
     if any(arguments.get(key) for key in ('pdm_self_check','pdm_defense_feedback','pdm_ignore_traffic_lights')):
         raise ValueError('Attack editing does not run PDM. Main Agent evaluates with policy_runner(native) after expert editing.')
     if acceptance['policy_version']=='reference_acceptance.v2':
-        acceptance['attack_danger_start_s']=float(constraints_input.get('no_ego_contact_until_s',acceptance['attack_danger_start_s']))
+        acceptance['attack_danger_start_s']=max(acceptance['attack_window_start_s'],
+            float(constraints_input.get('no_ego_contact_until_s',acceptance['attack_danger_start_s'])))
     # 攻击车只锁起点（prefix_lock=0），危险必须落在显式窗口内；
     # 这与自车历史无关，自车的历史由 policy_runner 的 num_history 决定。
     constraints = dict(observation_end_s=acceptance['observation_end_s'],
         attack_prefix_lock_s=acceptance['attack_prefix_lock_s'],
         event_window_s=[acceptance['attack_window_start_s'], acceptance['attack_window_end_s']],
         official_margin_m=acceptance['official_margin_m'], max_ego_clearance_m=2., min_travel_m=0.,
-        vehicle_motion_model='bicycle.v1', require_structured_objective=True,
+        vehicle_motion_model='bicycle.v1', require_structured_objective=False,
+        agent_decides_interaction=True,
         acceptance_policy=acceptance)
+    constraints['attack_stage_timeout_s'] = min(arguments.get('stage_timeout_s',420),max(1,arguments['timeout']-60))
+    constraints['generated_objectives_are_preferences'] = True
+    required_operation=None if arguments['operation']=='auto' else arguments['operation']
+    if arguments.get('plan_options'):
+        constraints['plan_options']=arguments['plan_options']
     if arguments.get('vadv2_self_test',False):
         constraints.update(vadv2_self_test=True,vadv2_probe_budget=arguments.get('vadv2_probe_budget',3),
             vadv2_policy_config=SETTINGS['vadv2'],policy_source_scene_ref=source)
     if arguments.get('task_contract') is not None:
+        if 'interaction' in arguments['task_contract'].get('objective',{}):
+            raise ValueError('Interaction categories are removed; task_contract may state explicit keyframes/corridor, not contact/near-miss classes')
         constraints['task_contract'] = arguments['task_contract']
     if arguments.get('revision_feedback') is not None:
         constraints['revision_feedback'] = arguments['revision_feedback']
@@ -83,19 +97,23 @@ def attack_output(arguments, output_dir):
             if (Path(prior_input['scene']).resolve() != scene.resolve()
                     or prior_input.get('instruction') != arguments['instruction']
                     or prior_input.get('assets') != assets
-                    or prior_input.get('required_operation') != arguments['operation']
+                    or prior_input.get('required_operation') != required_operation
                     or prior_input.get('required_track') != arguments.get('target_track')):
                 raise ValueError('Prior attack scene, instruction, assets or target requirement differs')
-            if prior_input.get('constraints') != constraints:
+            from attack_configuration import same_scene_constraints
+            if not same_scene_constraints(prior_input.get('constraints',{}), constraints):
                 raise ValueError('Prior attack constraints differ')
+            for key in ('object_reselection_count','object_reselection_reason','object_selection_feedback'):
+                if key in prior_input.get('constraints',{}):constraints[key]=prior_input['constraints'][key]
             continue_from = candidate_dir
             atomic_json(output_dir/'attack-reuse.json', dict(status='reused', source=str(candidate_dir)))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             reuse_reason = str(exc)
             atomic_json(output_dir/'attack-reuse.json', dict(status='recompute', reason=reuse_reason, source=str(candidate_dir)))
+            raise ValueError('Requested attack checkpoint is incompatible: '+reuse_reason) from exc
     result = run_attack(scene, attack_dir, arguments['instruction'], assets, constraints,
         timeout_seconds=min(300, arguments['timeout']), max_tokens=16384,
-        max_turns=SETTINGS['defaults']['attack_max_turns'], required_operation=arguments['operation'],
+        max_turns=SETTINGS['defaults']['attack_max_turns'], required_operation=required_operation,
         required_track=arguments.get('target_track'), continue_from=continue_from)
     while result.get('status') == 'continued_in_object_revision':
         attack_dir = Path(result['followup_run'])
@@ -112,7 +130,7 @@ def attack_output(arguments, output_dir):
         return dict(status='attack_independent_check_failed', detail=independent)
     trajectory_output = attack_dir/'trajectory_editing/output.json'
     from native_scene_export import export as export_native
-    native=export_native(source,frozen,output_dir/'native_attack',attack_result=dict(operation=arguments['operation'],target_track=result['target']['track_id']))
+    native=export_native(source,frozen,output_dir/'native_attack',attack_result=dict(operation=result['target']['operation'],target_track=result['target']['track_id']))
     policy_probe=None
     if result.get('vadv2_probe_result_path'):
         policy_probe=json.loads(Path(result['vadv2_probe_result_path']).read_text())
@@ -123,7 +141,7 @@ def attack_output(arguments, output_dir):
     return dict(schema_version='editing_stage.v1', stage='attack_editing',
         status='completed', mode='real', run_dir=str(output_dir.parent),
         source_scene_ref=source, scene_id=source['scene_id'], scene_token=source['scene_token'],
-        operation=arguments['operation'],
+        operation=result['target']['operation'],plan_choice=result.get('plan_choice'),
         target_track=result['target']['track_id'], selected_candidate_id=result['selected_candidate_id'],
         frozen_scene_path=str(frozen), frames_path=str(frozen/'metadata/frames.json'),
         trajectory_path=result['trajectory_path'], provenance_path=str(frozen/'freeze-info.json'),
@@ -131,13 +149,16 @@ def attack_output(arguments, output_dir):
         checks=dict(reference_screen='passed', checks=dict(check_status(result['metrics']['checks']),
             independent_recomputation='passed'), report_path=str(output_dir/'attack-independent.json'),
             physical_avoidance='undetermined'),
-        annotation_changes=dict(result['annotation_changes'],native_export_report_path=str(output_dir/'native_attack/export-report.json')), simulation_input=native['simulation_input'], rendered_videos={},
+        annotation_changes=dict(result['annotation_changes'],native_export_report_path=str(output_dir/'native_attack/export-report.json')), simulation_input=native['simulation_input'], native_export=native_export_view(native), rendered_videos={},
         pdm_probe_result_path=result.get('pdm_probe_result_path'),
         vadv2_probe_result_path=result.get('vadv2_probe_result_path'),
         policy_collision_report=None if policy_probe is None else policy_probe['collision_report'])
 
 
 def ego_output(arguments, output_dir):
+    if arguments.get('export_only'):
+        from completed_expert_export import reexport
+        return reexport(arguments, output_dir)
     attack = arguments['attack_result']
     scene = Path(attack['frozen_scene_path'])
     # Follow the submitted object revision rather than the first search directory.
@@ -304,7 +325,7 @@ def ego_output(arguments, output_dir):
             report_path=str(output_dir/'defense-independent.json'),
             physical_avoidance='undetermined'),
         annotation_changes=dict(operation='export_ego_trajectory', frames_json_modified=False,native_export_report_path=str(output_dir/'native_expert/export-report.json')),
-        simulation_input=native['simulation_input'], expert_motion_summary=expert_motion_summary, ilft_training_data=None,
+        simulation_input=native['simulation_input'], native_export=native_export_view(native), expert_motion_summary=expert_motion_summary, ilft_training_data=None,
         rendered_videos=({'manual_explained': str(Path(render['pipeline_output_dir'])/'manual-explained.mp4')}
             if render.get('pipeline_output_dir') else {}))
 
@@ -313,6 +334,7 @@ def main():
     payload = json.load(sys.stdin)
     output_dir = Path(payload['output_dir']).resolve()
     os.environ['ADVERSARIAL_EXPERIMENTS_ROOT'] = str(output_dir)
+    os.environ['ADVERSARIAL_CONTINUATION_ROOT'] = str(output_dir.parent.parent)
     # The host adapter supplies the public path; standalone runs stay in output.
     os.environ.setdefault('ADVERSARIAL_FULL_PIPELINE_ROOT', str(output_dir / 'rendered'))
     output_dir.mkdir(parents=True, exist_ok=True)

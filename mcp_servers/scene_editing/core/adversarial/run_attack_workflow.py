@@ -19,7 +19,7 @@ from shapely.geometry import LineString
 from attack_tool_contract import candidate_eligibility, constructor_exhaustion, revision_evidence, trajectory_tools
 from model_context import compact_model_context
 from attack_editor import AttackEditor, read_seed, write_trajectory
-from attack_configuration import normalize_constraints
+from attack_configuration import normalize_constraints, same_scene_constraints
 from ego_road_checks import check_drivable_area_official, load_official_drivable
 from experiment_runtime import ROOT, atomic_json, experiments_root
 from run_ego_decision_agent import image_part
@@ -34,6 +34,8 @@ from initial_motion_precheck import initial_state_precheck
 from attack_stop_policy import repetition
 from action_validation import prevalidate_action, invalid_action_result
 from agent_tool_view import compact_action_feedback
+from attack_budget import BudgetedArchive, AttackBudgetExhausted, constructor_budget_path
+from attack_plan_options import shared_auto_session
 
 
 def function_tool(name, description, properties, required=None):
@@ -77,16 +79,13 @@ TRAJECTORY_TOOLS.insert(0, function_tool('construct_attack_candidates',
     'New first calls use seed_000. Further calls truly start from parent controls. '
     'Optional edit_window_s limits changed control knots; preserve_outside_window additionally requires reconnection '
     '(outside position<=0.05m, yaw<=0.05rad, velocity<=0.1m/s); failure is reported, never spliced away. '
-    'Near miss stays contact-free, >=0.15m clearance, <=2m event gap; contact requires first sampled overlap in window. '
-    'Either accepts one of these two events within the window, never absence of interaction. '
+    'No interaction category or fixed proximity gate is required. Review measured geometry against the task. '
     'reason is explanatory only: all numeric requirements must appear in objective. '
     'Returns fully checked candidates separately from optimization guidance. Motion may be edited from edit_start_s (0s in new runs). No implicit 3-second event delay applies; respect explicit task windows and physical/map checks.',
     {'parent_candidate_id':{'type':'string'},
      'objective':dict(type='object', properties={
-         'interaction':dict(type='string', enum=['near_miss','contact','either']),
-         'interaction_window_s':INTERVAL,
          'keyframes':dict(type='array', items=KEYFRAME, minItems=0, maxItems=6)},
-         required=['interaction'],additionalProperties=False),
+         required=[],additionalProperties=False),
      'edit_window_s':INTERVAL, 'preserve_outside_window':{'type':'boolean'},
      'max_candidates':dict(type='integer',minimum=1,maximum=3), 'reason':REASON},
     required=['parent_candidate_id','objective','max_candidates','reason']))
@@ -105,6 +104,13 @@ trajectory using generic tools. For a new object choose a plausible initial cent
 this straight-motion seed is an initial proposal that may be edited from the first editable time (0s in
 current runs); only the t=0 pose is fixed. Choose a safe
 initial pose with space for a valid early trajectory. Final candidates must pass their explicit task, road and motion checks.
+When plan_options are supplied, compare them once and choose a promising existing or added actor;
+option order is not a quality rank. You may adapt an option within the unchanged scene mechanism.
+Use optional option_id and explain the actual choice/deviation in reason. Do not run all alternatives.
+previous_object_feedback contains real failures: reconsider unsupported targets and use an added
+vehicle when that resolves a placement or inherited-state problem. Only explicit required_operation
+and required_track are hard object requirements. Existing t=0 poses cannot be relocated; a newly
+placed stationary car should use add_vehicle with speed_mps=0 and a supported initial pose.
 Coordinates are metres in the initial ego frame: x forward, y left, yaw counterclockwise radians.
 Consider the full ego timeline and stopped traffic before selecting the initial state. A safe initial
 pose alone does not guarantee room to merge later. Use vehicle_planning_hints to compare
@@ -112,58 +118,34 @@ stopping/turning space with observed front traffic; choose a lower speed or smal
 when space is tight. Avoid choosing a speed and side offset that
 would require a late backward correction. If no suitable object or placement can be selected within current tools/budget, finish_search with measured reasons. Provide one native tool call per turn."""
 
-EDIT_PROMPT = """If the selected object/seed leaves no feasible approach, request_object_reselection once with measured reasons. The controller creates an explicit new branch and carries spent search budget.
-Only currently available tools may be called. If the cumulative constructor evaluation budget is exhausted and no candidate passes trajectory checks plus fixed task requirements, the controller ends attack search with a measured refusal. A candidate awaiting PDM remains available for checking and submission.
-When constraints.task_contract is present it contains explicit task checks; read its provenance.
-Do not invent user requirements from planning preferences. An unspecified window covers the policy's
-allowed event interval (from 0s for new runs), and keyframes are optional. For stationary_target there are no trajectory degrees of freedom:
-evaluate seed_000, inspect and submit if passing, or request a new placement branch. Never call a motion
-constructor for a stationary target. Measured geometry overrides your mental estimate of contact time.
-Road coverage does not certify lane identity; report lane evidence unknown unless verified.
-Your objective keyframes are planning preferences only. Changing preferences never changes task acceptance.
-Read construction_goal.task_contract evidence separately from preferences. Physical/map checks stay hard.
-Use one or two broad keyframes and keep a useful parent's controls. Do not move a lead into another lane
-or invent an ego overtake to satisfy near_miss. Contact and near_miss may both satisfy an 'either' contract.
-The recorded ego is not the later expert defense. When the task permits either interaction, recorded-ego
-contact can be the intended attack; do not add a contact-free requirement or declare the task infeasible
-solely because the recorded ego drives into a slowing lead. Preserve every explicit task and physical check.
-When reference requirements and enabled policy self-tests pass, inspect and submit. Main Agent receives the frozen attack and its exact-version evidence; no legacy PDM call is required.
-Choose the next tool from measured failures. Let the numerical constructor solve controls; avoid lengthy
-manual trajectory calculations. Explain the next action briefly.
-Edit only the selected target; ego and other actors replay recorded observations.
-If revision_feedback supplies native policy-collision or policy_behavior_summary measurements, distinguish that tested policy trajectory from the recorded ego. Inspect stopped_detected, progress_ratio_vs_recorded, signed_yaw_change_deg and the actual trajectory. These are measurements, not automatic maneuver-completion flags or percentage gates. Waiting can be a legitimate intermediate action. Judge the original attack goal from the scene and actual contact evidence; for a collision goal, a safe stop without contact does not establish success. Revise timing/lateral encroachment/dynamics using measured clearance and policy speed rather than repeating tighter spacing into the same stop. Do not repeat the same controls unchanged. Follow the enabled policy self-test before submission. PDM zero or road failure alone does not achieve a target-collision goal. Keep the original task contract and physical/map checks.
-Do not confuse body center distance with bumper clearance. An aligned near_miss needs forward center
-distance at least half the sum of body lengths plus clearance. If recorded ego later drives through a
-stationary lead, near_miss is impossible without moving that lead out; contact mode can represent
-this intended attack while later ego defense is a separate stage. Do not invent evasive motion merely
-to satisfy near_miss when the instruction requests a stationary lead. Prefer one or two broad,
-realistically achievable keyframes first; narrow multi-stage objectives make optimization harder.
-For moving targets, first call construct_attack_candidates. Declare structured keyframes (relative body-center forward/left,
-heading difference radians, speed m/s), each inside an allowed task time window with a hold duration.
-Each keyframe's hold_duration_s must be >=0.1s and no longer than its own time_window_s.
-Use goals appropriate to the instruction: a stationary lead needs speed~0 and forward relation, not a
-side-entry predicate; crossing needs positions on both sides, opposite approach needs heading near pi.
-Motion may be edited at any scene time. There is no implicit 3-second edit or attack-event delay. Interaction timing follows the explicit task contract. Do not invent a reaction delay or a narrower hard window. Contact is optional unless
-explicitly required; near_miss must remain contact-free. Do not replace a requested behavior with mere proximity.
-The constructor starts from parent controls, uses road/observed obstacles during numerical optimization,
-and strictly checks finalists. On refinement keep the same objective unless deliberately revising your plan.
-Set edit_window_s for local control changes. preserve_outside_window requires reconnection within stated
-tolerances; a failed reconnection needs an explicitly larger window or a rejected edit. Read local_preservation.
-reason is explanatory: only structured objective fields guide optimization. Body-relative objective positions
-use EGO BODY center, while absolute control points use initial-ego scene coordinates.
-Read separate reference_screen_passed and construction_goal, keyframe actual values, diagnostic measurements
-and suggestions. A fallback is not completion. objective_cost is a mixed-unit ranking cost, not metres.
-Use edit_speed_profile for timed signed speed targets and edit_route for smooth lateral offsets and return.
-These edits preserve the chosen parent only through the chosen start_time_s. New runs may start at 0s and edit the observation history, with no implicit 3-second event delay. edit_route computes
-heading/curvature; its default preserve_speed spends some forward progress on lateral motion, while
-preserve_progress can increase total speed. A return removes the lateral offset, not necessarily same-time
-position lag. Inspect actual continuous acceleration/normal component and inherited task-goal checks.
-No implicit route extension, retracking or changed objective. Preview does not create a candidate.
-Read decision_summary before raw edit evidence. recommended_previews contain complete conditional arguments to preview, not automatic goal changes; create_candidate_call repeats a passed preview with preview_only=false. When a recommendation matches the task and budget remains, preview it before deciding the modified behavior is unsuitable; selecting another known route still rechecks all geometry and task requirements.
-A stationary car cannot move sideways or rotate in place; prepare a feasible moving parent first. Inspect and receive a promising candidate image before submitting. Submit an
-existing passing candidate without unnecessary edits. Stop honestly with finish_search if the tools cannot
-meet the objective. Use one native tool call per turn; reference geometry is not physical execution."""
-
+EDIT_PROMPT = """Edit the selected target vehicle using the scene BEV, candidate diagrams and measured feedback.
+DECIDE: identify the conflict, compare current candidates, then choose one concrete tool action.
+Do not reconstruct a whole scene from coordinates or repeat the numeric reports in your response.
+INPUTS: scene_layout contains a small relevance summary; all actors and full-precision trajectories remain
+in deterministic checks and scene-evidence.json. Pictures show geometry of this scene version, not a camera
+render or tested policy rollout. Recorded ego is a reference. Original cameras are pre-edit observations.
+GOALS: explicit caller task_contract and configured event window are hard; interaction quality is for your judgment. New attack events default to 1.5–7.5s;
+editing/braking/steering may start at 0s. Agent-generated keyframes are optimization preferences unless an
+explicit contract makes them required. Read acceptance_basis and actual measurements; explain whether a
+candidate still meets the qualitative instruction when a preference misses. Do not change caller requirements.
+TOOLS: first use construct_attack_candidates with achievable optional motion keyframes. No contact/near-miss/either class is used.
+Only structured fields guide construction; reason is a brief explanation. Every hold_duration_s must fit its
+own time_window_s. Use edit_speed_profile for signed speed targets; use edit_route for smooth lateral offsets
+and return. Select an objective-bearing parent exposed by the tool enum. Preview checks do not create a candidate.
+Read decision_summary and recommended_previews; an explicit goal revision is different from a numeric repair.
+Body-relative goal positions use ego BODY center; scene coordinates use initial ego forward/left. Center
+separation is not bumper clearance. Reference contact and clearance are measured facts, not mandatory event classes or proof that VADv2 will crash. Do not make a stopped car slide or rotate in place.
+CHECK: physical/map checks and native-replay checks must pass. Generated and replayed paths can differ, so
+use both reports. Speed limits here are a named research profile, not certified vehicle capabilities.
+REVIEW: initial layout and newly constructed candidate pictures are supplied automatically. Inspect another
+candidate when needed. The diagram must actually be delivered before submission; a policy-test overlay or
+layout-only BEV does not satisfy that review. No unnecessary edit is required after the task is satisfied.
+If an enabled policy self-test is configured, complete its exact-candidate test; PDM zero or road failure alone
+is not target collision. When policy tests are disabled, report reference validity without claiming policy defeat.
+BUDGET: read cumulative_api_budget, constructor_budget and stage_seconds_remaining. In finalization_only,
+choose an existing qualified candidate for review/submission or finish_search; do not restart construction.
+A new tool call cannot reset cumulative budgets. If no candidate can meet the task, finish honestly with the
+measured cause. Use one exposed native tool call and a short reason per turn."""
 
 
 STATIC_EDIT_PROMPT = """Validate the selected stationary placement. Only the selected target is added or
@@ -233,7 +215,12 @@ TRAJECTORY_TOOLS.append(function_tool('probe_pdm',
 TRAJECTORY_TOOLS.append(function_tool('evaluate_candidate',
     'Return measured full-horizon reference geometry and task checks for an existing candidate. No optimization.',
     {'candidate_id':{'type':'string'}}))
-TRAJECTORY_TOOLS.append(function_tool('request_object_reselection', 'Request one bounded return to object selection when geometry fails, PDM defends safely, or PDM fails but bounded defense feedback found no witness; retain spent PDM/search budgets.', {'reason':REASON}))
+EDIT_PROMPT += (' When plan_options are present, plan_choice describes the chosen suggestion, not another hard contract. '
+    'If inherited state or fixed t=0 placement makes this actor unsuitable, request_object_reselection rather than repeatedly constructing with the same unsupported state. '
+    'The next object-selection step can change to another real vehicle or an added vehicle. Switching shares API, construction, action and stage-time budgets; do not reset them. '
+    'A failed candidate can still be repaired; switching is an option, not a requirement to abandon it.')
+
+TRAJECTORY_TOOLS.append(function_tool('request_object_reselection', 'Return to object selection within the remaining switching budget when the current actor/placement is unsuitable. Auto alternatives may change existing/added operation; explicit caller locks stay binding. Retain spent API, construction, action and policy-test budgets.', {'reason':REASON}))
 
 def decode_call(attempt):
     response = json.loads((attempt / 'response.json').read_text())
@@ -303,6 +290,9 @@ def check_initial_relation(times,seed,angles,ego,ego_yaw,size,requirement):
 @timed_operation('attack.object_selection', 'folder')
 def select_object(scene, folder, instruction, assets, constraints, archive,
                   timeout_seconds, max_tokens, required_operation=None, required_track=None):
+    from attack_plan_options import selection_tools, choice
+    options=constraints.get('plan_options',[])
+    object_tools=selection_tools(OBJECT_TOOLS,assets,required_operation,required_track,options)
     frames = json.loads((scene / 'metadata/frames.json').read_text())
     times, ego, yaw = ego_path_from_frames(frames)
     actors = observed_objects_from_frames(frames)
@@ -320,6 +310,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
     ego_speeds = np.linalg.norm(np.diff(ego, axis=0), axis=1) / np.diff(times)
     context = dict(instruction=instruction, scene=str(scene), assets=assets,
         existing_vehicles=catalog, required_operation=required_operation, required_track=required_track,
+        plan_options=options,previous_object_feedback=constraints.get('object_selection_feedback',[]),
         constraints=constraints,
         ego_reference_point='rear axle',ego_body_center_shift_m=(EGO_FRONT-EGO_REAR)/2,
         ego_body_dimensions_m=dict(length=EGO_FRONT+EGO_REAR,width=EGO_WIDTH,front_from_rear_axle=EGO_FRONT,rear_from_rear_axle=EGO_REAR),
@@ -338,11 +329,19 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
         role='Select an actor and initial state; trajectory behavior is decided in the next stage')
     folder.mkdir(parents=True, exist_ok=False)
     atomic_json(folder / 'input.json', context)
-    atomic_json(folder / 'tools.json', OBJECT_TOOLS)
+    atomic_json(folder / 'tools.json', object_tools)
+    from decision_scene_view import render_overview, actor_view, GUIDANCE
+    overview=render_overview(times,ego,yaw,actors,road,folder/'scene-overview.png',required_track,event_window_s=constraints.get('event_window_s'))
+    decision_context=dict(context)
+    decision_context.pop('actors_at_start',None)
+    decision_context['constraints']={key:value for key,value in constraints.items()
+        if key not in ('plan_options','object_selection_feedback')}
+    decision_context['scene_layout']=actor_view(times,ego,actors,required_track)
+    decision_context['visual_guidance']=GUIDANCE
     feedback = None
     for turn in range(1, 5):
         prompt=OBJECT_PROMPT + '\n' + json.dumps(
-            compact_model_context(dict(context=context, last_tool_result=feedback)), ensure_ascii=False, separators=(',', ':'))
+            compact_model_context(dict(context=decision_context, last_tool_result=feedback)), ensure_ascii=False, separators=(',', ':'))
         if constraints.get('pdm_defense_feedback'):
             prompt=DEFENSE_FEEDBACK_PROMPT+'\n'+prompt
         review=constraints.get('pdm_reselection_feedback')
@@ -353,15 +352,22 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
         content=prompt if not review else [dict(type='text',text=prompt),image_part(review['overlay_path'])]
         messages = [{'role':'user', 'content':content}]
         print('Object selection turn', turn, flush=True)
+        if turn == 1:
+            if isinstance(content,str): content=[{'type':'text','text':content}]
+            messages=[{'role':'user','content':[*content,image_part(overview)]}]
         _, attempt = archive.complete(f'object_{turn:02d}', messages, total_seconds=timeout_seconds,
             no_output_seconds=min(60, timeout_seconds), retries=2,
             max_tokens=max_tokens, extra_body={'thinking':{'type':'enabled'}}, reasoning_effort=reasoning_effort(),
-            tools=OBJECT_TOOLS, tool_choice='required', parallel_tool_calls=False, allow_tool_calls=True)
+            tools=object_tools, tool_choice='required', parallel_tool_calls=False, allow_tool_calls=True)
         call = None
         name = 'none'
         tool_started = perf_counter()
         try:
             call, name, args = decode_call(attempt)
+            selection_args=dict(args)
+            option_id=args.pop('option_id',None)
+            if option_id is not None and option_id not in {item['option_id'] for item in options}:
+                raise ValueError('Unknown coarse option_id')
             if not isinstance(args.get('reason'), str) or not args['reason'].strip():
                 raise ValueError('A nonempty selection reason is required')
             if name == 'finish_search' and set(args) == {'reason'}:
@@ -453,6 +459,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
             write_trajectory(seed_path, times, seed, angles, size)
             selection = dict(schema_version='attack_object.v1', status='completed', scene=str(scene),
                 instruction=instruction, target=target, seed_trajectory_path=str(seed_path),
+                plan_choice=choice(options,selection_args,target) if options else None,
                 selection_reason=args['reason'],initial_relation=initial_relation, annotation_changes=dict(operation='none',
                     note='Identity and motion seed only; full scene is materialized after trajectory acceptance'))
             forecast_editor = AttackEditor(scene, selection, folder / f'placement_check_{turn:02d}', constraints)
@@ -472,6 +479,8 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
 
 @timed_operation('attack.agent_loop', None)
 def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_turns, stage_timeout_s=420):
+    from attack_budget import BudgetedArchive, AttackBudgetExhausted
+    from attack_tool_contract import candidate_eligibility
     folder = editor.run_dir
     atomic_json(folder / 'input.json', dict(selection=selection, constraints=editor.constraints))
     if editor.constraints.get('vadv2_self_test'):
@@ -496,24 +505,47 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
         and editor.pdm_probe is None and editor.policy_probe is None
         and candidate_eligibility(seed['result'])['pdm_probe_eligible'])
     feedback = editor.public(editor.history[-1]['candidate_id']) if editor.history else editor.public('seed_000')
-    pending = None
+    from decision_scene_view import prepare_attack_scene
+    pending = prepare_attack_scene(editor,folder)
     imported_count = len(editor.history)
     deliveries = []
     evaluated_candidates = set()
     stop = 'action_budget_exhausted'
     termination = None
-    deadline = perf_counter() + stage_timeout_s
+    if editor.constraints.get('plan_options'):
+        from attack_plan_options import editor_deadline
+        deadline=editor_deadline(stage_timeout_s)
+    else:deadline = perf_counter() + stage_timeout_s
+    finalization_grace_used = False
     previous_failure = None
     try:
-        for turn in range(1, max_turns + 1):
+        for turn in range(1, max_turns + 3):
             remaining = deadline - perf_counter()
+            qualified=[key for key,node in editor.nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible']]
+            session_budget=archive.context() if isinstance(archive,BudgetedArchive) else None
+            closing = bool(qualified) and (remaining < 60 or turn > max_turns or finalization_grace_used
+                or session_budget is not None and (session_budget['requests_remaining']<=2 or session_budget['api_seconds_remaining']<=90))
+            if turn > max_turns and not closing:
+                break
+            if remaining <= 0 and qualified and not finalization_grace_used:
+                deadline=perf_counter()+90
+                remaining=90
+                finalization_grace_used=True
+                closing=True
             if remaining <= 0:
                 stop = 'stage_timeout_exhausted'
                 termination = dict(reason='Attack trajectory stage exceeded its wall-clock budget.',
                     stage_timeout_seconds=stage_timeout_s,scope='current_tools_and_budget',global_infeasibility_proven=False)
                 break
             context = dict(instruction=selection['instruction'], **editor.context(),
-                           last_tool_result=feedback, turns_remaining=max_turns - turn + 1)
+                           plan_choice=selection.get('plan_choice'),
+                           last_tool_result=feedback, turns_remaining=max(0,max_turns - turn + 1),
+                           finalization_only=closing,stage_seconds_remaining=round(remaining,1))
+            if closing:
+                context['finalization_instruction']='Review and submit an existing qualified candidate, or finish honestly. No more construction or edits.'
+            if isinstance(archive,BudgetedArchive):
+                archive.closing=closing
+                context['cumulative_api_budget']=session_budget
             termination = constructor_exhaustion(editor.nodes,context['constructor_budget'])
             if termination is not None:
                 stop = termination['stop_reason']
@@ -524,19 +556,28 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 prompt=PDM_PROBE_PROMPT+'\n'+prompt
                 if editor.constraints.get('pdm_defense_feedback'):
                     prompt=DEFENSE_FEEDBACK_PROMPT+'\n'+prompt
-            content = prompt if pending is None else [{'type':'text', 'text':prompt}, image_part(pending['path'])]
+            pending_records=[] if pending is None else pending.get('batch',[pending])
+            content = prompt if not pending_records else [{'type':'text', 'text':prompt}, *[image_part(record['path']) for record in pending_records]]
             if editor.policy_probe is not None:
                 if isinstance(content,str):content=VADV2_PROBE_PROMPT+'\n'+content
                 else:content[0]['text']=VADV2_PROBE_PROMPT+'\n'+content[0]['text']
             probe_context = editor.pdm_probe.context() if editor.pdm_probe is not None else {}
             if editor.policy_probe is not None:probe_context=editor.policy_probe.context()
-            delivered = getattr(editor,'inspected',set()) | ({pending['candidate_id']} if pending is not None
-                and pending.get('purpose') not in ('pdm_probe','vadv2_probe') else set())
+            delivered = getattr(editor,'inspected',set()) | {record['candidate_id'] for record in pending_records
+                if record.get('purpose') not in ('pdm_probe','vadv2_probe','scene_layout')}
             turn_tools = trajectory_tools(available_tools,editor.nodes,evaluated_candidates,
                 set(probe_context.get('candidates',{})),probe_context.get('remaining',0),
                 constructor_remaining=context.get('constructor_budget',{}).get('remaining_evaluations'),
-                reselections_remaining=max(0,1-editor.constraints.get('object_reselection_count',0)),
+                reselections_remaining=max(0,(2 if editor.constraints.get('plan_options') else 1)-editor.constraints.get('object_reselection_count',0)),
                 inspected=delivered)
+            if closing:
+                turn_tools=[tool for tool in turn_tools if tool['function']['name'] in
+                    {'inspect_trajectory','submit_candidate','probe_pdm','probe_vadv2','finish_search'}]
+                for tool in turn_tools:
+                    if tool['function']['name']=='submit_candidate':
+                        tool['function']['parameters']['properties']['candidate_id']['enum']=[key for key in qualified if key in delivered]
+                turn_tools=[tool for tool in turn_tools if tool['function']['name']!='submit_candidate'
+                    or tool['function']['parameters']['properties']['candidate_id']['enum']]
             from agent_tool_view import creation_contract
             choice, turn_tools = creation_contract(turn_tools, feedback)
             if fast_stationary:
@@ -546,8 +587,8 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
             elif choice is None:
                 choice = 'auto'
             turn_names = {tool['function']['name'] for tool in turn_tools}
-            if (turn == 1 and not imported_count and not editor.constraints.get('stationary_target')
-                    and 'construct_attack_candidates' in turn_names):
+            if (not closing and turn == 1 and not imported_count and not editor.constraints.get('stationary_target')
+                    and not editor.constraints.get('agent_decides_interaction') and 'construct_attack_candidates' in turn_names):
                 choice = {'type':'function', 'function':{'name':'construct_attack_candidates'}}
             elif turn == 1 and imported_count and not fast_stationary:
                 choice = {'type':'function', 'function':{'name':'inspect_trajectory'}}
@@ -561,9 +602,10 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 extra_body={'thinking':{'type':'enabled'}}, reasoning_effort=reasoning_effort(),
                 tools=turn_tools, tool_choice=choice, parallel_tool_calls=False, allow_tool_calls=True)
             if pending is not None:
-                if pending.get('purpose') not in ('pdm_probe','vadv2_probe'):
-                    editor.inspected.add(pending['candidate_id'])
-                deliveries.append(dict(candidate_id=pending['candidate_id'], request_path=str(attempt), turn=turn))
+                for record in pending_records:
+                    if record.get('purpose') not in ('pdm_probe','vadv2_probe','scene_layout'):
+                        editor.inspected.add(record['candidate_id'])
+                    deliveries.append(dict(candidate_id=record['candidate_id'],purpose=record.get('purpose'),request_path=str(attempt), turn=turn))
                 pending = None
             call = None
             name = 'none'
@@ -592,6 +634,11 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 elif name == 'construct_attack_candidates':
                     prevalidate_action(name, args, editor)
                     feedback = editor.construct_pool(args)
+                    candidates=feedback.get('candidates',[])
+                    review=[row for row in candidates if row.get('pdm_probe_eligible')] or candidates
+                    records=[editor.inspect(row['candidate_id']) for row in review[:2]]
+                    if records:
+                        pending=dict(batch=records)
                 elif name == 'construct_trajectory' and set(args) == {'points', 'end_velocity_mps', 'reason'}:
                     feedback = editor.construct(args)
                 elif name in ('edit_speed_profile','edit_route'):
@@ -610,7 +657,7 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                         editor.policy_probe.require_reselection_evidence()
                     if editor.pdm_probe is not None:
                         editor.pdm_probe.require_reselection_evidence()
-                    if editor.constraints.get('object_reselection_count', 0) >= 1:
+                    if editor.constraints.get('object_reselection_count', 0) >= (2 if editor.constraints.get('plan_options') else 1):
                         raise ValueError('Object reselection budget exhausted')
                     feedback = dict(status='object_reselection_requested', reason=args['reason'])
                     stop = 'object_reselection_requested'
@@ -648,11 +695,17 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 if termination is not None:
                     stop = termination['stop_reason']
                     break
+    except AttackBudgetExhausted as error:
+        stop='cumulative_attack_api_budget_exhausted'
+        termination=dict(reason=str(error),scope='main_agent_execution_scope',global_infeasibility_proven=False)
     except Exception as error:
-        if perf_counter() >= deadline and type(error).__name__ in {'TimeoutExpired', 'TimeoutError', 'APITimeoutError'}:
-            stop = 'stage_timeout_exhausted'
-            termination = dict(reason='Attack trajectory stage exceeded its wall-clock budget.',
-                stage_timeout_seconds=stage_timeout_s,scope='current_tools_and_budget',global_infeasibility_proven=False)
+        timed_out=(getattr(error,'failure_kind',None)=='request_wall_time_exceeded'
+            or type(error).__name__ in {'TimeoutExpired','TimeoutError','APITimeoutError','RequestDeadlineExceeded'})
+        if timed_out:
+            stop = 'stage_timeout_exhausted' if perf_counter() >= deadline-1 else 'request_timeout_exhausted'
+            termination = dict(reason=('Attack trajectory stage exceeded its wall-clock budget.' if stop=='stage_timeout_exhausted' else 'A model request exceeded its wall-clock budget; saved candidates remain available.'),
+                stage_timeout_seconds=stage_timeout_s,scope='current_tools_and_budget',global_infeasibility_proven=False,
+                failure_kind=getattr(error,'failure_kind',None),archive_ref=getattr(error,'archive_ref',None))
         else:
             stop = 'request_or_execution_failed'
             raise
@@ -665,12 +718,43 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
             candidate_count=len(editor.nodes), image_deliveries=deliveries,
             imported_candidate_count=imported_count, new_candidate_count=len(editor.history) - imported_count,
             constructor_budget=editor.context()['constructor_budget'],
+            api_budget=archive.context() if isinstance(archive,BudgetedArchive) else None,
+            resumable_candidate_ids=[key for key,node in editor.nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible']],
+            finalization_grace_used=finalization_grace_used,
             annotation_changes=dict(operation='export_target_trajectory', frames_json_modified=False),
             physical_collision='undetermined'))
     return editor.submitted
 
 
+def reselect_object(scene,output,instruction,assets,config,editor,summary,reason,
+                    timeout_seconds,max_tokens,max_turns,required_operation,required_track):
+    from attack_plan_options import reselection_limit
+    used=len(list((editor.run_dir/'tool_calls').glob('turn_*')))
+    remaining_turns=max_turns-used
+    count=config.get('object_reselection_count',0)
+    if remaining_turns<1 or count>=reselection_limit(config):
+        return dict(status='not_submitted',stop_reason='object_reselection_budget_exhausted',
+            reason='Object switching or editing action budget exhausted; no accepted scene was produced.')
+    feedback=list(config.get('object_selection_feedback',[]))
+    feedback.append(dict(operation=editor.target['operation'],target_track=editor.target['track_id'],
+        reason=str(reason)[:700],failed_checks=editor.nodes['seed_000']['result'].get('failed_checks',[])))
+    revised=dict(config,object_reselection_count=count+1,object_reselection_reason=reason,
+        object_selection_feedback=feedback,
+        inherited_constructor_budget={k:editor.context()['constructor_budget'][k] for k in ('calls','evaluations')})
+    if editor.pdm_probe is not None:
+        latest=editor.pdm_probe.context()['latest_feedback']
+        if latest is not None:revised['pdm_reselection_feedback']=latest
+    if editor.policy_probe is not None:
+        latest=editor.policy_probe.context()['latest_feedback']
+        if latest is not None:revised['revision_feedback']=dict(stage='native_vadv2',outcome='target_not_hit',evidence=latest,
+            guidance='Revise the original task using actual VADv2 collision feedback')
+    followup=output/f'object_revision_{count+1:02d}'
+    child=run(scene,followup,instruction,assets,revised,timeout_seconds,max_tokens,remaining_turns,required_operation,required_track)
+    return dict(status='continued_in_object_revision',followup_run=str(followup),followup_status=child['status'])
+
+
 @timed_operation('attack.workflow', 'output')
+@shared_auto_session
 def run(scene, output, instruction, assets=None, constraints=None, timeout_seconds=480,
         max_tokens=12288, max_turns=6, required_operation=None, required_track=None, continue_from=None):
     scene, output = Path(scene).resolve(), Path(output).resolve()
@@ -679,6 +763,13 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
     if not isinstance(instruction, str) or not instruction.strip():
         raise ValueError('A nonempty user instruction is required')
     config = normalize_constraints(constraints)
+    if continue_from is not None and config.get('plan_options'):
+        prior_path=Path(continue_from)/'input.json'
+        if prior_path.is_file():
+            saved=json.loads(prior_path.read_text()).get('constraints',{})
+            if not same_scene_constraints(saved,config):raise ValueError('Continuation constraints differ')
+            for key in ('object_reselection_count','object_reselection_reason','object_selection_feedback'):
+                if key in saved:config[key]=saved[key]
     if config.get('vadv2_self_test'):
         if config.get('pdm_self_check'):raise ValueError('Choose VADv2 self-test or legacy PDM, not both')
         config.setdefault('vadv2_probe_root',str(output/'vadv2-probes'))
@@ -734,7 +825,9 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
             raise ValueError('Difficulty search starts a new explicit branch; it cannot resume old Agent requests')
         return run_search(scene,output,instruction,assets,config,required_operation,required_track)
     output.mkdir(parents=True)
+    from attack_budget import AUTO_SESSION_ROOT
     atomic_json(output / 'input.json', dict(schema_version='attack_workflow.v1', scene=str(scene),
+        auto_session_root=AUTO_SESSION_ROOT.get(),
         instruction=instruction, assets=assets, constraints=config, attack_difficulty=difficulty, required_operation=required_operation,
         required_track=required_track, reasoning_effort=reasoning_effort(), timeout_seconds=timeout_seconds,
         max_tokens=max_tokens, max_turns=max_turns,
@@ -742,20 +835,30 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
     profile = load_llm_profile()
     client = OpenAI(api_key=profile['api_key'], base_url=profile['base_url'], max_retries=0,
         http_client=httpx.Client(trust_env=False, follow_redirects=False, timeout=float(timeout_seconds)))
-    archive = StreamingRequestArchive(output / 'requests', client, profile)
+    archive = BudgetedArchive(StreamingRequestArchive(output / 'requests', client, profile),output)
     summary = dict(schema_version='attack_workflow.v1', status='failed', physical_collision='undetermined',attack_difficulty=difficulty)
     stage = 'object_selection'
     try:
+        from attack_plan_options import selection_seconds
+        selection_timeout=selection_seconds(timeout_seconds) if config.get('plan_options') else timeout_seconds
+        if selection_timeout<=0:
+            record=dict(status='not_submitted',stop_reason='stage_timeout_exhausted',search_stage='object_selection',
+                reason='Shared attack editing wall-clock budget exhausted before another object choice.')
+            (output/'object_selection').mkdir(exist_ok=True)
+            atomic_json(output/'object_selection/output.json',record)
+            summary.update(record)
+            return summary
         if continue_from is None:
             selection = select_object(scene, output / 'object_selection', instruction, assets, config,
-                archive, timeout_seconds, max_tokens, required_operation, required_track)
+                archive, selection_timeout, max_tokens, required_operation, required_track)
         else:
             import shutil
             previous = Path(continue_from).resolve()
-            if previous == output or (experiments_root()).resolve() not in previous.parents:
+            continuation_root=Path(os.getenv('ADVERSARIAL_CONTINUATION_ROOT',str(experiments_root()))).resolve()
+            if previous == output or continuation_root not in previous.parents:
                 raise ValueError('Continuation source must be another experiments run')
             prior_input = json.loads((previous / 'input.json').read_text())
-            if Path(prior_input['scene']).resolve() != scene or prior_input['constraints'] != config or prior_input['instruction'] != instruction or prior_input['assets'] != assets or prior_input.get('required_operation') != required_operation or prior_input.get('required_track') != required_track:
+            if Path(prior_input['scene']).resolve() != scene or not same_scene_constraints(prior_input['constraints'],config) or prior_input['instruction'] != instruction or prior_input['assets'] != assets or prior_input.get('required_operation') != required_operation or prior_input.get('required_track') != required_track:
                 raise ValueError('Continuation scene, constraints and instruction must match')
             selection = json.loads((previous / 'object_selection/output.json').read_text())
             if selection.get('status') != 'completed':
@@ -773,6 +876,10 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
             return summary
         stage = 'trajectory_editing'
         editor = AttackEditor(scene, selection, output / 'trajectory_editing', config)
+        summary['plan_choice']=selection.get('plan_choice')
+        if config.get('plan_options'):
+            from attack_plan_options import editor_deadline
+            editor_deadline(stage_timeout)
         precheck = initial_state_precheck(editor)
         if precheck is not None:
             atomic_json(editor.run_dir/'output.json', dict(schema_version='attack_trajectory.v1',
@@ -781,6 +888,9 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
             summary.update(status='not_submitted',target=selection['target'],selected_candidate_id=None,
                 object_output=str(output/'object_selection/output.json'),
                 trajectory_output=str(editor.run_dir/'output.json'),initial_motion_precheck=precheck)
+            if config.get('plan_options'):
+                summary.update(reselect_object(scene,output,instruction,assets,config,editor,summary,precheck['reason'],
+                    timeout_seconds,max_tokens,max_turns,required_operation,required_track))
             return summary
         if continue_from is not None:
             for name in ('constructor-budget.json', 'construction_pools'):
@@ -788,7 +898,10 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
                 if source.is_dir():
                     shutil.copytree(source, editor.run_dir / name)
                 elif source.is_file():
-                    shutil.copyfile(source, editor.run_dir / name)
+                    destination=constructor_budget_path(editor.run_dir)
+                    if not destination.exists():
+                        destination.parent.mkdir(parents=True,exist_ok=True)
+                        shutil.copyfile(source,destination)
             for candidate in sorted((previous / 'trajectory_editing/candidates').glob('candidate_*')):
                 if not (candidate / 'operation.json').is_file() or not (candidate / 'trajectory.csv').is_file():
                     continue
@@ -811,7 +924,8 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
                             dict(source_candidate=str(candidate), verified_operation_replay=True))
         inherited = config.get('inherited_constructor_budget')
         if inherited is not None and continue_from is None:
-            atomic_json(editor.run_dir/'constructor-budget.json', inherited)
+            destination=constructor_budget_path(editor.run_dir)
+            if not destination.exists(): atomic_json(destination, inherited)
         selected = edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_turns,
             stage_timeout_s=stage_timeout)
         if editor.pdm_probe is not None:
@@ -823,7 +937,7 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
             if selected is not None:
                 summary['vadv2_probe_result_path']=editor.policy_probe.require_challenge(selected)['result_path']
         summary.update(status='not_submitted' if selected is None else 'reference_candidate_submitted',
-            target=selection['target'], selected_candidate_id=selected,
+            plan_choice=selection.get('plan_choice'),target=selection['target'], selected_candidate_id=selected,
             object_output=str(output / 'object_selection/output.json'),
             trajectory_output=str(output / 'trajectory_editing/output.json'))
         if selected is not None:
@@ -851,6 +965,11 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
                 annotation_changes=dict(operation='append_actor' if target['operation'] == 'add_vehicle' else 'update_actor',
                     fields=['anns.gt_boxes', 'anns.gt_velocity_3d'] +
                     (['anns.gt_names', 'anns.instance_tokens', 'anns.track_tokens'] if target['operation'] == 'add_vehicle' else [])))
+    except AttackBudgetExhausted as error:
+        summary.update(status='not_submitted',stop_reason='cumulative_attack_api_budget_exhausted',
+            reason=str(error),search_stage=stage,api_budget=archive.context())
+        atomic_json(output/stage/'output.json',dict(summary))
+        return summary
     except Exception as error:
         summary.update(status='failed', error_type=type(error).__name__, error=str(error)[:350])
         stage_output = output / stage / 'output.json'
@@ -863,31 +982,13 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
         atomic_json(output / 'output.json', summary)
     stage_result = json.loads((editor.run_dir/'output.json').read_text())
     if stage_result['stop_reason'] == 'object_reselection_requested':
-        used = len(list((editor.run_dir/'tool_calls').glob('turn_*')))
-        # Exchanges are stored as turn directories; no model or evaluation reset.
-        remaining_turns = max_turns-used
-        if remaining_turns < 1:
-            summary.update(status='not_submitted', stop_reason='action_budget_exhausted_before_reselection')
-        else:
-            reason = json.loads(sorted((editor.run_dir/'tool_calls').glob('turn_*/result.json'))[-1].read_text())['reason']
-            revised = dict(config, object_reselection_count=1, object_reselection_reason=reason,
-                           inherited_constructor_budget=editor.context()['constructor_budget'])
-            revised['inherited_constructor_budget'] = {k:revised['inherited_constructor_budget'][k] for k in ('calls','evaluations')}
-            if editor.pdm_probe is not None:
-                latest=editor.pdm_probe.context()['latest_feedback']
-                if latest is not None:
-                    revised['pdm_reselection_feedback']=latest
-            if editor.policy_probe is not None:
-                latest=editor.policy_probe.context()['latest_feedback']
-                if latest is not None:
-                    revised['revision_feedback']=dict(stage='native_vadv2',outcome='target_not_hit',
-                        evidence=latest,guidance='Revise the original task using actual VADv2 collision feedback')
-            followup = output/'object_revision_01'
-            child = run(scene, followup, instruction, assets, revised, timeout_seconds,
-                        max_tokens, remaining_turns, required_operation, required_track)
-            summary.update(status='continued_in_object_revision', followup_run=str(followup),
-                           followup_status=child['status'])
-        atomic_json(output/'output.json', summary)
+        reason=stage_result.get('reason')
+        if not reason:
+            reason=json.loads(sorted((editor.run_dir/'tool_calls').glob('turn_*/result.json'))[-1].read_text())['reason']
+        summary.update(reselect_object(scene,output,instruction,assets,config,editor,summary,reason,
+            timeout_seconds,max_tokens,max_turns,required_operation,required_track))
+        atomic_json(output/'output.json',summary)
+
     return summary
 
 

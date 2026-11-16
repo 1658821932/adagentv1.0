@@ -14,5 +14,7 @@ export async function resolveRunStatus(meta = {}, finalState = null, active = nu
   const end = Date.parse(meta.end_time);
   const duration = Number.isFinite(start) && (Number.isFinite(end) || alive)
     ? Math.max(0, ((Number.isFinite(end) ? end : Date.now()) - start) / 1000) : null;
-  return { status, active: Boolean(alive), duration_seconds: duration };
+  // Final state can be flushed just before Python actually exits. Keep composer
+  // submissions blocked during that brief interval, consistently with the launcher.
+  return { status, active: Boolean(alive || localAlive), duration_seconds: duration };
 }

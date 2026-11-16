@@ -49,6 +49,10 @@ def bounded_outcome(stage, detail, search_dir):
     if not attempts:
         attempts = [dict(evidence_path=str(archive), stop_reason=stop)]
     reason = detail.get('reason') or stored.get('reason') or (reasons[-1] if reasons else 'No accepted candidate was submitted within the current tools and search budget.')
+    detail=dict(detail,**{key:stored[key] for key in
+        ('api_budget','constructor_budget','resumable_candidate_ids') if key in stored})
+    detail['reuse_completed_from']=str(root.parents[1])
+    detail['retry_allowed']=not (stop.startswith('cumulative_') or stop=='constructor_budget_exhausted_without_qualified_candidate')
     return dict(schema_version='editing_stage.v1',stage=stage,
         status='unable_to_complete' if stage == 'attack_editing' else 'defense_not_found',
         mode='real',run_dir=str(directory.parent),reason=reason,stop_reason=stop,

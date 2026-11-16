@@ -5,6 +5,7 @@ import numpy as np
 
 from attack_objective import goal_cost
 from experiment_runtime import atomic_json
+from attack_budget import constructor_budget_path
 from vehicle_control_search import ControlSearch
 
 
@@ -20,7 +21,7 @@ def construct_pool(editor, arguments):
     if event is not None and (window[0] < event[0] or window[1] > event[1]):
         raise ValueError('Interaction window must stay inside configured event window')
     search = ControlSearch(editor, arguments)
-    path = editor.run_dir / 'constructor-budget.json'
+    path = constructor_budget_path(editor.run_dir)
     budget = json.loads(path.read_text()) if path.exists() else dict(evaluations=0, calls=0)
     remaining = min(MAX_INTERNAL_PER_CALL, MAX_INTERNAL_PER_RUN-budget['evaluations'])
     if remaining <= 0:

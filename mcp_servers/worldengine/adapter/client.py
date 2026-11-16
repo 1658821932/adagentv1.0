@@ -127,22 +127,8 @@ def run_policy(input_data: dict) -> dict:
         if completed.returncode:
             raise RuntimeError("RL annotation export failed; inspect "+str(task.logs/"rlft_annotations.log"))
         result.update(json.loads(completed.stdout))
-    # 本次仿真写出的相机视频（WE 会把 MP4 落到 projects/SimEngine/dbg/video_visualizer/）
-    videos = []
-    try:
-        viz = Path(WorldEngineConfig().project_root) / "projects/SimEngine/dbg/video_visualizer"
-        if viz.is_dir():
-            found = []
-            for path in viz.glob("*/*.mp4"):
-                try:
-                    if path.stat().st_mtime >= started_at - 2:
-                        found.append((path.stat().st_mtime, path))
-                except OSError:
-                    continue
-            for _, path in sorted(found)[:4]:
-                videos.append(str(path))
-    except Exception:
-        videos = []
+    from .policy_videos import collect_policy_videos
+    videos = collect_policy_videos(result['result_dir'],WorldEngineConfig().project_root,started_at)
     if videos:
         result["videos"] = videos
     return result

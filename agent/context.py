@@ -8,10 +8,10 @@ FIELDS = {
     "failure_analyzer": ("token","report_path","result_path"),
     "scene_instance_generator": ("scene_requirement","target_effect","candidates"),
     "video_retriever": ("video_path","source_file","source_segment","match_score","mode"),
-    "edit_planner": ("suitability","reasons","edit_plan","retrieval_suggestion","scene_id","scene_token","target_effect","attack_input"),
-    "attack_vehicle_editor": ("status","stage","mode","run_dir","scene_id","scene_token","operation","target_track","selected_candidate_id","frozen_scene_path","frames_path","trajectory_path","provenance_path","submission_path","simulation_input","rendered_videos","pdm_probe_result_path","vadv2_probe_result_path","policy_collision_report"),
-    "ego_trajectory_editor": ("status","stage","mode","run_dir","scene_id","scene_token","attack_run_dir","target_track","selected_candidate_id","selected_source","expert_trajectory_path","trajectory_metadata_path","conflict_brief_path","submission_path","simulation_input","expert_motion_summary","ilft_training_data","rendered_videos"),
-    "policy_runner": ("result_dir","policy_result","collision_report","evaluation_scope","pdm_subscores","policy_behavior_summary","rollout_dir","reward_dir","candidate_rewards_present","rlft_training_data","rlft_data_report","pdm_challenge"),
+    "edit_planner": ("suitability","reasons","edit_plan","edit_options","retrieval_suggestion","scene_id","scene_token","target_effect","attack_input"),
+    "attack_vehicle_editor": ("status","stage","mode","run_dir","scene_id","scene_token","operation","plan_choice","target_track","selected_candidate_id","frozen_scene_path","frames_path","trajectory_path","provenance_path","submission_path","simulation_input","native_export","rendered_videos","pdm_probe_result_path","vadv2_probe_result_path","policy_collision_report"),
+    "ego_trajectory_editor": ("status","stage","mode","run_dir","scene_id","scene_token","attack_run_dir","target_track","selected_candidate_id","selected_source","expert_trajectory_path","trajectory_metadata_path","conflict_brief_path","submission_path","simulation_input","native_export","expert_motion_summary","ilft_training_data","rendered_videos"),
+    "policy_runner": ("result_dir","policy_result","collision_report","evaluation_scope","pdm_subscores","policy_behavior_summary","rollout_dir","reward_dir","candidate_rewards_present","rlft_training_data","rlft_data_report","pdm_challenge","startup_timing_report"),
     "failure_case_filter": ("is_failure_case","pdm_scores_file","scene_count","failure_cases","scene_results"),
     "policy_trainer": ("checkpoint","training_mode","log_path","work_dir","epochs","final_loss","training_config","export_dir"),
 }
@@ -75,7 +75,8 @@ def summarize(tool, payload):
         if isinstance(detail,dict):
             result["recovery_feedback"]=pick(detail,("status","reason","stop_reason","revision_feedback",
                 "guidance","failed_requirements","measurements","reuse_completed_from",
-                "termination_evidence","request_count","attempt_count","remaining_budget"))
+                "termination_evidence","request_count","attempt_count","remaining_budget",
+                "api_budget","constructor_budget","resumable_candidate_ids","retry_allowed"))
     elif tool=="policy_runner":
         reports=payload.get("reports")
         if isinstance(reports,list):

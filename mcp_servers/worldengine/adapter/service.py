@@ -163,6 +163,8 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         "log_path": str(log_path),
         "reports": reports,
         "evaluation_scope": evaluation_scope,
+        "startup_timing_report": (str(result_dir/'startup_timing/summary.json')
+                                  if (result_dir/'startup_timing/summary.json').is_file() else None),
         "stdout_tail": completed.stdout[-4000:],
     }
 

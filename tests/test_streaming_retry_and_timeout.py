@@ -11,7 +11,7 @@ ADV_DIR = Path(__file__).resolve().parents[1] / "mcp_servers/scene_editing/core/
 if str(ADV_DIR) not in sys.path:
     sys.path.insert(0, str(ADV_DIR))
 
-from streaming_requests import NoOutputTimeout, StreamingRequestArchive, deadline_events
+from streaming_requests import NoOutputTimeout, StreamingRequestArchive, deadline_events, StreamingRequestFailure
 from defense_request_recovery import retryable_request
 
 
@@ -142,9 +142,12 @@ class StreamingRetryAndTimeoutTests(unittest.TestCase):
         profile = {"api_key": "", "base_url": "https://example.invalid/v1", "model": "kimi-k3", "timeout": 300}
         with tempfile.TemporaryDirectory() as tmp:
             archive = StreamingRequestArchive(Path(tmp) / "requests", PartialThenFailClient(), profile)
-            with self.assertRaisesRegex(RuntimeError, "Streaming request failed"):
+            with self.assertRaisesRegex(StreamingRequestFailure, "Streaming request failed") as caught:
                 archive.complete("turn_01", [{"role": "user", "content": "hi"}], retries=2, retry_backoff_s=(0.01,))
             self.assertEqual(len(calls), 1)
+            self.assertEqual(caught.exception.error_type,"TimeoutError")
+            self.assertEqual(caught.exception.phase,"reading_response_stream")
+            self.assertIsInstance(caught.exception.__cause__,TimeoutError)
 
     def test_defense_request_recovery_accepts_no_output_timeout_on_latest_attempt(self):
         with tempfile.TemporaryDirectory() as tmp:

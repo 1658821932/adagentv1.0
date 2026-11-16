@@ -11,15 +11,20 @@
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { stat, readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { stat, readdir, readFile, writeFile, mkdir, realpath, rename, rm } from 'node:fs/promises';
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, extname, sep, join, basename, dirname } from 'node:path';
 import { resolveRunStatus } from './run-status.mjs';
+import { createRunCoordinator, conversationDetails } from './run-coordinator.mjs';
+import { stopRun } from './run-stop.mjs';
+import { previewMedia } from './run-media.mjs';
+import { readSubagentActivity } from './run-activity.mjs';
+import { resolveFfmpeg } from './video-tools.mjs';
+import { videoCacheIdentity } from './video-cache.mjs';
 
 const ROOT = resolve(process.env.ADAGENT_PROJECT_ROOT || fileURLToPath(new URL('..', import.meta.url)));
 const LOGS = join(ROOT, 'logs');
-const PYTHON = join(ROOT, 'environments/agent/.venv/bin/python');
+const PYTHON = process.env.ADAGENT_AGENT_PYTHON || join(ROOT, 'environments/agent/.venv/bin/python');
 const FRONTEND_DIR = resolve(process.cwd());
 const CONFIGS = join(ROOT, 'configs');
 const PORT = Number(process.env.PORT || 5173);
@@ -33,12 +38,26 @@ const MIME = {
   '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
   '.mp4': 'video/mp4', '.webm': 'video/webm', '.pdf': 'application/pdf',
   '.txt': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
-  '.md': 'text/plain; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8', '.yaml': 'text/plain; charset=utf-8',
+  '.yml': 'text/plain; charset=utf-8', '.csv': 'text/csv; charset=utf-8',
 };
 const MEDIA_EXT = new Set(['.mp4', '.webm', '.jpg', '.jpeg', '.png', '.gif', '.webp']);
+const ARTIFACT_FILE_EXT = new Set(['.json', '.pdf', '.csv', '.md', '.txt', '.pth', '.ckpt', '.pkl', '.ply', '.yaml', '.yml', '.npy', '.log']);
 
 /** run_id -> { proc, task, startedAt, console: string[], exitCode } */
 const activeRuns = new Map();
+const coordinator = createRunCoordinator({ root:ROOT, logsRoot:LOGS, python:PYTHON, activeRuns });
+
+// Follow only the project's declared dataset links, not an entire shared checkout.
+async function resourceAllowed(path) {
+  const candidate = resolve(path);
+  if (candidate.startsWith(ROOT + sep)) return true;
+  const actual = await realpath(candidate).catch(() => null);
+  if (!actual) return false;
+  const children = await readdir(join(ROOT,'data')).catch(() => []);
+  const roots = await Promise.all(children.map(name => realpath(join(ROOT,'data',name)).catch(() => null)));
+  return roots.some(root => root && (actual === root || actual.startsWith(root + sep)));
+}
 
 /* ---------------- 工具函数 ---------------- */
 
@@ -80,7 +99,6 @@ function llmOf(decision) {
 const WE_ROOT = '/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/WorldEngine';
 const CLOSED_LOOP_ROOT = '/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/WorldEngine/experiments/closed_loop_exps';
 const EIGHTCAM_CACHE = join(ROOT, 'frontend', '.cache', 'eightcam');
-const FFMPEG_BIN = '/root/miniconda3/envs/dggt/lib/python3.10/site-packages/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2';
 const eightcamJobs = new Map();
 
 function eightcamSource(simulation, token) {
@@ -100,21 +118,39 @@ function eightcamSource(simulation, token) {
 
 async function ensurePlayableEightcam(src) {
   await mkdir(EIGHTCAM_CACHE, { recursive: true });
-  const key = createHash('sha1').update(src).digest('hex').slice(0, 16) + '_eightcam.mp4';
+  const key = await videoCacheIdentity(src);
   const out = join(EIGHTCAM_CACHE, key);
-  if (existsSync(out)) return out;
+  if (existsSync(out) && (await stat(out)).size > 0) return out;
   if (eightcamJobs.has(out)) return eightcamJobs.get(out);
+  const ffmpeg = resolveFfmpeg(ROOT);
+  const tmp = join(EIGHTCAM_CACHE, `${key}.${process.pid}.${Date.now()}.tmp.mp4`);
   const job = new Promise((resolvePromise, rejectPromise) => {
-    const proc = spawn(FFMPEG_BIN, [
+    const proc = spawn(ffmpeg, [
       '-y', '-loglevel', 'error', '-i', src,
-      '-vf', 'scale=1920:-2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-r', '2', out,
+      '-vf', 'scale=1920:-2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '23', '-r', '2', '-movflags', '+faststart', tmp,
     ], { stdio: 'ignore' });
-    proc.on('exit', (code) => {
-      eightcamJobs.delete(out);
-      if (code === 0 && existsSync(out)) resolvePromise(out);
-      else rejectPromise(new Error(`ffmpeg exit ${code}`));
+    proc.on('exit', async (code) => {
+      try {
+        if (code === 0 && existsSync(tmp)) {
+          if (await videoCacheIdentity(src) !== key) throw new Error('视频已更新，请重新加载');
+          await rename(tmp, out);
+          resolvePromise(out);
+        } else {
+          await rm(tmp, { force: true }).catch(() => {});
+          rejectPromise(new Error(`ffmpeg exit ${code}`));
+        }
+      } catch (err) {
+        await rm(tmp, { force: true }).catch(() => {});
+        rejectPromise(err);
+      } finally {
+        eightcamJobs.delete(out);
+      }
     });
-    proc.on('error', (err) => { eightcamJobs.delete(out); rejectPromise(err); });
+    proc.on('error', async (err) => {
+      eightcamJobs.delete(out);
+      await rm(tmp, { force: true }).catch(() => {});
+      rejectPromise(err);
+    });
   });
   eightcamJobs.set(out, job);
   return job;
@@ -163,25 +199,21 @@ function evidenceVideos(tool, output) {
   return list;
 }
 
-/** 实时思考流：Agent 每产生一个 token 片段就追加一行，供控制台边跑边显示 */
+/** Only expose progress metadata; provider-private reasoning is not a UI artifact. */
 async function readThinking(runDir) {
   const file = join(runDir, 'thinking.jsonl');
   if (!existsSync(file)) return null;
   const text = await readTextTail(file, 200_000);
-  let reasoning = '', content = '', elapsed = 0, step = null;
+  let elapsed = 0, step = null;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     try {
       const ev = JSON.parse(line);
       if (typeof ev.step === 'number') step = ev.step;
       if (typeof ev.elapsed === 'number') elapsed = ev.elapsed;
-      if (ev.kind === 'reasoning') reasoning += ev.text || '';
-      else if (ev.kind === 'content') content += ev.text || '';
     } catch { /* 忽略半行 */ }
   }
-  const body = (reasoning || content).trim();
-  if (!body) return null;
-  return { step, elapsed, reasoning: reasoning.slice(-1600), content: content.slice(-800) };
+  return { step, elapsed };
 }
 
 const PRIMARY_MEDIA_KEYS = new Set([
@@ -195,7 +227,7 @@ function extractArtifactsAndMetrics(node, artifacts, metrics, keyPath = '') {
   if (typeof node === 'string') {
     if (node.startsWith(ROOT) || node.startsWith('/inspire/')) {
       const ext = extname(node).toLowerCase();
-      if (MEDIA_EXT.has(ext) || ext === '.json' || ext === '.pdf') {
+      if (MEDIA_EXT.has(ext) || ARTIFACT_FILE_EXT.has(ext)) {
         const leaf = keyPath.split('.').pop()?.replace(/\[\d+\]$/, '') || '';
         artifacts.push({
           path: node,
@@ -231,7 +263,9 @@ async function getRunDetail(runId) {
 
   const meta = await readJson(join(runDir, 'run.json')) || {};
   const finalState = await readJson(join(runDir, 'final_state.json'));
+  const runSummary = await readJson(join(runDir, 'summary.json'));
   const runState = await resolveRunStatus(meta, finalState, activeRuns.get(runId));
+  const [conversation, activities] = await Promise.all([conversationDetails(runDir), readSubagentActivity(runDir)]);
 
   // decision 流（运行中实时可读）
   const decisions = new Map();
@@ -265,10 +299,11 @@ async function getRunDetail(runId) {
       const output = await readJson(join(dir, 'output.json'));
       const logTail = await readTextTail(join(dir, 'execution.log'), 8000);
       const durationMatch = /duration_seconds=([0-9.]+)/.exec(logTail);
-      const duration = durationMatch ? Number(durationMatch[1]) : null;
+      const timing = await readJson(join(dir, 'timing.json'));
+      const duration = typeof timing?.elapsed_seconds === 'number' ? timing.elapsed_seconds : durationMatch ? Number(durationMatch[1]) : null;
       // 运行中的工具：用开始时间戳算已执行秒数，前端据此走表
       const startedMatch = /\[([^\]]+)\] tool started/.exec(logTail);
-      const startedAt = startedMatch ? Date.parse(startedMatch[1]) : NaN;
+      const startedAt = Date.parse(timing?.started_at || startedMatch?.[1]);
       const elapsedSeconds = Number.isFinite(startedAt) && duration == null
         ? Math.max(0, (Date.now() - startedAt) / 1000)
         : null;
@@ -295,6 +330,8 @@ async function getRunDetail(runId) {
         duration,
         elapsed_seconds: runState.active ? elapsedSeconds : null,
         evidence: evidenceVideos(tool, output),
+        media: previewMedia(tool, output, { projectRoot:ROOT, weRoot:WE_ROOT, closedLoopRoot:CLOSED_LOOP_ROOT }),
+        activities: activities.filter(item => item.step === stepNum).map(item => !runState.active && ['running','started'].includes(item.status) && !item.finished_at ? { ...item, status:'interrupted' } : item),
         // 主 Agent 思考开销（来自 agent.jsonl 的 llm_request）
         llm: llmOf(decision),
         input,
@@ -335,6 +372,12 @@ async function getRunDetail(runId) {
     prompt_tokens: promptTokens,
     completion_tokens: completionTokens,
     cached_tokens: cachedTokens,
+    ...(runSummary ? {
+      api_calls: runSummary.api_calls,
+      api_seconds: runSummary.api_seconds,
+      wall_seconds: runSummary.wall_seconds,
+      stages: runSummary.stages,
+    } : {}),
   };
 
   // 无工具目录的决策（通常是最后的 finish/stop），单独返回以便展示最终思考
@@ -351,6 +394,7 @@ async function getRunDetail(runId) {
     }));
 
   // 整体状态
+  const reportFile = join(runDir, 'REPORT.md');
   return {
     run_id: runId,
     task: meta.task || finalState?.task || '',
@@ -358,8 +402,11 @@ async function getRunDetail(runId) {
     error: finalState?.error || null,
     started_at: meta.start_time || meta.started_at || meta.created_at || null,
     duration_seconds:runState.duration_seconds,
-    llm_model: meta.llm_model || null,
+    ...conversation,
+    llm_model: meta.llm?.model || meta.llm_model || null,
+    llm_reasoning_effort: meta.llm?.reasoning_effort || null,
     active:runState.active,
+    report_path: existsSync(reportFile) ? reportFile : null,
     summary,
     thinking,
     extra_decisions: extraDecisions,
@@ -385,6 +432,8 @@ async function listRuns() {
     return {
       run_id: e.name,
       task: meta.task || finalState?.task || '',
+      conversation_id:meta.conversation_id || e.name, original_task:meta.original_task || meta.task || '',
+      parent_run_id:meta.parent_run_id || null,
       status:runState.status,
       error: finalState?.error || null,
       steps:tools.length,
@@ -397,56 +446,6 @@ async function listRuns() {
   }
   runs.sort((a, b) => b.run_id.localeCompare(a.run_id));
   return runs;
-}
-
-/** 发起真实运行 */
-function launchRun(task) {
-  return new Promise((resolvePromise, reject) => {
-    const proc = spawn(PYTHON, ['-m', 'agent.main', task], {
-      cwd: ROOT,
-      detached: true,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
-    });
-    const record = { proc, task, startedAt: Date.now(), console: [], exitCode: null };
-
-    const pushLog = (chunk) => {
-      const lines = chunk.toString('utf-8').split('\n');
-      for (const line of lines) {
-        record.console.push(line);
-        if (record.console.length > 3000) record.console.shift();
-      }
-    };
-    let outBuf = '';
-    let resolved = false;
-    const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      // fallback：扫描新 run 目录
-      reject(new Error('等待 run_id 超时（60s），进程仍在后台运行，稍后在运行列表中查看'));
-    }, 60000);
-
-    proc.stdout.on('data', (chunk) => {
-      pushLog(chunk);
-      outBuf += chunk.toString('utf-8');
-      const m = /Logs:\s*\n\s*(\S+)/.exec(outBuf);
-      if (m && !resolved) {
-        const runId = basename(m[1].trim());
-        resolved = true;
-        clearTimeout(timer);
-        activeRuns.set(runId, record);
-        proc.on('exit', (code) => { record.exitCode = code ?? -1; });
-        resolvePromise({ run_id: runId });
-      }
-    });
-    proc.stderr.on('data', pushLog);
-    proc.on('error', (err) => {
-      if (!resolved) { resolved = true; clearTimeout(timer); reject(err); }
-    });
-    proc.on('exit', (code) => {
-      record.exitCode = code ?? -1;
-      if (!resolved) { resolved = true; clearTimeout(timer); reject(new Error('进程过早退出: ' + record.console.slice(-20).join('\n'))); }
-    });
-  });
 }
 
 /* ---------------- 配置读写 ---------------- */
@@ -551,7 +550,7 @@ function sendJson(res, code, obj) {
 // 前端构建号：由静态资源的最新 mtime 决定，改动后自动变化
 function frontendBuildId() {
   let newest = 0;
-  for (const f of ['app.js', 'styles.css', 'workbench.js', 'agent-ui.js', 'index.html', 'api-client.js', 'config-panel-controller.mjs', 'panel-loading.mjs']) {
+  for (const f of ['app.js', 'step-output.js', 'styles.css', 'workbench.js', 'agent-ui.js', 'index.html', 'api-client.js', 'config-panel-controller.mjs', 'panel-loading.mjs', 'conversation.js', 'tool-scroll-spy.js', 'media-preview.js']) {
     try {
       const st = statSync(join(FRONTEND_DIR, f));
       newest = Math.max(newest, st.mtimeMs);
@@ -596,20 +595,10 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/runs' && req.method === 'POST') {
       let body = '';
       for await (const c of req) body += c;
-      const { task } = JSON.parse(body || '{}');
-      if (!task || typeof task !== 'string' || !task.trim()) {
-        return sendJson(res, 400, { error: '任务内容不能为空' });
-      }
-      const busy = [...activeRuns.entries()].find(([, r]) => r.exitCode == null);
-      if (busy) {
-        return sendJson(res, 409, { error: `已有运行进行中：${busy[0]}，请先停止或等待完成`, running: busy[0] });
-      }
-      try {
-        const { run_id } = await launchRun(task.trim());
-        return sendJson(res, 200, { run_id });
-      } catch (err) {
-        return sendJson(res, 500, { error: String(err.message || err) });
-      }
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { return sendJson(res, 400, { error:'JSON 解析失败' }); }
+      try { return sendJson(res, 200, await coordinator.submit(parsed)); }
+      catch (error) { return sendJson(res, error.status || 500, { error:error.message }); }
     }
 
     if (path === '/api/demo' && req.method === 'GET') {
@@ -638,11 +627,8 @@ const server = http.createServer(async (req, res) => {
     if (runMatch) {
       const [, runId, sub] = runMatch;
       if (sub === '/stop' && req.method === 'POST') {
-        const rec = activeRuns.get(runId);
-        if (!rec || rec.exitCode != null) return sendJson(res, 404, { error: '没有进行中的该运行' });
-        try { process.kill(-rec.proc.pid, 'SIGTERM'); } catch { rec.proc.kill('SIGTERM'); }
-        setTimeout(() => { try { process.kill(-rec.proc.pid, 'SIGKILL'); } catch { /* already dead */ } }, 8000);
-        return sendJson(res, 200, { ok: true });
+        try { return sendJson(res, 200, await stopRun({ root:ROOT, logsRoot:LOGS, python:PYTHON, runId })); }
+        catch (error) { return sendJson(res, error.status || 500, { error:error.message }); }
       }
       if (sub === '/console' && req.method === 'GET') {
         const rec = activeRuns.get(runId);
@@ -658,7 +644,7 @@ const server = http.createServer(async (req, res) => {
     // 项目内任意 mp4：按需转成浏览器可播的 H.264，带磁盘缓存
     if (path === '/api/video' && req.method === 'GET') {
       const src = url.searchParams.get('path') || '';
-      if (!src.startsWith(ROOT + sep) || !src.endsWith('.mp4')) {
+      if (!await resourceAllowed(src) || !src.endsWith('.mp4')) {
         return sendJson(res, 403, { error: '仅允许访问项目目录内的视频' });
       }
       if (!existsSync(src)) return sendJson(res, 404, { error: '视频不存在' });
@@ -698,7 +684,7 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/file' && req.method === 'GET') {
       const p = url.searchParams.get('path') || '';
       const resolvedPath = resolve(p);
-      if (!resolvedPath.startsWith(ROOT + sep)) return sendJson(res, 403, { error: '仅允许访问项目目录内文件' });
+      if (!await resourceAllowed(resolvedPath)) return sendJson(res, 403, { error: '仅允许访问项目及其绑定数据集内文件' });
       return await serveFile(res, resolvedPath, req);
     }
 

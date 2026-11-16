@@ -4,15 +4,20 @@ from .schemas import AttackInput, AttackOutput, EgoInput, EgoOutput
 
 def attack(arguments):
     data=AttackInput.model_validate(arguments)
+    operation=data.operation;track=data.target_track;choice=None
+    if operation=='auto':
+        option=next(option for option in data.plan_options if option.operation=='edit_existing' or data.vehicle is not None)
+        operation=option.operation;track=option.target_track
+        choice=dict(option_id=option.option_id,operation=operation,reason='Deterministic mock selection; not an evaluated scene decision')
     root=Path("/mock/scene_editing/attack")
-    result={"mode":"mock","run_dir":str(root),"operation":data.operation,"source_scene_ref":data.scene_ref.model_dump(),
+    result={"mode":"mock","run_dir":str(root),"operation":operation,"plan_choice":choice,"source_scene_ref":data.scene_ref.model_dump(),
         "scene_id":data.scene_ref.scene_id,"scene_token":data.scene_ref.scene_token,
-        "target_track":data.target_track or ("mock_existing_track" if data.operation=="edit_existing" else "synthetic_vehicle_01"),"selected_candidate_id":"candidate_001",
+        "target_track":track or ("mock_existing_track" if operation=="edit_existing" else "synthetic_vehicle_01"),"selected_candidate_id":"candidate_001",
         "frozen_scene_path":str(root/"frozen_scene"),"frames_path":str(root/"frozen_scene/metadata/frames.json"),
         "trajectory_path":str(root/"trajectory.csv"),"provenance_path":str(root/"freeze-info.json"),
         "submission_path":str(root/"accepted-submission.json"),
         "checks":{"reference_screen":"passed","checks":{"mock_contract":"passed","official_road":"not_checked"},"report_path":str(root/"checks.json")},
-        "annotation_changes":{"operation":"append_actor" if data.operation=="add_vehicle" else "update_actor","fields":["anns.gt_boxes","anns.gt_velocity_3d"]}}
+        "annotation_changes":{"operation":"append_actor" if operation=="add_vehicle" else "update_actor","fields":["anns.gt_boxes","anns.gt_velocity_3d"]}}
     return AttackOutput.model_validate(result).model_dump()
 
 def ego(arguments):

@@ -9,7 +9,7 @@ import acceptance_policy as policy
 import numpy as np
 
 from attack_editor import read_seed
-from attack_constructor import goal_evidence
+from attack_constructor import acceptance_goal_evidence
 from ego_road_checks import load_official_drivable
 from experiment_runtime import atomic_json
 from run_ego_reference import ego_path_from_frames, observed_objects_from_frames, scene_from_frames
@@ -96,11 +96,11 @@ def review(run_dir, output):
         arguments = saved['construction_goal_input']
         ego_dense = sample_xy(times, ego, dense_times)
         ego_angles = np.interp(dense_times, times, ego_yaw)
-        dense_goal = goal_evidence(dense_times, dense_xy, ego_dense, ego_angles, arguments,
-                                  recomputed['first_contact_time_s'],target_yaw=dense_yaw,target_size=result['target']['size_m'], task_contract=run_input['constraints'].get('task_contract'))
-        native_goal = goal_evidence(dense_times, sample_xy(times, xy, dense_times), ego_dense,
+        dense_goal = acceptance_goal_evidence(dense_times, dense_xy, ego_dense, ego_angles, arguments,
+                                  recomputed['first_contact_time_s'],target_yaw=dense_yaw,target_size=result['target']['size_m'], constraints=run_input['constraints'])
+        native_goal = acceptance_goal_evidence(dense_times, sample_xy(times, xy, dense_times), ego_dense,
             ego_angles, arguments, replay['first_contact_time_s'],
-            target_yaw=np.interp(dense_times,times,np.unwrap(yaw)),target_size=result['target']['size_m'], task_contract=run_input['constraints'].get('task_contract'))
+            target_yaw=np.interp(dense_times,times,np.unwrap(yaw)),target_size=result['target']['size_m'], constraints=run_input['constraints'])
         checks['construction_goal'] = dense_goal['goal_met'] and native_goal['goal_met']
         construction_goal = dict(dense=dense_goal, native_replay=native_goal)
     if run_input['constraints'].get('vehicle_motion_model') == 'bicycle.v1':

@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
+import re
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -75,6 +77,10 @@ def _validate_attack(data, result, task):
     if data.operation == "edit_existing" and data.target_track is not None and result.target_track != data.target_track:
         raise EditingError("editing_identity_mismatch", "Submitted attack track differs from requested track")
     frozen = Path(result.frozen_scene_path)
+    if data.operation=='auto' and result.operation not in ('edit_existing','add_vehicle'):
+        raise EditingError('editing_identity_mismatch','Auto selection must report its actual operation')
+    if data.operation!='auto' and result.operation is not None and result.operation!=data.operation:
+        raise EditingError('editing_identity_mismatch','Attack operation differs from explicit caller requirement')
     if not frozen.is_absolute() or not frozen.resolve().is_relative_to(task.output.resolve()):
         raise EditingError("editing_output_invalid", "Frozen scene must be a new task output directory")
     frames_path = _inside(result.frames_path, frozen)
@@ -133,6 +139,14 @@ def backend_api_env(command, environment, component="attack_editor"):
     result = dict(environment)
     backend = Path(__file__).resolve().parents[1] / 'core/adversarial/editing_backend.py'
     if any(Path(part).resolve() == backend for part in command):
+        result.pop('ADVERSARIAL_ATTACK_SESSION', None)
+        job_dir = os.getenv('ADAGENT_JOB_DIR')
+        if component == 'attack_editor' and job_dir:
+            manifest = json.loads((Path(job_dir)/'manifest.json').read_text())
+            scope = manifest.get('scope')
+            if not isinstance(scope,str) or not re.fullmatch(r'[A-Za-z0-9_-]+',scope):
+                raise ValueError('Attack budget requires a valid execution scope')
+            result['ADVERSARIAL_ATTACK_SESSION'] = str(Path(job_dir).parent/'attack-budgets'/scope)
         public_root = public_pipeline_root()
         # Clear inherited values: this path is owned exclusively by the adapter.
         result.pop('ADVERSARIAL_FULL_PIPELINE_ROOT', None)

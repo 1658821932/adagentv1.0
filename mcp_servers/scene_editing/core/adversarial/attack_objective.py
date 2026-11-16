@@ -15,16 +15,21 @@ def validate_objective(arguments, times, prefix, edit_start_s=None):
     if not isinstance(arguments['reason'], str) or not arguments['reason'].strip():
         raise ValueError('A nonempty reason is required')
     objective = arguments['objective']
-    if not isinstance(objective, dict) or 'interaction' not in objective or set(objective) - {'interaction', 'interaction_window_s', 'keyframes'}:
-        raise ValueError('objective requires interaction; interaction_window_s and keyframes are optional')
-    earliest_event=float(prefix) if prefix==0 and edit_start_s==0 else float(np.nextafter(prefix,np.inf))
+    if not isinstance(objective, dict) or set(objective) - {'interaction', 'interaction_window_s', 'keyframes'}:
+        raise ValueError('objective contains unsupported fields; use optional keyframes')
+    earliest_event=float(prefix) if edit_start_s is not None else float(np.nextafter(prefix,np.inf))
     objective.setdefault('interaction_window_s', [earliest_event, float(times[-1])])
     objective.setdefault('keyframes', [])
-    if objective['interaction'] not in ('contact', 'near_miss', 'either', 'allowed'):
+    if 'interaction' in objective and objective['interaction'] not in ('contact', 'near_miss', 'either', 'allowed'):
         raise ValueError('interaction must be contact, near_miss, either or allowed')
 
     # LLMs round native timestamps (e.g. 11.499809 -> 11.5). Normalize only
     # time endpoints within 1 ms; position/heading/speed limits remain exact.
+    frames = objective.get('keyframes') if isinstance(objective.get('keyframes'), list) else []
+    original_spans = [frame['time_window_s'][1] - frame['time_window_s'][0]
+        if isinstance(frame, dict) and isinstance(frame.get('time_window_s'), list)
+        and len(frame['time_window_s']) == 2 and all(type(v) in (int,float) for v in frame['time_window_s']) else None
+        for frame in frames]
     windows = [objective.get('interaction_window_s'), arguments.get('edit_window_s')]
     if isinstance(objective.get('keyframes'), list):
         windows += [frame.get('time_window_s') for frame in objective['keyframes'] if isinstance(frame, dict)]
@@ -33,6 +38,14 @@ def validate_objective(arguments, times, prefix, edit_start_s=None):
             for index in (0, 1):
                 if type(window[index]) in (int, float) and abs(window[index]-times[-1]) <= .001:
                     window[index] = float(times[-1])
+    # Endpoint alignment must keep a previously valid full-window hold valid.
+    # Never clip a genuinely overlong user request to make it pass.
+    for frame, original_span in zip(frames, original_spans):
+        hold = frame.get('hold_duration_s') if isinstance(frame, dict) else None
+        if original_span is not None and type(hold) in (int,float) and hold <= original_span + 1e-9:
+            span = frame['time_window_s'][1] - frame['time_window_s'][0]
+            if 0 < hold-span <= policy.TIME_ROUNDING_S:
+                frame['hold_duration_s'] = span
 
     def interval(value, name, minimum=None, maximum=None):
         if not isinstance(value, list) or len(value) != 2 or any(type(v) not in (float, int) for v in value) or not np.isfinite(value).all() or value[0] > value[1]:
@@ -143,15 +156,17 @@ def objective_evidence(times, xy, yaw, ego, ego_yaw, size, objective):
     gaps = shapely.distance(target, own)
     contacts = np.flatnonzero(shapely.area(shapely.intersection(target, own)) > 1e-9)
     lower, upper = objective['interaction_window_s']
-    mask = (times >= lower) & (times <= upper)
+    time_tolerance=getattr(policy,'TIME_ROUNDING_S',.001)
+    mask = (times >= lower-time_tolerance) & (times <= upper+time_tolerance)
     if not mask.any():
         raise ValueError('Interaction window has no samples')
-    if objective['interaction'] == 'allowed':
+    mode=objective.get('interaction')
+    if mode is None or mode == 'allowed':
         interaction_ok, interaction_cost = True, 0.
-    elif objective['interaction'] in ('contact', 'either'):
-        interaction_ok = bool(len(contacts) and lower <= times[contacts[0]] <= upper)
+    elif mode in ('contact', 'either'):
+        interaction_ok = bool(len(contacts) and lower-time_tolerance <= times[contacts[0]] <= upper+time_tolerance)
         interaction_cost = float(gaps[mask].min())
-        if objective['interaction'] == 'either' and not len(contacts):
+        if mode == 'either' and not len(contacts):
             interaction_ok = bool(gaps.min() >= policy.ATTACK_NEAR_MISS_MIN_GAP_M and gaps[mask].min() <= policy.ATTACK_EVENT_MAX_GAP_M)
             interaction_cost = float(max(0., gaps[mask].min()-policy.ATTACK_EVENT_MAX_GAP_M))
     else:
@@ -163,7 +178,7 @@ def objective_evidence(times, xy, yaw, ego, ego_yaw, size, objective):
     index = int(np.argmin(gaps + np.where(mask, 0., 1e6)))
     return dict(goal_met=not failed, failed_checks=failed, keyframes=reports,
         objective_cost=float(residual + interaction_cost**2 + (0 if interaction_ok else 1)),
-        measured_time_s=float(times[index]), interaction_mode=objective['interaction'],
+        measured_time_s=float(times[index]), interaction_mode=objective.get('interaction'),
         first_contact_time_s=None if not len(contacts) else float(times[contacts[0]]),
         min_clearance_m=float(gaps.min()),
         scope='Time-windowed body-center relative position, heading and speed; sampled reference geometry')

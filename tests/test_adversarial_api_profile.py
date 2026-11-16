@@ -37,6 +37,22 @@ def test_external_backend_does_not_require_project_credentials(monkeypatch):
     assert service.backend_api_env(['custom-backend'],{'VALUE':'test'})=={'VALUE':'test'}
 
 
+def test_attack_budget_identity_survives_different_job_directories(tmp_path,monkeypatch):
+    import json
+    command=[str(CORE/'editing_backend.py')]
+    monkeypatch.setattr(service,'get_profile',lambda *a,**k:dict(api_key='offline',base_url='https://example.invalid',model='offline',timeout=300,max_tokens=128))
+    monkeypatch.setattr(service,'public_pipeline_root',lambda:None)
+    paths=[]
+    for name in ('first','second'):
+        job=tmp_path/'jobs'/name;job.mkdir(parents=True)
+        (job/'manifest.json').write_text(json.dumps(dict(scope='run_fixture')))
+        monkeypatch.setenv('ADAGENT_JOB_DIR',str(job))
+        paths.append(service.backend_api_env(command,{})['ADVERSARIAL_ATTACK_SESSION'])
+    assert paths[0]==paths[1]==str(tmp_path/'jobs/attack-budgets/run_fixture')
+    (job/'manifest.json').write_text(json.dumps(dict(scope='../outside')))
+    with pytest.raises(ValueError,match='execution scope'):service.backend_api_env(command,{})
+
+
 @pytest.mark.parametrize('choice',[None,'auto','required'])
 def test_image_transport_capability_is_injected_and_stale_values_are_cleared(monkeypatch,choice):
     profile=dict(api_key='fake-test-key',base_url='https://example.invalid/v1',model='test',timeout=240,max_tokens=8192)

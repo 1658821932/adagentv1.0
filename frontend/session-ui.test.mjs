@@ -18,6 +18,7 @@ function fixture(request) {
   const context=vm.createContext({
     document:{querySelector:selector=>({remove(){},addEventListener:(event,handler)=>{handlers[selector+':'+event]=handler;}})},
     prompt:{value:'',placeholder:'',focus(){}},stopBtn:{disabled:false},replayBtn:{classList},demoBtn:{classList},
+    phaseEl:{textContent:''},activityEl:{textContent:''},setWorkbenchState(){},
     messages:{replaceChildren(){}},api:async(...args)=>{calls.push(args);return request(...args);},
     submitConversation,escape:String,message:(...args)=>messages.push(args),
     setRunning:value=>{context.running=value;},

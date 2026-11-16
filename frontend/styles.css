@@ -732,3 +732,130 @@ strong,b{color:inherit}
 @keyframes panel-spin{to{transform:rotate(360deg)}}
 @keyframes panel-shimmer{to{background-position:-200% 0}}
 @media(prefers-reduced-motion:reduce){.panel-spinner,.panel-skeleton i{animation:none}}
+:root { --artifact-border: #e6e6e6; }
+.flow-item.is-current { background: #f0f0f0; box-shadow: inset 3px 0 #111; border-radius: 6px; }
+.flow-item.is-current b { color: #111; }
+.step-card { scroll-margin-top: 18px; }
+.step-main-output { margin-top: 10px; display: grid; gap: 12px; }
+.summary-block { margin-top: 0; }
+.step-drawers { margin-top: 10px; padding-top: 6px; border-top: 1px dashed #ebebeb; display: grid; gap: 6px; }
+.step-drawers:empty { display: none; }
+
+/* ===== 卡片小标题与折叠栏：统一 12px 字体层级 ===== */
+.raw-title,
+.artifact-preview-heading,
+.artifact-preview-heading b,
+.subagent-activity summary,
+.json-block summary,
+.artifact-preview-more summary {
+  font-size: 12px;
+  font-weight: 500;
+  color: #666;
+  line-height: 1.6;
+  letter-spacing: 0;
+}
+
+/* ===== 调用原因与结果简述：统一固定展开排版与 13px 白底圆角框 ===== */
+.step-reason { margin: 10px 0 0; }
+.step-reason .raw-title,
+.summary-block .raw-title { margin-bottom: 6px; }
+.step-reason p,
+.step-summary {
+  margin: 0;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: #2e2e2e;
+  font-weight: 400;
+}
+.step-summary > p { margin: 0; }
+.summary-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #333;
+}
+.summary-note { margin: 8px 0 0; font-size: 12.5px; color: #555; }
+
+.structured-error {
+  background: #fdf2f0; border: 1px solid #ecd0ca; border-radius: 8px; padding: 11px 13px;
+}
+.structured-error .raw-title { color: #96382b; }
+.structured-error pre {
+  margin: 0; padding: 10px 12px; background: #fff; border: 1px solid #f0dcd8; border-radius: 6px;
+  color: #7a2e23; font-size: 12px; line-height: 1.7; max-height: 220px; overflow: auto;
+}
+
+/* ===== 多媒体预览（黑白灰极简 + 多图对比网格） ===== */
+.artifact-preview { margin: 0; }
+.artifact-preview-heading { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.artifact-preview-heading span, .artifact-media small { color: #8a8a8a; font-size: 11px; }
+.artifact-preview-list { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+.artifact-preview-list[data-count]:not([data-count="1"]) {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.artifact-media {
+  margin: 0; padding: 9px; border: 1px solid #e6e6e6; border-radius: 8px; background: #fff; min-width: 0;
+}
+.artifact-media img, .artifact-media video {
+  display: block; max-width: 100%; width: 100%; max-height: 420px; object-fit: contain;
+  border-radius: 5px; background: #111;
+}
+.artifact-preview-list[data-count]:not([data-count="1"]) .artifact-media img,
+.artifact-preview-list[data-count]:not([data-count="1"]) .artifact-media video { max-height: 300px; }
+.artifact-media [hidden] { display: none; }
+.artifact-image-frame, .artifact-video-frame { position: relative; min-height: 60px; }
+.artifact-media figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; padding-top: 8px; color: #222; }
+.artifact-media figcaption a, .artifact-zoom-btn {
+  color: #333; font-size: 11px; text-decoration: none;
+  border: 1px solid #e2e2e2; background: #fafafa; border-radius: 4px; padding: 2px 7px;
+}
+.artifact-media figcaption a:hover, .artifact-zoom-btn:hover { background: #efefef; border-color: #ccc; }
+.artifact-media figcaption small { width: 100%; color: #8a8a8a; }
+.artifact-video-load {
+  width: 100%; min-height: 140px; display: flex; flex-direction: column; gap: 9px;
+  align-items: center; justify-content: center; border: 1px dashed #dcdcdc; border-radius: 5px;
+  background: #f7f7f7; color: #333;
+}
+.artifact-video-load:hover { background: #f0f0f0; }
+.artifact-play {
+  width: 0; height: 0; border-top: 12px solid transparent; border-bottom: 12px solid transparent; border-left: 19px solid #111;
+}
+.artifact-media-status { padding: 9px 10px; font-size: 11px; color: #6e5720; background: #fdf8ec; border-radius: 4px; margin-top: 6px; }
+.artifact-media-status button { margin-left: 8px; border: 1px solid #ddd; background: #fff; border-radius: 4px; padding: 2px 8px; font-size: 11px; }
+
+.artifact-lightbox {
+  position: fixed; inset: 0; z-index: 9999; background: rgba(17, 17, 17, 0.72);
+  display: grid; place-items: center; padding: 24px;
+}
+.artifact-lightbox.hidden { display: none; }
+.artifact-lightbox-card {
+  max-width: min(1100px, 94vw); max-height: 90vh; background: #fff; border-radius: 10px;
+  padding: 12px; display: grid; gap: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.artifact-lightbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.artifact-lightbox-head b { font-size: 13px; color: #111; }
+.artifact-lightbox-head button { border: 1px solid #ddd; background: #fff; border-radius: 6px; padding: 3px 9px; font-size: 12px; }
+.artifact-lightbox-card img { max-width: 100%; max-height: calc(90vh - 68px); object-fit: contain; border-radius: 6px; background: #111; }
+
+/* ===== 抽屉区统一（黑白灰） ===== */
+.artifact-preview-more, .subagent-activity, .json-block { margin: 2px 0; }
+.artifact-preview-more summary, .subagent-activity summary, .json-block summary {
+  cursor: pointer; padding: 4px 0;
+}
+.subagent-activity ol { list-style: none; padding: 0; margin: 4px 0 0; display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+.activity-row { display: flex; gap: 8px; padding: 7px 9px; border-radius: 6px; background: #fff; border: 1px solid #ececec; font-size: 12px; }
+.activity-row>span { color: #2b7550; }
+.activity-row b { font-weight: 500; color: #111; }
+.activity-row small { color: #7d8c83; margin-left: 10px; }
+.activity-row p { margin: 4px 0 0; font-size: 11px; color: #666; overflow-wrap: anywhere; }
+.activity-row.failed>span { color: #b25550; }
+.activity-row.warning>span { color: #9a7630; }
+.activity-row.preview>span { color: #555; }
+.continuation-note { color: #7a7a7a; font-size: 12px; }

@@ -186,7 +186,7 @@ def compact_action_feedback(result):
     for key in (
         'status', 'candidate_id', 'parent_candidate_id', 'reference_geometry_passed',
         'task_contract_passed', 'reference_screen_passed', 'failed_checks', 'task_failed_checks',
-        'candidate_created', 'feasible', 'cached', 'error', 'error_code', 'failure_kind',
+        'candidate_created', 'executed', 'instruction', 'feasible', 'cached', 'error', 'error_code', 'failure_kind',
         'feasibility_limits', 'speed_edit_summary', 'route_edit_summary', 'archive_ref',
     ):
         if key in result:
@@ -195,8 +195,10 @@ def compact_action_feedback(result):
         compact['candidate_ids'] = [item.get('candidate_id') for item in result['candidates']
                                     if isinstance(item, dict) and item.get('candidate_id')]
     if isinstance(result.get('construction_goal'), dict):
-        from attack_tool_contract import goal_diagnostics
+        from attack_tool_contract import goal_diagnostics, optimization_summary
         failures, measurements = goal_diagnostics(result['construction_goal'])
         compact['task_failed_checks'] = failures
         compact['failure_measurements'] = measurements
+        preferences=optimization_summary(result['construction_goal'])
+        if preferences is not None: compact['optimization_preferences']=preferences
     return compact

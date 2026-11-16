@@ -8,7 +8,8 @@ import json
 from pathlib import Path
 from uuid import uuid4
 from tools.llm_runtime import parse_json_object
-from .schemas import ViewRequest
+from .schemas import ViewRequest, TrajectoryRequest
+from . import spatial_evidence
 
 ROOT=Path(__file__).resolve().parents[2]
 LOG_ROOT=ROOT/'logs/tool04_observations'
@@ -89,10 +90,16 @@ class Observation:
         self.directory=LOG_ROOT/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_')+uuid4().hex[:10])
         self.directory.mkdir(parents=True,exist_ok=False)
         self.records=[];self.view_requests=[];self.model_calls=0
+        self.trajectory_requests=[];self.trajectory_cache={}
         summary['evidence']['visual_observation']=dict(record_dir=str(self.directory),initial_camera=self.cfg['initial_camera'],
             available_cameras=self.available,selected_frame_indices=self.indices,sheets=self.records,
-            view_requests=self.view_requests,model_calls=0)
+            view_requests=self.view_requests,trajectory_requests=self.trajectory_requests,model_calls=0)
         self.initial=self.add_camera(self.cfg['initial_camera'])
+        if len(self.frames)>=2 and all('ego2global' in frame and 'lidar2ego' in frame for frame in self.frames):
+            self.spatial=spatial_evidence.read(data.scene_ref.sample_root,self.directory/'bev')
+        else:
+            self.spatial=dict(status='unavailable',reason='Source lacks transforms or enough frames for a coherent BEV; do not infer a layout.')
+        summary['evidence']['spatial_overview']=self.spatial
         self.save()
 
     def save(self):
@@ -126,12 +133,40 @@ class Observation:
         return content
 
     def initial_content(self):
+        from .decision_view import model_view
         self.summary['visual_review_options']=dict(available_cameras=self.available,max_extra_rounds=self.cfg['max_extra_rounds'],
             max_cameras_per_request=self.cfg['max_cameras_per_request'],example=dict(action='request_views',cameras=['CAM_L0'],purpose='Check the side entry geometry'))
-        return [dict(type='text',text=json.dumps(self.summary,ensure_ascii=False))]+self.content(self.initial)
+        self.summary['trajectory_query_options']=dict(max_queries=3,max_samples_per_query=24,
+            example=dict(action='request_trajectory',track_id='<exact vehicle track ID or ego>',max_samples=24,purpose='Check whether this car reaches the conflict in time'))
+        evidence_path=self.directory/'scene-evidence.json'
+        evidence_path.write_text(json.dumps(self.summary,ensure_ascii=False,indent=2)+'\n')
+        self.summary['evidence']['full_scene_evidence_path']=str(evidence_path)
+        content=[dict(type='text',text=json.dumps(model_view(self.summary,evidence_path),ensure_ascii=False))]+self.content(self.initial)
+        if self.spatial.get('status')=='available':
+            content.append(dict(type='image_url',image_url=dict(url='data:image/png;base64,'+base64.b64encode(Path(self.spatial['image_path']).read_bytes()).decode())))
+        return content
+
+    def trajectory(self, request):
+        known={row['track_id'] for row in self.summary['actors'] if row['label']=='vehicle'}
+        if request.track_id!='ego' and request.track_id not in known:
+            raise ValueError('Unknown vehicle ID; query an exact catalog track_id or ego')
+        key=(request.track_id,request.max_samples)
+        if key in self.trajectory_cache:
+            return [dict(type='text',text=json.dumps(dict(cached=True,
+                evidence_id=self.trajectory_cache[key]['evidence_id'],instruction='Reuse the previously returned trajectory and image.'),ensure_ascii=False))]
+        record=spatial_evidence.read(self.data.scene_ref.sample_root,
+            self.directory/f'trajectory_{len(self.trajectory_cache)+1:02d}',request.track_id,request.max_samples)
+        record['evidence_id']=f'T{len(self.trajectory_cache)+1}'
+        self.trajectory_cache[key]=record
+        content=[dict(type='text',text=json.dumps({key:value for key,value in record.items()
+            if key not in ('vehicle_catalog','diagram_vehicle_labels','image_path','ego_summary')},ensure_ascii=False))]
+        if record.get('status')=='available':
+            content.append(dict(type='image_url',image_url=dict(url='data:image/png;base64,'+base64.b64encode(Path(record['image_path']).read_bytes()).decode())))
+        return content
 
     def delivered(self):
         for sheet in self.records:sheet['delivered']=True
+        if self.spatial.get('status')=='available':self.spatial['delivered']=True
         self.save()
 
 
@@ -139,7 +174,7 @@ class ViewClient:
     def __init__(self,client,observation):
         if observation is None:raise ValueError('Visual observation was not prepared')
         self.client,self.observation=client,observation
-        self.model=getattr(client,'model','injected-client');self.exchanges=[];self.rounds=0
+        self.model=getattr(client,'model','injected-client');self.exchanges=[];self.rounds=0;self.trajectory_rounds=0
 
     @property
     def last_usage(self):return getattr(self.client,'last_usage',None)
@@ -152,6 +187,22 @@ class ViewClient:
             self.observation.delivered()
             try:action=parse_json_object(response)
             except (ValueError,TypeError):return response
+            if action.get('action')=='request_trajectory':
+                if self.trajectory_rounds>=3:
+                    return json.dumps(dict(suitability='needs_information',reasons=['Trajectory-query budget exhausted; current evidence did not support a final plan.'],edit_plan=None,retrieval_suggestion=None))
+                self.trajectory_rounds+=1
+                try:
+                    request=TrajectoryRequest.model_validate(action)
+                    content=self.observation.trajectory(request)
+                    evidence=self.observation.trajectory_cache[(request.track_id,request.max_samples)]
+                    self.observation.trajectory_requests.append(dict(request=action,query=self.trajectory_rounds,status=evidence['status'],
+                        evidence_id=evidence['evidence_id'],report_path=evidence.get('report_path')))
+                except (ValueError,TypeError,KeyError) as error:
+                    content=[dict(type='text',text=json.dumps(dict(tool_error=str(error),remaining_queries=3-self.trajectory_rounds),ensure_ascii=False))]
+                    self.observation.trajectory_requests.append(dict(request=action,query=self.trajectory_rounds,status='invalid',error=str(error)))
+                pair=[dict(role='assistant',content=response),dict(role='user',content=content)]
+                self.exchanges.extend(pair);history.extend(deepcopy(pair));self.observation.save()
+                continue
             if action.get('action')!='request_views':return response
             if self.rounds>=self.observation.cfg['max_extra_rounds']:
                 return json.dumps(dict(suitability='needs_information',reasons=['Additional visual review budget exhausted; more views are needed.'],edit_plan=None,retrieval_suggestion=None))

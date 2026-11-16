@@ -33,6 +33,9 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     if (experiments_root()) not in run_dir.parents or (run_dir.exists() and not resume):
         raise ValueError('Visual run must be a new directory under experiments or explicitly resumed')
     editor = EgoEditor(input_dir, constructor_run, run_dir, foci_run=foci_run, target_track=target_track, resume=resume)
+    from decision_scene_view import render_overview, actor_view, GUIDANCE as SCENE_GUIDANCE
+    layout_path=render_overview(editor.times,editor.baseline_xy,editor.baseline_yaw,editor.actors,
+        editor.road_official or editor.road,run_dir/'scene-overview.png',target_track)
     brief = None
     if conflict_brief is not None:
         brief_dir = Path(conflict_brief).resolve()
@@ -204,6 +207,7 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     if type(stage_timeout_s) not in (int, float) or stage_timeout_s <= 0:
         raise ValueError('stage_timeout_s must be positive')
     deadline = time.perf_counter() + stage_timeout_s
+    layout_delivery_turn = actions+1
     try:
         for turn in range(actions+1, max_turns+1):
             remaining = deadline - time.perf_counter()
@@ -213,6 +217,8 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             visual = review_state(editor.nodes, inspections, deliveries, pending, pending_review, max_inspections)
             context = editor.model_context(max_turns-turn+1, max_edit_candidates-editor.edit_count, feedback, pending_review_candidate_id=pending_review,
                 inspection_candidate_ids=[row['candidate_id'] for row in pending_records()])
+            context['scene_layout']=actor_view(editor.times,editor.baseline_xy,editor.actors,target_track)
+            context['visual_guidance']=SCENE_GUIDANCE
             if generation is not None:
                 context['generation_budget']=generation.context()
             if target_effect is not None:
@@ -258,6 +264,9 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
 
             content = prompt if pending is None else [{'type':'text','text':prompt+'\nRequested diagram for '+', '.join(row['candidate_id'] for row in pending_records())},
                 *[image_part(run_dir/row['path']) for row in pending_records()]]
+            if turn == layout_delivery_turn:
+                if isinstance(content,str): content=[{'type':'text','text':content}]
+                content.extend([{'type':'text','text':'Frozen attack scene BEV; recorded ego is a reference, not a policy rollout.'},image_part(layout_path)])
             messages = [{'role':'user','content':content}]
             choice, tools = _tool_contract(editor, turn, max_turns, max_edit_candidates, require_edit=point_only)
             if generation is not None:
@@ -322,9 +331,11 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                 continue
             call = calls[0]; name = call['function']['name']
             tool_started = time.perf_counter()
+            arguments_validated=False
             try:
                 args = _arguments(call)
                 validate_exposed_call(name, args, tools)
+                arguments_validated=True
                 if name == 'select_constructor_candidate' and set(args) == {'candidate_id','reason'}:
                     result = editor.select_constructor(args)
                 elif name == 'inspect_trajectory' and set(args) == {'candidate_id'}:
@@ -377,6 +388,9 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                     raise ValueError('Unknown tool or invalid arguments')
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
                 result = {'status':'invalid','error':str(error)[:300]}
+                if not arguments_validated:
+                    result.update(error_code='invalid_tool_arguments',executed=False,candidate_created=False,
+                        instruction='Resend one valid JSON object for the currently exposed tool schema. No trajectory edit was executed; keep the current candidate. Do not add a constructor call to correct JSON formatting.')
             except Exception as error:
                 folder=run_dir/'tool-exchanges'/f'turn_{turn:02d}'
                 folder.mkdir(parents=True,exist_ok=False)
@@ -411,7 +425,7 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
         stop = 'native_tool_protocol_failed'
         raise
     except Exception as error:
-        if time.perf_counter() >= deadline and type(error).__name__ in {'TimeoutExpired', 'TimeoutError', 'APITimeoutError'}:
+        if time.perf_counter() >= deadline and (getattr(error,'failure_kind',None)=='request_wall_time_exceeded' or type(error).__name__ in {'TimeoutExpired', 'TimeoutError', 'APITimeoutError', 'RequestDeadlineExceeded'}):
             stop = 'stage_timeout_exhausted'
         else:
             stop = 'request_or_execution_failed'

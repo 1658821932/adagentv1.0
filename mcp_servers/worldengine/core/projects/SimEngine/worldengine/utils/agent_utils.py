@@ -270,7 +270,7 @@ class Video_visualizer():
         self.images = []
         engine = get_engine()
         job_name = engine.global_config.get('job_name', 'navsafe_filtered')
-        self.path = 'dbg/video_visualizer/' + job_name if path is None else path
+        self.path = os.environ.get('ADAGENT_NATIVE_VIDEO_DIR', 'dbg/video_visualizer/' + job_name) if path is None else path
         data_output_dir = engine.global_config.get('data_output_dir', f'{WORLDENGINE_ROOT}/data_output')
         self.sensor_blobs_path = Path(data_output_dir) / 'sensor_blobs'
         os.makedirs(self.path, exist_ok=True)

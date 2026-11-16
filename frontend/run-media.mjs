@@ -3,7 +3,7 @@ import { dirname, join, sep } from 'node:path';
 
 const fileUrl = path => '/api/file?path=' + encodeURIComponent(path);
 const transcodedUrl = (path, options) => {
-  const route = path.startsWith(options.projectRoot + sep) ? '/api/video' : '/api/wevideo';
+  const route = options.weRoot && path.startsWith(options.weRoot + sep) ? '/api/wevideo' : '/api/video';
   return route + '?path=' + encodeURIComponent(path);
 };
 
@@ -34,18 +34,32 @@ function videoMedia(tool, result, options) {
   const items = [];
   if (tool === 'failure_analyzer') {
     const src = eightcamSource(result.simulation, result.token, options.closedLoopRoot);
-    if (src) video(items, src, '失败场景关键证据', '/api/eightcam?path=' + encodeURIComponent(src), '原始仿真记录', true);
+    if (src) video(items, src, '失败场景关键证据', '/api/eightcam?path=' + encodeURIComponent(src), '', true);
   }
   if (tool === 'policy_runner' && Array.isArray(result.videos)) {
     result.videos.slice(0, 2).forEach((path, index) => {
-      video(items, path, index === 0 ? '原生仿真回放' : `原生仿真回放 ${index + 1}`,
-        transcodedUrl(path, options), '实际仿真输出', index === 0);
+      const title = /(?:^|[\\/])CAM_F0[^/]*\.mp4$/i.test(path)
+        ? '前视仿真回放（全分辨率）'
+        : index === 0 ? '原生仿真回放' : `原生仿真回放 ${index + 1}`;
+      video(items, path, title,
+        transcodedUrl(path, options), '', index === 0);
     });
   }
-  if (tool === 'ego_trajectory_editor') {
-    const path = result.rendered_videos?.manual_explained;
-    if (typeof path === 'string') {
-      video(items, path, '专家轨迹渲染回放', transcodedUrl(path, options), '实际渲染输出', true);
+  if (tool === 'attack_vehicle_editor' && result.rendered_videos && typeof result.rendered_videos === 'object') {
+    for (const [cam, path] of Object.entries(result.rendered_videos)) {
+      if (typeof path === 'string') {
+        video(items, path, `攻击场景渲染 · ${cam}`, transcodedUrl(path, options), '', items.length === 0);
+      }
+    }
+  }
+  if (tool === 'ego_trajectory_editor' && result.rendered_videos && typeof result.rendered_videos === 'object') {
+    const manualPath = result.rendered_videos.manual_explained;
+    if (typeof manualPath === 'string') {
+      video(items, manualPath, '专家轨迹渲染回放', transcodedUrl(manualPath, options), '', true);
+    }
+    for (const [cam, path] of Object.entries(result.rendered_videos)) {
+      if (cam === 'manual_explained' || typeof path !== 'string') continue;
+      video(items, path, `专家轨迹渲染 · ${cam}`, transcodedUrl(path, options), '', items.length === 0);
     }
   }
   if (tool === 'video_retriever') {
@@ -64,12 +78,12 @@ function videoMedia(tool, result, options) {
         } catch { /* 转码代理仍可处理原文件 */ }
       }
       video(items, playable, '前视检索视频',
-        compressed ? fileUrl(playable) : transcodedUrl(playable, options), '原始检索结果，非编辑后画面', true);
+        compressed ? fileUrl(playable) : transcodedUrl(playable, options), '', true);
     }
     const root = result.scene_ref?.sample_root;
     if (root) {
       const grid = join(root, 'preview', 'original_eightcam_2hz.mp4');
-      video(items, grid, '原始场景八宫格', transcodedUrl(grid, options), '八相机原始记录，非编辑后画面');
+      video(items, grid, '原始场景八宫格', transcodedUrl(grid, options), '');
     }
   }
   return items;
@@ -79,9 +93,7 @@ function plannerMedia(result, items) {
   const sheets = result.evidence?.visual_observation?.sheets;
   if (!Array.isArray(sheets)) return;
   sheets.forEach((sheet, index) => {
-    const frames = Array.isArray(sheet.frame_indices) ? sheet.frame_indices.join(' / ') : '';
-    image(items, sheet.path, `原始场景关键帧 ${index + 1}/${sheets.length}`,
-      [sheet.camera, frames && `帧 ${frames}`, '编辑前画面'].filter(Boolean).join(' · '), index === 0);
+    image(items, sheet.path, `原始场景关键帧 ${index + 1}/${sheets.length}`, '', index === 0);
   });
 }
 
@@ -97,8 +109,7 @@ function attackMedia(result, items) {
       .map(name => join(directory, name));
   } catch { return; }
   paths.forEach((path, index) => {
-    image(items, path, `攻击轨迹几何检查 · ${candidate}`,
-      '几何参考，非相机渲染或物理仿真；本次编辑结果以冻结场景为准', index === paths.length - 1);
+    image(items, path, `攻击轨迹几何检查 · ${candidate}`, '', index === paths.length - 1);
   });
 }
 
@@ -121,9 +132,7 @@ function egoMedia(result, items) {
     - Number(b.record.candidate_id !== result.selected_candidate_id));
   inspections.forEach(({ record, path }) => {
     const selected = record.candidate_id === result.selected_candidate_id;
-    const clearance = typeof record.min_clearance_m === 'number' ? `最小间距 ${record.min_clearance_m.toFixed(2)}m` : '';
-    image(items, path, `${selected ? '最终专家轨迹' : '候选专家轨迹'} · ${record.candidate_id}`,
-      [clearance, '几何参考，非相机渲染或物理仿真'].filter(Boolean).join(' · '), selected);
+    image(items, path, `${selected ? '最终专家轨迹' : '候选专家轨迹'} · ${record.candidate_id}`, '', selected);
   });
 }
 

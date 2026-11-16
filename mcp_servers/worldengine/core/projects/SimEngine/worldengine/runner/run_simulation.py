@@ -1,3 +1,15 @@
+import os
+from contextlib import nullcontext
+
+_STARTUP = None
+if os.environ.get('ADAGENT_STARTUP_TIMING_DIR'):
+    from startup_timing import get_timing
+    _STARTUP = get_timing('simulator')
+    _STARTUP.begin('framework_imports')
+
+def _startup_span(phase):
+    return _STARTUP.span(phase) if _STARTUP is not None else nullcontext()
+
 import logging
 import pickle
 
@@ -7,6 +19,9 @@ from omegaconf import DictConfig
 from worldengine.runner.builders.worker_pool_builder import build_worker
 from worldengine.runner.builders.env_builder import build_envs
 from worldengine.runner.executor import run_runners
+
+if _STARTUP is not None:
+    _STARTUP.end('framework_imports')
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +34,12 @@ def main(cfg: DictConfig) -> None:
     logger.info('WorldEngine is running...')
 
     # Construct builder
-    worker = build_worker(cfg)
+    with _startup_span('worker_setup'):
+        worker = build_worker(cfg)
 
     # Construct simulations/environments
-    scenes_dict = pickle.load(open(cfg.data_file_path, 'rb'))
+    with _startup_span('framework_scenario_load'):
+        scenes_dict = pickle.load(open(cfg.data_file_path, 'rb'))
     count = cfg.get("num_scenarios")
     if count is not None:
         if type(count) is not int or count < 1:
@@ -34,7 +51,8 @@ def main(cfg: DictConfig) -> None:
         if length is not None and length < frame_budget:
             raise ValueError(f"Scene {token} has {length} observations; requested {frame_budget}. Padding is not allowed.")
     cfg.max_step = min(int(cfg.max_step), max(1, len(scenes_dict)) * frame_budget)
-    envs = build_envs(cfg=cfg, worker=worker, scene_dict=scenes_dict)
+    with _startup_span('environment_build'):
+        envs = build_envs(cfg=cfg, worker=worker, scene_dict=scenes_dict)
 
     logger.info('Running simulation...')
     try:

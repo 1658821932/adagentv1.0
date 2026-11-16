@@ -16,6 +16,11 @@ test('production config read/write, module MIME and stopped-state HTTP contracts
   await writeFile(join(runDir,'run.json'),JSON.stringify({task:'offline fixture',status:'running',
     start_time:'2026-11-14T10:00:00Z',owner_pid:999999999,owner_process_start:'1'}));
   await writeFile(join(runDir,'tools/step_00_attack_vehicle_editor/input.json'),'{}');
+  const planner=join(runDir,'tools/step_01_edit_planner');await mkdir(planner);
+  const sheet=join(runDir,'scene-sheet.png');await writeFile(sheet,'offline-image-fixture');
+  await writeFile(join(planner,'output.json'),JSON.stringify({status:'success',result:{evidence:{visual_observation:{sheets:[{path:sheet,frame_indices:[0,1]}]}}}}));
+  await mkdir(join(runDir,'api_requests/offline'),{recursive:true});
+  await writeFile(join(runDir,'api_requests/offline/result.json'),JSON.stringify({stage:'attack_vehicle_editor',context:{step:'0'},model:'offline',status:'success',started_at:'2026-11-14T10:00:00Z',elapsed_seconds:2,usage:{prompt_tokens:100},provider_private_detail:'private-sentinel'}));
   const api={active_profile:'one',one:{model:'offline-one',base_url:'https://example.invalid/v1',api_key:'test-secret-sentinel'},
     two:{model:'offline-two',base_url:'https://example.invalid/v1'},tool_profiles:{attack_editor:'active_profile'}};
   const agent={agent:{max_steps:20},orchestrator:{decision_correction_attempts:2},tools:{modes:{attack_vehicle_editor:'real'}}};
@@ -56,6 +61,11 @@ test('production config read/write, module MIME and stopped-state HTTP contracts
     const detail=await (await fetch(base+'/api/runs/'+run)).json();
     assert.equal(detail.status,'interrupted');assert.equal(detail.active,false);
     assert.equal(detail.steps[0].status,'interrupted');assert.equal(detail.steps[0].elapsed_seconds,null);
+    assert.equal(detail.continuation_supported,true);
+    assert.equal(detail.steps[0].activities[0].name,'model_request');
+    assert.equal(detail.steps[1].media[0].kind,'image');
+    assert.equal(JSON.stringify(detail).includes('private-sentinel'),false);
+    const image=await fetch(base+detail.steps[1].media[0].src);assert.equal(image.status,200);assert.match(image.headers.get('content-type'),/image\/png/);
     await writeFile(join(cfg,'agent.json'),'{invalid');
     response=await fetch(base+'/api/config');assert.equal(response.status,500);
     assert.match((await response.json()).error,/配置文件/);

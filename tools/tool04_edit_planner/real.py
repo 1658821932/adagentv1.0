@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-# A vehicle is only worth editing if it is close to the ego path and ahead of it once.
+# Distance is a planning hint, not an editability requirement.
 ELIGIBLE_MAX_DISTANCE_M = 30.0
 ELIGIBLE_BEHIND_TOLERANCE_M = 10.0
 from mcp_servers.scene_editing.adapter.schemas import AttackInput
@@ -13,10 +13,9 @@ from tools.llm_runtime import LLMTool, validation_details
 from .schemas import Input, Decision, Output
 from .observations import settings, sample_indices, Observation, ViewClient, ACTIVE_OBSERVATION
 from . import observations
-from .initial_motion import initial_motion_precheck
 
 _INSPECTION=ContextVar('edit_planner_inspection',default=None)
-_CACHE_VERSION='asset_supplement.v1'
+_CACHE_VERSION='asset_supplement.v3'
 
 
 def _plan_cache_path(data):
@@ -31,6 +30,14 @@ def _plan_cache_path(data):
     return observations.LOG_ROOT/'plan-cache'/f'{key}.json'
 
 
+def _awaits_added_asset(response):
+    if response.get('suitability')!='needs_information' or response.get('attack_input') is not None:
+        return False
+    options=response.get('edit_options') or []
+    return ((bool(options) and all(option['operation']=='add_vehicle' for option in options))
+            or (response.get('edit_plan') or {}).get('operation')=='add_vehicle')
+
+
 def _cached_asset_supplement(data):
     if data.vehicle is None:
         return None
@@ -40,9 +47,7 @@ def _cached_asset_supplement(data):
     try:
         cached=json.loads(path.read_text())
         response=cached['response']
-        if (cached.get('version')!=_CACHE_VERSION or response.get('suitability')!='needs_information'
-                or response.get('attack_input') is not None
-                or (response.get('edit_plan') or {}).get('operation')!='add_vehicle'):
+        if cached.get('version')!=_CACHE_VERSION or not _awaits_added_asset(response):
             return None
         result=enrich(data,dict(response,suitability='ready'))
         Output.model_validate(result)
@@ -54,9 +59,7 @@ def _cached_asset_supplement(data):
 
 def _save_asset_supplement(data,result):
     response=result.get('result') or {}
-    if (data.vehicle is not None or response.get('suitability')!='needs_information'
-            or response.get('attack_input') is not None
-            or (response.get('edit_plan') or {}).get('operation')!='add_vehicle'):
+    if data.vehicle is not None or not _awaits_added_asset(response):
         return
     path=_plan_cache_path(data);path.parent.mkdir(parents=True,exist_ok=True)
     temporary=path.with_suffix('.tmp')
@@ -100,20 +103,17 @@ def inspect_scene(data):
                 positions.setdefault(track,[]).append((float(box[0]),float(box[1])))
         eligible=observed if eligible is None else eligible & observed
     eligible=eligible or set()
-    # Being visible in every frame is not the same as being edit-relevant: a track
-    # parked on another road can be fully observed and still useless. Keep only
-    # vehicles that come near the ego path and are ahead of it at least once.
-    relevant=set()
+    # Preserve every fully observed valid vehicle for tool05 compatibility.
+    # Proximity to the recorded ego is advisory: a useful edited conflict may
+    # require a different motion than the original actor trajectory.
     for track in eligible:
         points=positions.get(track) or []
         distances=[math.hypot(x,y) for x,y in points]
         catalog[track]['nearest_ego_distance_m']=round(min(distances),1) if distances else None
         if any(d<=ELIGIBLE_MAX_DISTANCE_M and x>-ELIGIBLE_BEHIND_TOLERANCE_M for (x,y),d in zip(points,distances)):
-            relevant.add(track)
+            catalog[track]['edit_relevance']='near_recorded_ego'
         else:
-            catalog[track]['edit_relevance']='too_far_or_behind'
-    for track in relevant: catalog[track]['edit_relevance']='relevant'
-    eligible=relevant
+            catalog[track]['edit_relevance']='far_or_behind_in_recording_only'
     for track,entry in catalog.items():entry['editable_existing']=track in eligible
     binding={};manifest=Path(ref.manifest_path).expanduser()
     if manifest.is_file():
@@ -158,7 +158,12 @@ def inspect_scene(data):
     summary=dict(scene_id=ref.scene_id,scene_token=ref.scene_token,matched_camera=ref.matched_camera,frame_count=len(frames),
         actors=list(catalog.values()),snapshots=snapshots,evidence=evidence,
         box_coordinates='Original source annotation coordinates; transforms are supplied where available.',
-        scene_requirement=data.scene_requirement,target_effect=data.target_effect,edit_strategy=data.edit_strategy)
+        scene_requirement=data.scene_requirement,target_effect=data.target_effect,edit_strategy=data.edit_strategy,
+        editing_capabilities=dict(
+            edit_existing='Edit future motion of a fully observed vehicle; its t=0 position and heading stay fixed. No instantaneous relocation or whole-track translation tool.',
+            add_vehicle='With a supplied asset, choose a new initial pose and speed; stationary can keep the new vehicle at that pose for the whole scene.',
+            motion_feasibility='Detailed generated-trajectory checks belong to tool05. Original future motion is not a hard rejection in tool04.',
+            distance_hints='Recorded proximity is advisory, not a vehicle eligibility or scenario rejection gate.'))
     return summary,eligible,images
 
 
@@ -173,21 +178,36 @@ def enrich(data,response):
     summary,eligible,_=inspect_scene(data)
     result=dict(response,scene_id=data.scene_ref.scene_id,scene_token=data.scene_ref.scene_token,
         target_effect=data.target_effect,evidence=summary['evidence'],attack_input=None)
+    options=response.get('edit_options') or []
+    if result['suitability']=='ready' and options:
+        for option in options:
+            if option['operation']=='edit_existing' and option.get('target_track') is not None and option['target_track'] not in eligible:
+                raise ValueError('Existing option target must be a fully observed valid vehicle')
+        has_existing=any(option['operation']=='edit_existing' for option in options)
+        has_asset=summary['evidence']['added_vehicle_asset_available']
+        result['evidence']=dict(result['evidence'],option_resources=[dict(option_id=option['option_id'],
+            available=option['operation']=='edit_existing' or has_asset) for option in options],
+            motion_feasibility=dict(status='deferred_to_tool05'))
+        if not has_existing and not has_asset:
+            result['suitability']='needs_information'
+            result['reasons']=[*result['reasons'],'Provide a real added-vehicle asset and size for these alternatives.']
+        else:
+            arguments=dict(scene_ref=data.retrieval_result_ref or data.scene_ref.model_dump(mode='json'),
+                operation='auto',plan_options=options,
+                instruction='Construct this scene mechanism: '+data.scene_requirement+
+                    '\nCorrect ego behavior to preserve for expert editing: '+data.target_effect+
+                    '\nCompare the supplied alternatives, choose or adapt one using actual scene evidence; alternatives are not hard contracts.')
+            if has_asset:arguments['vehicle']=data.vehicle.model_dump(mode='json')
+            AttackInput.model_validate(arguments)
+            result['attack_input']=arguments
+        return result
     if result['suitability']=='ready' and result['edit_plan'] is not None:
         plan=result['edit_plan']
         if plan['operation']=='edit_existing' and plan['target_track'] not in eligible:
             raise ValueError('Existing target must be a valid vehicle observed in every source frame, as required by tool05')
-        if plan['operation']=='edit_existing':
-            frames=json.loads(Path(data.scene_ref.frames_path).read_text())
-            precheck=initial_motion_precheck(frames,plan['target_track'])
-            result['evidence']=dict(result['evidence'],initial_motion_precheck=precheck)
-            if not precheck['passed']:
-                result.update(suitability='unsuitable',edit_plan=None,attack_input=None,
-                    retrieval_suggestion='Use add_vehicle with a verified asset or retrieve a different source scene; the selected existing track fails initial-motion checks.')
-                result['reasons']=[*result['reasons'],*precheck['errors']]
-        if result['suitability']!='ready':
-            pass
-        elif plan['operation']=='add_vehicle' and not summary['evidence']['added_vehicle_asset_available']:
+        result['evidence']=dict(result['evidence'],motion_feasibility=dict(status='deferred_to_tool05',
+            scope='Original future motion does not veto coarse planning; tool05 checks generated candidates and supported takeover state.'))
+        if plan['operation']=='add_vehicle' and not summary['evidence']['added_vehicle_asset_available']:
             result['suitability']='needs_information'
             result['reasons']=[*result['reasons'],'Provide a real added-vehicle PLY and length/width/height before tool05.']
         else:
@@ -203,6 +223,9 @@ def validate(data,result):
     summary,eligible,_=inspect_scene(data)
     if result.edit_plan is not None and result.edit_plan.operation=='edit_existing' and result.edit_plan.target_track not in eligible:
         raise ValueError('Existing target must be a valid vehicle observed in every source frame, as required by tool05')
+    for option in result.edit_options:
+        if option.operation=='edit_existing' and option.target_track is not None and option.target_track not in eligible:
+            raise ValueError('Existing option target must be a fully observed valid vehicle')
 
 TOOL=LLMTool(name='edit_planner',directory=Path(__file__).parent,input_model=Input,response_model=Decision,
     output_model=Output,payload_builder=payload,enrich_result=enrich,validate_result=validate,
@@ -220,6 +243,14 @@ def run(input_data):
         inspection=inspect_scene(data)
     except (OSError,ValueError,TypeError,KeyError) as error:
         return dict(status='error',tool='edit_planner',error=dict(type='scene_inspection_error',message='Cannot inspect the retrieved scene',validation_errors=validation_details(error)))
+    summary=inspection[0]
+    missing=summary['evidence']['missing_resources']
+    if missing:
+        result=Output.model_validate(dict(scene_id=data.scene_ref.scene_id,scene_token=data.scene_ref.scene_token,
+            target_effect=data.target_effect,suitability='needs_information',reasons=missing,
+            edit_plan=None,attack_input=None,evidence=summary['evidence'])).model_dump(mode='json')
+        return dict(status='success',tool='edit_planner',result=result,
+            meta=dict(mode='real',model='resource_preflight',attempts=0,elapsed_seconds=0.0))
     token=_INSPECTION.set((data.model_dump(mode='json'),inspection))
     observation_token=ACTIVE_OBSERVATION.set(None)
     try:

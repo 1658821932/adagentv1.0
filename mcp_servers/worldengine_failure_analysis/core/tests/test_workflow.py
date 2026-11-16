@@ -45,7 +45,7 @@ class WorkflowTests(unittest.TestCase):
             evidence=FakeEvidence();client=FakeClient()
             result=run(client,evidence,{'metrics':{},'source':'official.csv','source_sha256':'hash'},Path(d))
             self.assertEqual(result['failure_reason'],'测试行为原因')
-            self.assertEqual([q['kind'] for q in evidence.queries],['ego','actors'])
+            self.assertEqual([q['kind'] for q in evidence.queries],['ego','actors','ego','actors'])
             self.assertEqual(client.agent_requests[0][0]["content"],SYSTEM)
             self.assertEqual(client.image_requests[0][0]["content"],IMAGE_SYSTEM)
             self.assertNotEqual(SYSTEM,IMAGE_SYSTEM)
@@ -54,12 +54,63 @@ class WorkflowTests(unittest.TestCase):
             trace=json.loads((Path(d)/'trace.json').read_text())
             self.assertEqual([e['action']['action'] for e in trace],['images','visual_complete','numbers','final'])
 
-    def test_early_numeric_query_is_rejected_and_vlm_can_correct(self):
+    def test_early_numeric_query_is_available_without_repeating_prefetch(self):
         with tempfile.TemporaryDirectory() as d:
             evidence=FakeEvidence()
             run(FakeClient(early=True),evidence,{'metrics':{},'source':'official.csv','source_sha256':'hash'},Path(d))
             trace=json.loads((Path(d)/'trace.json').read_text())
-            self.assertIn('tool_error',trace[0]['response']);self.assertEqual(len(evidence.queries),2)
+            self.assertNotIn('tool_error',trace[0]['response']);self.assertEqual(len(evidence.queries),5)
+
+    def test_prefetch_can_finish_without_a_separate_numeric_turn_and_keeps_step_zero(self):
+        class ShortClient(FakeClient):
+            def ask(self,messages,name):
+                if name=='turn_00':
+                    return {'action':'visual_complete','observations':['visible'],
+                        'candidates':[{'id':'A','reason':'A'},{'id':'B','reason':'B'}]}
+                if name=='turn_01':return final()
+                return super().ask(messages,name)
+        with tempfile.TemporaryDirectory() as d:
+            evidence=FakeEvidence()
+            run(ShortClient(),evidence,{'metrics':{'first_violation_step':0},'source':'s','source_sha256':'h'},Path(d))
+            budget=json.loads((Path(d)/'evidence-budget.json').read_text())
+            self.assertEqual(budget['initial_steps'],[0,1])
+            self.assertEqual(len(evidence.queries),2)
+            self.assertEqual(budget['status'],'completed')
+
+    def test_duplicate_queries_and_images_reuse_evidence(self):
+        class RepeatClient(FakeClient):
+            def ask(self,messages,name):
+                if name=='turn_02':return {'action':'images','requests':[{}]}
+                if name=='turn_03':return {'action':'numbers','queries':[{'kind':'ego','steps':[0,5,11]}]}
+                if name=='turn_04':return final()
+                return super().ask(messages,name)
+        with tempfile.TemporaryDirectory() as d:
+            evidence=FakeEvidence();client=RepeatClient()
+            run(client,evidence,{'metrics':{},'source':'s','source_sha256':'h'},Path(d))
+            self.assertEqual(len(evidence.queries),2)
+            self.assertEqual(len(client.image_requests),2)  # one overview, one detail
+            budget=json.loads((Path(d)/'evidence-budget.json').read_text())
+            self.assertEqual(budget['supplemental_images_remaining'],5)
+
+    def test_broad_image_requests_obey_new_image_budget_and_report_unseen_ids(self):
+        class ManyImages(FakeEvidence):
+            def select_images(self,requests):return [{'id':f'I_detail_{i}'} for i in range(10)]
+        class BroadClient(FakeClient):
+            def ask(self,messages,name):
+                if name in ('turn_00','turn_01','turn_02'):return {'action':'images','requests':[{}]}
+                if name=='turn_03':return {'action':'visual_complete','observations':['seen'],
+                    'candidates':[{'id':'A','reason':'A'},{'id':'B','reason':'B'}]}
+                if name=='turn_04':return final()
+                return super().ask(messages,name)
+        with tempfile.TemporaryDirectory() as d:
+            client=BroadClient()
+            run(client,ManyImages(),{'metrics':{},'source':'s','source_sha256':'h'},Path(d))
+            trace=json.loads((Path(d)/'trace.json').read_text())
+            self.assertEqual([len(t['response']['image_reviews']) for t in trace[:3]],[1,1,0])
+            self.assertEqual(trace[2]['response']['not_viewed'],[f'I_detail_{i}' for i in range(6,10)])
+            budget=json.loads((Path(d)/'evidence-budget.json').read_text())
+            self.assertEqual(budget['supplemental_images_remaining'],0)
+            self.assertEqual(len(budget['viewed_image_ids']),9)
 
     def test_final_cannot_skip_numeric_verification(self):
         with self.assertRaises(ValueError):validate_final(final(),{'A':{},'B':{}},set())

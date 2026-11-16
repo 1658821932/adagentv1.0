@@ -14,6 +14,7 @@ async function readJson(path) {
 
 function activitySummary(record, kind) {
   const result = record.result || {};
+  if (result.error) return String(typeof result.error === 'string' ? result.error : result.error.message || result.status).slice(0,240);
   if (Array.isArray(result.candidates)) {
     const ids = result.candidates.map(item => item?.candidate_id).filter(Boolean).slice(0, 4);
     return `生成 ${result.candidates.length} 个候选${ids.length ? '：' + ids.join('、') : ''}`;
@@ -88,5 +89,21 @@ export async function readSubagentActivity(runDir) {
     }
   }
   for (const [root, step] of runtimes) await supplementToolExchanges(root, step, activities);
+  const requests = await readdir(join(runDir,'api_requests'),{withFileTypes:true}).catch(()=>[]);
+  for (const entry of requests) {
+    if (!entry.isDirectory()) continue;
+    const request=await readJson(join(runDir,'api_requests',entry.name,'result.json'));
+    const step=Number(request?.context?.step);
+    if (!request || !Number.isInteger(step) || request.stage === 'main_agent') continue;
+    const usage=request.usage || {};
+    const note=[request.model,
+      typeof usage.prompt_tokens === 'number' ? `输入 ${usage.prompt_tokens} tokens` : '',
+      typeof usage.completion_tokens === 'number' ? `输出 ${usage.completion_tokens} tokens` : '',
+      request.error_type].filter(Boolean).join(' · ');
+    activities.push({id:`api:${entry.name}`,kind:'api',step,name:'model_request',
+      status:request.status,timestamp:request.started_at,finished_at:request.finished_at || null,
+      elapsed_seconds:typeof request.elapsed_seconds === 'number' ? request.elapsed_seconds : null,
+      summary:note});
+  }
   return activities.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
 }

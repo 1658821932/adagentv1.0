@@ -173,20 +173,26 @@ class ControlSearch:
                 residuals.extend(weight*np.sqrt(np.mean(errors[start:end+1]**2, axis=0)+1e-12))
         objective = contract['objective'] if contract else self.arguments['objective']
         gap = signed_box_gap(xy, yaw, self.editor.target['size_m'], self.ego_center, self.ego_yaw, [EGO_FRONT+EGO_REAR, EGO_WIDTH])
-        window = objective['interaction_window_s']
-        mask = (self.times >= window[0]) & (self.times <= window[1])
-        if objective['interaction'] == 'allowed':
-            forbidden = self.times <= getattr(self.editor,'danger_start_s',0.)
-        elif objective['interaction'] == 'either':
-            residuals.extend([5*max(0., float(gap[mask].min())-1.5)])
-            forbidden = self.times < window[0]
-        elif objective['interaction'] == 'contact':
-            residuals.extend([5*max(0., float(gap[mask].min())+.03)])
-            forbidden = self.times < window[0]
+        if getattr(self.editor, 'constraints', {}).get('agent_decides_interaction'):
+            # Only the explicit pre-event no-contact constraint remains. There is
+            # no attraction to collision, near-miss band, or fixed ego distance.
+            forbidden=self.times < getattr(self.editor,'danger_start_s',0.)-.001
+            residuals.extend(5*np.maximum(-gap[forbidden],0.))
         else:
-            residuals.extend([3*max(0., float(gap[mask].min())-1.5)])
-            forbidden = np.ones(len(self.times), dtype=bool)
-        residuals.extend(5*np.maximum(.17-gap[forbidden], 0.))
+            window = objective['interaction_window_s']
+            mask = (self.times >= window[0]) & (self.times <= window[1])
+            if objective['interaction'] == 'allowed':
+                forbidden = self.times <= getattr(self.editor,'danger_start_s',0.)
+            elif objective['interaction'] == 'either':
+                residuals.extend([5*max(0., float(gap[mask].min())-1.5)])
+                forbidden = self.times < window[0]
+            elif objective['interaction'] == 'contact':
+                residuals.extend([5*max(0., float(gap[mask].min())+.03)])
+                forbidden = self.times < window[0]
+            else:
+                residuals.extend([3*max(0., float(gap[mask].min())-1.5)])
+                forbidden = np.ones(len(self.times), dtype=bool)
+            residuals.extend(5*np.maximum(.17-gap[forbidden], 0.))
         # Signed corner/edge-midpoint distance guides away from official map edges.
         shape = np.array([[1, 1], [1, -1], [-1, -1], [-1, 1], [1, 0], [-1, 0], [0, 1], [0, -1]])*np.asarray(self.editor.target['size_m'][:2])/2
         c, s = np.cos(yaw)[:, None], np.sin(yaw)[:, None]

@@ -201,24 +201,33 @@ def screen_attack(times, ego_xy, ego_yaw, actors, target, seed_xy, seed_yaw,
                 other_xy_m=pose[:2].tolist(), other_yaw_rad=float(pose[2]),
                 other_size_m=pose[3:].tolist(), target_xy_m=dense_xy[index].tolist()))
     event_window = constraints.get('event_window_s', [danger_end, float(times[-1])])
-    event_mask = (dense_times > max(danger_end, event_window[0])) & (dense_times <= event_window[1] + .001)
+    time_tolerance=policy.TIME_ROUNDING_S if effective['policy_version']=='reference_acceptance.v2' else 0.
+    event_mask = (dense_times >= max(danger_end, event_window[0])-time_tolerance) & (dense_times <= event_window[1] + .001)
+    if effective['policy_version']!='reference_acceptance.v2':
+        event_mask=(dense_times>max(danger_end,event_window[0])) & (dense_times<=event_window[1]+.001)
     if not event_mask.any():
         raise ValueError('Event window must include time after the observation period')
     event_gap = float(np.min(np.asarray(clearances)[event_mask]))
     travelled = float(np.linalg.norm(np.diff(dense_xy, axis=0), axis=1).sum())
     checks = dict(initial_position=np.linalg.norm(dense_xy[0] - seed_xy[0]) <= 1e-6,
                   observation_prefix=prefix_error <= 1e-5,
-                  no_contact_during_observation=all(dense_times[index] > danger_end for index in contacts),
+                  no_contact_during_observation=all(dense_times[index] >= danger_end-time_tolerance for index in contacts),
                   motion=motion['status'] == 'passed', official_road=road['passed'],
                   observed_others=not other_contacts,
                   risk_in_event_window=event_gap <= float(constraints.get('max_ego_clearance_m', policy.ATTACK_EVENT_MAX_GAP_M)),
                   required_motion=travelled >= float(constraints.get('min_travel_m', 0.)))
     if effective['policy_version']=='reference_acceptance.v2':
         checks['no_contact_before_explicit_event_start']=checks.pop('no_contact_during_observation')
+        checks['target_contact_timing']=not contacts or bool(event_mask[contacts[0]])
+        if constraints.get('agent_decides_interaction'):
+            checks.pop('risk_in_event_window',None)
+    else:
+        checks['no_contact_during_observation']=all(dense_times[index]>danger_end for index in contacts)
     if effective['policy_version']=='reference_acceptance.v2' and danger_end>0:
-        early=dense_times<=danger_end+1e-9
+        early=dense_times<danger_end-time_tolerance
         threshold=float(constraints.get('max_ego_clearance_m',policy.ATTACK_EVENT_MAX_GAP_M))
-        checks['no_risk_before_danger_start']=bool(np.all(np.asarray(clearances)[early]>threshold))
+        if constraints.get('forbid_early_near_miss',False):
+            checks['no_risk_before_danger_start']=bool(np.all(np.asarray(clearances)[early]>threshold))
     if constraints.get('stationary_target', False):
         checks['stationary_target'] = bool(np.max(np.linalg.norm(dense_xy-seed_xy[0], axis=1)) <= 1e-5 and
             np.max(np.abs(np.arctan2(np.sin(dense_yaw-seed_yaw[0]), np.cos(dense_yaw-seed_yaw[0])))) <= 1e-5)

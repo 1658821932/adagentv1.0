@@ -75,19 +75,19 @@ def test_saved_retrieval_reference_is_accepted(scene,tmp_path):
 
 def test_scene_evidence_is_reused_only_for_identical_planning_input(scene,monkeypatch):
     from tools.tool04_edit_planner import real
-    calls=[];precheck=real.initial_motion_precheck
-    def counted(frames,track):
-        calls.append(track)
-        return precheck(frames,track)
-    monkeypatch.setattr(real,'initial_motion_precheck',counted)
+    original=real.inspect_scene;uncached=[]
+    def inspect(data):
+        if real._INSPECTION.get() is None:uncached.append(data.target_effect)
+        return original(data)
+    monkeypatch.setattr(real,'inspect_scene',inspect)
     value=arguments(scene);value['_llm_client']=client(response())
     assert run(value)['status']=='success'
-    assert calls==['vehicle-A']
+    assert uncached==[value['target_effect']]
     changed=arguments(scene);changed['target_effect']='Ego yields without an unnecessary full stop.'
     changed['_llm_client']=client(response())
     result=run(changed)
     assert result['status']=='success' and result['result']['target_effect']==changed['target_effect']
-    assert calls==['vehicle-A','vehicle-A']
+    assert uncached==[value['target_effect'],changed['target_effect']]
 
 
 def test_source_keyframe_is_sent_as_image_not_as_a_json_string(scene):
@@ -401,3 +401,178 @@ def test_short_scenes_use_only_actual_frames_without_padding_copies(scene):
     result=run(value)
     sheets=result['result']['evidence']['visual_observation']['sheets']
     assert len(sheets)==1 and sheets[0]['frame_indices']==[0] and sheets[0]['available_frames']==1
+
+
+def test_original_future_motion_cannot_veto_a_coarse_plan(temporal_scene):
+    from mcp_servers.scene_editing.core.adversarial.initial_motion_precheck import initial_motion_precheck
+    path=Path(temporal_scene['frames_path']);frames=json.loads(path.read_text())
+    frames[-1]['anns']['gt_boxes'][0][0]=-10.
+    path.write_text(json.dumps(frames))
+    assert not initial_motion_precheck(frames,'vehicle-A')['passed']
+    value=arguments(temporal_scene);value['_llm_client']=client(response())
+    result=run(value)
+    assert result['status']=='success' and result['result']['suitability']=='ready'
+    assert result['result']['evidence']['motion_feasibility']['status']=='deferred_to_tool05'
+    assert 'initial_motion_precheck' not in result['result']['evidence']
+
+
+def test_recorded_distance_is_a_hint_not_an_eligibility_gate(scene):
+    path=Path(scene['frames_path']);frames=json.loads(path.read_text())
+    frames[0]['anns']['gt_boxes'][0][:2]=[-100.,0.];path.write_text(json.dumps(frames))
+    value=arguments(scene);value['_llm_client']=client(response())
+    result=run(value)
+    assert result['status']=='success' and result['result']['suitability']=='ready'
+    assert result['result']['evidence']['eligible_vehicle_tracks']==['vehicle-A']
+
+
+@pytest.fixture
+def spatial_scene(temporal_scene,monkeypatch):
+    from tools.tool04_edit_planner import spatial_evidence
+    path=Path(temporal_scene['frames_path']);frames=json.loads(path.read_text())
+    for frame in frames:
+        frame['ego2global']=frame['lidar2ego']=[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
+    path.write_text(json.dumps(frames));calls=[]
+    image=Path(temporal_scene['sample_root'])/'frame.png'
+    def read(scene,output,track_id=None,max_samples=24):
+        calls.append(track_id);output=Path(output);output.mkdir(parents=True,exist_ok=True)
+        report=dict(status='available',image_path=str(image),report_path=str(output/'spatial-evidence.json'),
+            vehicle_catalog=[dict(track_id='vehicle-A',diagram_label='vehicl')],
+            ego_summary={'duration_s':11.5},scope='original recorded geometry')
+        if track_id is not None:
+            report['trajectory']=dict(track_id=track_id,points=[dict(time_s=0.,observed=True,center_xy_m=[0,10]),dict(time_s=.5,observed=False)])
+        (output/'spatial-evidence.json').write_text(json.dumps(report))
+        return report
+    monkeypatch.setattr(spatial_evidence,'read',read)
+    return temporal_scene,calls
+
+
+def test_bev_replaces_snapshot_dump_but_preserves_camera_images_and_full_evidence(spatial_scene):
+    scene,calls=spatial_scene;received=[]
+    def chat(messages):received.append(messages);return json.dumps(response())
+    value=arguments(scene);value['_llm_client']=SimpleNamespace(model='offline',chat=chat)
+    result=run(value);assert result['status']=='success',result
+    assert calls==[None] and len(image_parts(received[0]))==4
+    view=json.loads(received[0][1]['content'][0]['text'])
+    assert 'snapshots' not in view and view['actors'][0]['track_id']=='vehicle-A'
+    assert view['editing_capabilities']['edit_existing'].startswith('Edit future motion')
+    raw=json.loads(Path(view['evidence']['full_scene_evidence_path']).read_text())
+    assert len(raw['snapshots'])==3
+
+
+def test_vehicle_trajectory_is_queried_on_demand_and_duplicates_reuse_evidence(spatial_scene):
+    scene,calls=spatial_scene;received=[]
+    query=dict(action='request_trajectory',track_id='vehicle-A',max_samples=24,purpose='Check conflict time')
+    def chat(messages):
+        received.append(messages)
+        return json.dumps(query if len(received)<=2 else response())
+    value=arguments(scene);value['_llm_client']=SimpleNamespace(model='offline',chat=chat)
+    result=run(value);assert result['status']=='success',result
+    assert calls==[None,'vehicle-A']
+    returned=json.loads(received[1][-1]['content'][0]['text'])
+    assert returned['trajectory']['points'][1]['observed'] is False
+    assert returned['evidence_id']=='T1'
+    duplicate=json.loads(received[2][-1]['content'][0]['text'])
+    assert duplicate['cached'] and duplicate['evidence_id']=='T1'
+    assert len(received[2][-1]['content'])==1
+    assert len(result['result']['evidence']['visual_observation']['trajectory_requests'])==2
+
+
+def test_unknown_vehicle_query_does_not_read_another_track(spatial_scene):
+    scene,calls=spatial_scene;received=[]
+    def chat(messages):
+        received.append(messages)
+        return json.dumps(dict(action='request_trajectory',track_id='invented',purpose='Check') if len(received)==1 else response())
+    value=arguments(scene);value['_llm_client']=SimpleNamespace(model='offline',chat=chat)
+    result=run(value);assert result['status']=='success',result
+    assert calls==[None]
+    assert 'Unknown vehicle ID' in received[1][-1]['content'][0]['text']
+
+
+def test_trajectory_queries_have_a_finite_budget(spatial_scene):
+    scene,calls=spatial_scene
+    value=arguments(scene);value['_llm_client']=client(dict(action='request_trajectory',track_id='vehicle-A',purpose='Check'))
+    result=run(value)
+    assert result['status']=='success' and result['result']['suitability']=='needs_information'
+    observation=result['result']['evidence']['visual_observation']
+    assert len(observation['trajectory_requests'])==3 and observation['model_calls']==4
+    assert calls==[None,'vehicle-A']
+
+
+def option_response():
+    return dict(suitability='ready',reasons=['Two possible ways to create the same scene mechanism.'],
+        edit_plan=None,edit_options=[
+            dict(option_id='existing',operation='edit_existing',target_track='vehicle-A',instruction='Brake this vehicle from its original pose in 1.5-7.5s.',rationale='An annotated lead is present.',uncertainty='Check supported initial motion.'),
+            dict(option_id='added',operation='add_vehicle',maneuver='stationary',instruction='Place one stationary lead at a supported initial pose for a conflict in 1.5-7.5s.',rationale='Allows another initial placement.',uncertainty='Check road support and clearances.')])
+
+
+def test_alternatives_reach_tool05_without_locking_operation_or_target(scene,tmp_path):
+    asset=tmp_path/'vehicle.ply';asset.write_text('offline fixture asset')
+    value=arguments(scene);value.update(vehicle={'asset_path':str(asset),'size_m':[4.2,1.8,1.6]},_llm_client=client(option_response()))
+    result=run(value);assert result['status']=='success',result
+    handoff=result['result']['attack_input']
+    assert handoff['operation']=='auto'
+    assert 'target_track' not in handoff and 'maneuver' not in handoff
+    assert handoff['vehicle']==value['vehicle']
+    assert len(handoff['plan_options'])==2
+    assert 'option_id' in handoff['plan_options'][0]
+    from mcp_servers.scene_editing.adapter.schemas import AttackInput
+    assert AttackInput.model_validate(handoff).operation=='auto'
+    mock=call_tool('attack_vehicle_editor',handoff,mode='mock')
+    assert mock['status']=='success' and mock['result']['operation']=='edit_existing'
+    assert mock['result']['plan_choice']['option_id']=='existing'
+
+
+def test_missing_added_asset_does_not_block_existing_option(scene):
+    value=arguments(scene);value['_llm_client']=client(option_response())
+    result=run(value);assert result['status']=='success',result
+    assert result['result']['suitability']=='ready'
+    assert 'vehicle' not in result['result']['attack_input']
+    assert result['result']['evidence']['option_resources']==[
+        {'option_id':'existing','available':True},{'option_id':'added','available':False}]
+
+
+def test_only_added_options_without_asset_keep_options_but_no_executable_handoff(scene):
+    response=option_response();response['edit_options']=response['edit_options'][1:]
+    value=arguments(scene);value['_llm_client']=client(response)
+    result=run(value);assert result['status']=='success',result
+    assert result['result']['suitability']=='needs_information'
+    assert result['result']['attack_input'] is None
+    assert result['result']['edit_options'][0]['option_id']=='added'
+
+
+def test_added_options_asset_supplement_reuses_the_original_planning(scene,tmp_path):
+    calls=[];response=option_response();response['edit_options']=response['edit_options'][1:]
+    def chat(messages):calls.append(messages);return json.dumps(response)
+    value=arguments(scene);value['_llm_client']=SimpleNamespace(model='offline',chat=chat)
+    assert run(value)['result']['suitability']=='needs_information'
+    asset=tmp_path/'car.ply';asset.write_text('offline asset')
+    value['vehicle']=dict(asset_path=str(asset),size_m=[4.2,1.8,1.6])
+    completed=run(value)
+    assert completed['result']['suitability']=='ready' and completed['meta']['reused']
+    assert completed['result']['attack_input']['operation']=='auto' and len(calls)==1
+
+
+@pytest.mark.parametrize('damage',['no_options','fixed_target','fixed_maneuver','explicit_with_options','duplicate','added_without_asset'])
+def test_auto_input_rejects_ambiguous_or_unexecutable_parameters(scene,damage):
+    from pydantic import ValidationError
+    from mcp_servers.scene_editing.adapter.schemas import AttackInput
+    value=dict(scene_ref=scene,operation='auto',instruction='Construct a lead braking conflict.',plan_options=option_response()['edit_options'])
+    if damage=='no_options':value['plan_options']=[]
+    if damage=='fixed_target':value['target_track']='vehicle-A'
+    if damage=='fixed_maneuver':value['maneuver']='stationary'
+    if damage=='explicit_with_options':value['operation']='edit_existing'
+    if damage=='duplicate':value['plan_options'][1]['option_id']='existing'
+    if damage=='added_without_asset':value['plan_options']=value['plan_options'][1:]
+    with pytest.raises(ValidationError):AttackInput.model_validate(value)
+
+
+@pytest.mark.parametrize('damage',['duplicate','invented','too_many','ambiguous'])
+def test_invalid_option_sets_do_not_become_attack_handoffs(scene,damage):
+    response=option_response()
+    if damage=='duplicate':response['edit_options'][1]['option_id']='existing'
+    if damage=='invented':response['edit_options'][0]['target_track']='invented'
+    if damage=='too_many':response['edit_options']*=2
+    if damage=='ambiguous':response['edit_plan']=globals()['response']()['edit_plan']
+    value=arguments(scene);value['_llm_client']=client(response)
+    result=run(value)
+    assert result['status']=='error' and result['error']['type']=='output_validation_error'

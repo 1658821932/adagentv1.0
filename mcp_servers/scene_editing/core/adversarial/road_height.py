@@ -139,20 +139,21 @@ def read_recon_translation(scene_dir):
     return translation
 
 
-def ego_height_reference(frames, road_map, recon_translation):
-    """Per-frame vertical offset of the recorded ego origin above the road map,
-    plus the frame-0 value as the calibration reference. The recon2world
-    alignment is anchored near the scene start, so frame 0 reflects the physical
-    mount height; later frames may drift with the reconstruction."""
+def ego_height_reference(frames, road_map, recon_translation, *, calibration):
+    """Measured reconstruction ego-to-road clearance; UTM Z is never an anchor."""
+    calibration.verify_origin(recon_translation)
     recon_translation = np.asarray(recon_translation, float)
     profile = []
     for i, frame in enumerate(frames):
         ego = np.asarray(frame['ego2global'], float)
         ex, ey = ego[0, 3]-recon_translation[0], ego[1, 3]-recon_translation[1]
-        road_z = road_map.try_height_at(ex, ey)
-        profile.append(None if road_z is None else float(ego[2, 3]-recon_translation[2]-road_z))
+        reference = calibration.poses[calibration.nearest_index([ex, ey])]
+        road_z = road_map.try_height_at(*reference[:2, 3])
+        profile.append(None if road_z is None else float(reference[2, 3]-road_z))
     covered = [v for v in profile if v is not None]
     if not covered or profile[0] is None:
         raise ValueError('Recorded ego start is outside the road height map')
-    return dict(reference_m=profile[0], profile_m=profile,
-                min_m=float(min(covered)), max_m=float(max(covered)))
+    return dict(reference_m=float(np.median(covered)), profile_m=profile,
+                min_m=float(min(covered)), max_m=float(max(covered)),
+                source='MTGS reconstruction ego poses minus reconstructed road height',
+                calibration=calibration.provenance)

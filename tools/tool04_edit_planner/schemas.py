@@ -4,7 +4,7 @@ from pydantic import Field, PrivateAttr, RootModel, model_validator
 from common.scene_refs import SceneReference
 from common.models import OutputModel
 from common.artifacts import load_tool_result
-from mcp_servers.scene_editing.adapter.schemas import AttackInput, VehicleAsset
+from mcp_servers.scene_editing.adapter.schemas import AttackInput, VehicleAsset, AttackPlanOption
 from tools.llm_runtime import ToolModel, NonEmptyStr
 
 class RetrievalContext(OutputModel):
@@ -88,12 +88,17 @@ class Response(ToolModel):
     suitability: Literal['ready','unsuitable','needs_information']
     reasons: list[NonEmptyStr] = Field(min_length=1)
     edit_plan: EditPlan | None = None
+    edit_options: list[AttackPlanOption] = Field(default_factory=list,max_length=3,description="1..3 unranked coarse alternatives when editing is needed. Consider existing and added vehicles together; do not force a count. Legacy edit_plan is accepted only when edit_options is empty.")
     retrieval_suggestion: NonEmptyStr | None = None
 
     @model_validator(mode='after')
     def decision(self):
+        if self.edit_plan is not None and self.edit_options:
+            raise ValueError('Use edit_options or legacy edit_plan, not both')
+        ids=[option.option_id for option in self.edit_options]
+        if len(ids)!=len(set(ids)):raise ValueError('edit_options option_id must be unique')
         # ready with edit_plan=null is allowed when no attack-vehicle editing is needed
-        if self.suitability=='unsuitable' and (self.edit_plan is not None or not self.retrieval_suggestion):
+        if self.suitability=='unsuitable' and (self.edit_plan is not None or self.edit_options or not self.retrieval_suggestion):
             raise ValueError('Unsuitable scenes require a retrieval suggestion and no edit plan')
         return self
 
@@ -107,7 +112,14 @@ class Output(Response):
     @model_validator(mode='after')
     def handoff(self):
         if self.suitability=='ready':
-            if self.edit_plan is None:
+            if self.edit_options:
+                if self.attack_input is None:raise ValueError('Ready options require attack_input')
+                attack=AttackInput.model_validate(self.attack_input)
+                if (attack.scene_ref.scene_id,attack.scene_ref.scene_token)!=(self.scene_id,self.scene_token):
+                    raise ValueError('Attack arguments belong to a different scene')
+                if attack.operation!='auto' or attack.plan_options!=self.edit_options:
+                    raise ValueError('Attack auto options differ from the reviewed alternatives')
+            elif self.edit_plan is None:
                 # No attack-vehicle editing needed; scene is ready for ego editing directly
                 if self.attack_input is not None:
                     raise ValueError('attack_input must be null when edit_plan is null')
@@ -129,5 +141,11 @@ class ViewRequest(ToolModel):
     cameras: list[NonEmptyStr] = Field(min_length=1,max_length=2,description="Actual camera names from the source scene, e.g. CAM_L0 or CAM_R0.")
     purpose: NonEmptyStr = Field(description="What scene requirement or uncertainty needs these additional views.")
 
-class Decision(RootModel[Response | ViewRequest]):
+class TrajectoryRequest(ToolModel):
+    action: Literal['request_trajectory']
+    track_id: NonEmptyStr = Field(description="Exact vehicle track ID from the catalog, or ego for the recorded ego reference.")
+    max_samples: int = Field(default=24,ge=2,le=24)
+    purpose: NonEmptyStr
+
+class Decision(RootModel[Response | ViewRequest | TrajectoryRequest]):
     """Internal visual request or final review; public Output stays unchanged."""

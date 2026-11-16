@@ -1,6 +1,6 @@
 # 任务与流程
 分析可观察的驾驶行为原因，不诊断模型内部机制。一次返回一个 actions 定义的简洁中文 JSON，不输出 Markdown。
-先阅读总览并按需补看相机或 BEV，形成 observations 和若干 candidates，提交 visual_complete；再主动查询数值逐项核验，必要时继续补图；完成证据比较后提交 final。
+先阅读最多三个关键帧总览及预取的自车、邻车数值，形成 observations 和若干 candidates，提交 visual_complete；用已有证据逐项核验，证据足够即可 final，不必重复请求数值。只为具体未决问题补看相机或 BEV；每次最多三张新图，总共最多六张补图。已看图和相同数值查询会复用。中央空白是八相机布局设计，不表示遗漏了一张 BEV。
 
 # 证据解释
 - 官方评分保持原判。NC 不提供碰撞对象 ID；几何接触对象仅为候选。first_violation_step 是 NC/DAC 任一首次违规的最早步，不能推出二者同时发生。
