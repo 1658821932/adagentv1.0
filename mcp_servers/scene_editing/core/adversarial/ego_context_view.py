@@ -7,7 +7,7 @@ CANDIDATE_FIELDS = (
     'lane_markings', 'input_qualification', 'native_max_acceleration_mps2', 'min_other_clearance_m',
     'min_road_margin_m', 'min_road_margin_official_m', 'terminal_speed_mps',
     'terminal_speed_source', 'terminal_sample_interval_speed_mps',
-    'terminal_target_clearance_rate_mps',
+    'terminal_target_clearance_rate_mps','braking_summary',
     'comfort_reference_2_40_exceeded', 'clearance_periods', 'motion_timeline', 'motion_outcome', 'behavior_metrics', 'behavior_action_summary')
 CURVE_FIELDS = ('schema_version', 'max_speed_mps', 'max_acceleration_mps2',
     'tangential_deceleration_mps2', 'target_speed_mps', 'transition_time_s',

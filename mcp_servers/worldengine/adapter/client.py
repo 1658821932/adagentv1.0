@@ -21,6 +21,11 @@ def run_policy(input_data: dict) -> dict:
     # Normal native evaluation and RL collection share one window, regardless of
     # source length. Explicit user-requested diagnostic budgets remain supported.
     input_data = dict(input_data)
+    collision_only = input_data.get('collision_only', False)
+    if collision_only:
+        if not input_data.get('collision_target_track') or input_data.get('with_dense_reward_manager'):
+            raise ValueError('Collision-only probes require a target and no dense rewards')
+        input_data.update(visualize_video=False, visualize_BEV=False, with_dense_reward_manager=False)
     input_data.setdefault('num_history', DEFAULT_NATIVE_HISTORY)
     if input_data.get('max_frame_per_scene') is None and input_data.get('num_future') is None:
         input_data['max_frame_per_scene'] = DEFAULT_NATIVE_FRAMES
@@ -85,7 +90,7 @@ def run_policy(input_data: dict) -> dict:
     rollout = Path(result["result_dir"]) / "WE_output/openscene_format"
     if rollout.is_dir():
         result["rollout_dir"] = str(rollout)
-    pdm_subscores = read_pdm_subscores(result["result_dir"])
+    pdm_subscores = None if collision_only else read_pdm_subscores(result["result_dir"])
     if pdm_subscores is not None:
         result["pdm_subscores"] = pdm_subscores
     policy_behavior = summarize_policy_behavior(
@@ -128,7 +133,7 @@ def run_policy(input_data: dict) -> dict:
             raise RuntimeError("RL annotation export failed; inspect "+str(task.logs/"rlft_annotations.log"))
         result.update(json.loads(completed.stdout))
     from .policy_videos import collect_policy_videos
-    videos = collect_policy_videos(result['result_dir'],WorldEngineConfig().project_root,started_at)
+    videos = {} if collision_only else collect_policy_videos(result['result_dir'],WorldEngineConfig().project_root,started_at)
     if videos:
         result["videos"] = videos
     return result

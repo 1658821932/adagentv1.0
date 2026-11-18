@@ -36,6 +36,23 @@ def fake_launcher():
         return original([sys.executable, "-c", FAKE, command[-1]], **kwargs)
     return patch("agent.jobs.subprocess.Popen", side_effect=launch)
 
+
+def test_independent_06_07_background_jobs_are_persistent_and_not_duplicated(tmp_path):
+    modes={'ego_trajectory_editor':'mock','policy_runner':'mock'}
+    executor=ToolExecutor(modes,jobs_root=tmp_path,execution_timeout=5,scope='pair')
+    with fake_launcher():
+        expert=executor.execute('ego_trajectory_editor',{'attack_result':'frozen','_execution':{'background':True}})
+        policy=executor.execute('policy_runner',{'scene':'frozen','_execution':{'background':True}})
+        assert expert['status']==policy['status']=='running'
+        first,second=expert['job']['job_id'],policy['job']['job_id']
+        assert first!=second
+        restored=ToolExecutor(modes,jobs_root=tmp_path,execution_timeout=5,scope='pair')
+        assert restored.execute('ego_trajectory_editor',{'_execution':{'job_id':first}})['status']=='success'
+        assert restored.execute('policy_runner',{'_execution':{'job_id':second}})['status']=='success'
+        assert (tmp_path/'launches').read_text().count('started')==2
+        assert restored.execute('policy_runner',{'scene':'frozen','_execution':{'background':True}})['job']['job_id']==second
+        assert (tmp_path/'launches').read_text().count('started')==2
+
 def test_timeout_concurrent_submit_and_restart_reuse(tmp_path):
     store=JobStore(tmp_path)
     with fake_launcher():

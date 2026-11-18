@@ -167,8 +167,9 @@ def acceptance_goal_evidence(times, xy, ego, ego_yaw, arguments, first_contact_t
         if contract:contract['objective'].pop('interaction',None)
         hard=contract or dict(objective=dict(keyframes=[],interaction_window_s=list(constraints['event_window_s'])))
         report=plan_evidence(times,xy,target_yaw,ego,ego_yaw,target_size,preferred,hard)
-        return dict(report,acceptance_basis='explicit_task_only_interaction_is_agent_review',
-            interaction_assessment='measurements_only_no_contact_or_clearance_class_gate')
+        required=constraints.get('require_reference_contact',False)
+        return dict(report,acceptance_basis='reference_contact_required_for_eligibility' if required else 'explicit_task_only_interaction_is_agent_review',
+            interaction_assessment='target_body_contact_required_no_near_miss_class' if required else 'measurements_only_no_contact_or_clearance_class_gate')
     measured=goal_evidence(times,xy,ego,ego_yaw,arguments,first_contact_time_s,
         target_yaw=target_yaw,target_size=target_size,task_contract=constraints.get('task_contract'))
     if (constraints.get('generated_objectives_are_preferences') and 'objective' in arguments

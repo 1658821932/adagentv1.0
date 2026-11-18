@@ -143,7 +143,9 @@ class JobStore:
             result_file = folder / "result.json"
             if result_file.exists():
                 return {**json.loads(result_file.read_text()),
-                        "job": dict(job_id=job_id, state=manifest["status"], manifest_path=str(folder / "manifest.json"))}
+                        "job": dict(job_id=job_id, state=manifest["status"], manifest_path=str(folder / "manifest.json"),
+                                    elapsed_seconds=(round(manifest['finished_at']-manifest['started_at'],3)
+                                        if manifest.get('finished_at') is not None else None))}
             if not alive(manifest):
                 # The worker may have died while its external processes survive.
                 children_path = folder / "children.json"

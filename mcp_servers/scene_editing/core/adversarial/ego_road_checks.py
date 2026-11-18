@@ -221,7 +221,7 @@ def load_official_drivable(path):
         points = np.asarray(feature['polygon'], dtype=float)
         if points.ndim != 2 or points.shape[0] < 3 or not np.isfinite(points).all():
             continue
-        poly = Polygon(points)
+        poly = Polygon(points, holes=feature.get('holes'))
         if not poly.is_valid:
             poly = poly.buffer(0)
         if not poly.is_empty:

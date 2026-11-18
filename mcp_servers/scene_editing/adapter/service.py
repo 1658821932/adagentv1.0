@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from api_config import get_profile
 from mcp_servers.process import run_logged
 from mcp_servers.runtime import current_run, runtime_task, write_json
+from mcp_servers.scene_editing.shared_history import shared_history_end_index
 from .config import PROJECT_ROOT, llm_profile_name, stage_command, public_pipeline_root
 from .schemas import AttackInput, AttackOutput, EgoInput, EgoOutput, AttackRefusal, DefenseNotFound
 
@@ -87,7 +88,19 @@ def _validate_attack(data, result, task):
     original, edited = _timeline(source.frames_path), _timeline(frames_path)
     if len(original) != len(edited) or [f["timestamp"] for f in original] != [f["timestamp"] for f in edited]:
         raise EditingError("editing_identity_mismatch", "Attack editing must retain the complete source timeline")
-    for before, after in zip(original, edited):
+    history=frozen/'ego-history.json'
+    expected=original
+    if history.is_file():
+        import hashlib
+        proof=json.loads(history.read_text())
+        if (Path(proof['source_scene']).resolve()!=Path(source.sample_root).resolve()
+                or proof['source_frames_sha256']!=hashlib.sha256(Path(source.frames_path).read_bytes()).hexdigest()):
+            raise EditingError('editing_identity_mismatch','Ego history belongs to another source scene')
+        prepared=_inside(str(Path(proof['prepared_scene'])/'metadata/frames.json'),task.output)
+        if hashlib.sha256(prepared.read_bytes()).hexdigest()!=proof['edited_frames_sha256']:
+            raise EditingError('editing_identity_mismatch','Prepared ego history has changed')
+        expected=_timeline(prepared)
+    for before, after in zip(expected, edited):
         for key in ("token", "ego2global", "ego2global_translation", "ego2global_rotation"):
             if key in before and before.get(key) != after.get(key):
                 raise EditingError("editing_identity_mismatch", f"Attack editing changed source {key}")
@@ -96,6 +109,17 @@ def _validate_attack(data, result, task):
     _inside(result.checks.report_path,task.output)
     if result.pdm_probe_result_path is not None:
         _inside(result.pdm_probe_result_path,task.output)
+    if data.vadv2_self_test:
+        import hashlib
+        if result.vadv2_probe_result_path is None:
+            raise EditingError('editing_output_invalid','VAD self-test enabled but no exact-candidate evidence returned')
+        evidence=json.loads(_inside(result.vadv2_probe_result_path,task.output).read_text())
+        collision=evidence.get('collision_report') or {}
+        from mcp_servers.scene_editing.policy_evidence import has_policy_failure
+        if (not has_policy_failure(evidence, frames_path.parent/'map_drivable_official.json')
+                or evidence.get('frozen_frames_sha256')!=hashlib.sha256(frames_path.read_bytes()).hexdigest()
+                or collision.get('target_track')!=result.target_track):
+            raise EditingError('editing_output_invalid','VAD evidence does not establish a policy failure for this frozen scene after takeover')
     _handoffs(result,task)
     return result.model_dump()
 
@@ -126,10 +150,31 @@ def _validate_ego(data, result, task):
     times = [(f["timestamp"]-frames[0]["timestamp"])/1_000_000 for f in frames]
     if len(values) != len(times) or any(abs(row[0]-t)>0.001 for row,t in zip(values,times)):
         raise EditingError("editing_identity_mismatch", "Expert trajectory must align with frozen frame timestamps")
+    first=frames[0]['ego2global'];angle0=math.atan2(first[1][0],first[0][0])
+    c,s=math.cos(angle0),math.sin(angle0)
+    history_count = shared_history_end_index(times) + 1
+    for row, frame in zip(values[:history_count], frames[:history_count]):
+        pose=frame['ego2global'];dx,dy=pose[0][3]-first[0][3],pose[1][3]-first[1][3]
+        yaw=math.atan2(pose[1][0],pose[0][0])-angle0
+        if (abs(row[1]-(c*dx+s*dy))>1e-6 or abs(row[2]-(-s*dx+c*dy))>1e-6
+                or abs(math.atan2(math.sin(row[3]-yaw),math.cos(row[3]-yaw)))>1e-6):
+            raise EditingError('editing_identity_mismatch','Expert changed the shared 0–1.5s attack history')
     meta = json.loads(Path(result.trajectory_metadata_path).read_text())
     expected = {"coordinate_frame":"initial_ego_rear_axle", "position_reference":"ego_rear_axle", "length_unit":"m", "angle_unit":"rad", "time_unit":"s"}
     if any(meta.get(k)!=v for k,v in expected.items()):
         raise EditingError("editing_output_invalid", "Expert trajectory coordinate/unit metadata is missing or incompatible")
+    if result.expert_feedback is not None:
+        import hashlib
+        path=(result.expert_feedback.get('measurements') or {}).get('feedback_path')
+        report=json.loads(_inside(path,task.output).read_text())
+        if (report.get('schema_version')!='expert_attack_feedback.v1'
+                or report.get('candidate_id')!=result.selected_candidate_id
+                or Path(report['frozen_scene_path']).resolve()!=Path(attack.frozen_scene_path).resolve()
+                or report['frames_sha256']!=hashlib.sha256(Path(attack.frames_path).read_bytes()).hexdigest()
+                or Path(report['expert_trajectory_path']).resolve()!=trajectory.resolve()
+                or report['expert_trajectory_sha256']!=hashlib.sha256(trajectory.read_bytes()).hexdigest()):
+            raise EditingError('editing_identity_mismatch','Expert feedback differs from the exact attack/expert version')
+        _inside(report['expert_review_path'],task.output)
     _handoffs(result,task)
     return result.model_dump()
 

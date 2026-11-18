@@ -21,12 +21,63 @@ class NoOutputTimeout(TimeoutError):
 
 class StreamingRequestFailure(RuntimeError):
     """Public failure metadata without discarding the original exception type."""
-    def __init__(self, message, *, failure_kind, error_type, phase, archive_ref):
+    def __init__(self, message, *, failure_kind, error_type, phase, archive_ref,
+                 output_received=None, chunks_received=None):
         super().__init__(message)
         self.failure_kind=failure_kind
         self.error_type=error_type
         self.phase=phase
         self.archive_ref=str(archive_ref)
+        self.output_received=output_received
+        self.chunks_received=chunks_received
+
+
+def request_timeout_details(error):
+    """Normalize deadline wrappers without treating arbitrary stream errors as timeouts."""
+    chain=[]
+    current=error
+    while current is not None and all(current is not item for item in chain) and len(chain)<8:
+        chain.append(current)
+        current=current.__cause__ or current.__context__
+    wall_kinds={'request_wall_time_exceeded','stream_wall_time_exceeded'}
+    kind=next((getattr(item,'failure_kind',None) for item in chain
+               if getattr(item,'failure_kind',None)),None)
+    timeout=kind in wall_kinds|{'no_output_timeout','transport_timeout'} or any(
+        isinstance(item,TimeoutError) or type(item).__name__ in
+        {'APITimeoutError','TimeoutExpired','RequestDeadlineExceeded','NoOutputTimeout'} for item in chain)
+    if not timeout:
+        return None
+    if kind is None:
+        if any(isinstance(item,NoOutputTimeout) for item in chain):kind='no_output_timeout'
+        elif any(isinstance(item,RequestDeadlineExceeded) for item in chain):kind='request_wall_time_exceeded'
+        else:kind='transport_timeout'
+    output=next((getattr(item,'output_received') for item in chain
+                 if getattr(item,'output_received',None) is not None),None)
+    category=('model_decision_timeout' if kind in wall_kinds and output is True else
+              'no_output_timeout' if kind=='no_output_timeout' else
+              'request_deadline' if kind in wall_kinds else 'transport_timeout')
+    result=dict(failure_kind=kind,timeout_category=category,output_received=output)
+    for name in ('archive_ref','error_type','phase','chunks_received'):
+        value=next((getattr(item,name) for item in chain if getattr(item,name,None) is not None),None)
+        if value is not None:result[name]=value
+    return result
+
+
+def request_protocol_details(error):
+    chain=[]
+    current=error
+    while current is not None and all(current is not item for item in chain) and len(chain)<8:
+        chain.append(current)
+        current=current.__cause__ or current.__context__
+    kind=next((getattr(item,'failure_kind',None) for item in chain
+               if getattr(item,'failure_kind',None)=='multiple_tool_calls_when_disabled'),None)
+    if kind is None:
+        return None
+    result=dict(failure_kind=kind)
+    for name in ('archive_ref','error_type','phase','chunks_received','output_received'):
+        value=next((getattr(item,name) for item in chain if getattr(item,name,None) is not None),None)
+        if value is not None:result[name]=value
+    return result
 
 
 def _chunk_has_output(chunk):
@@ -297,6 +348,13 @@ class StreamingRequestArchive(RequestArchive):
                     failure_kind = 'no_output_timeout'
                 elif isinstance(error, RequestDeadlineExceeded):
                     failure_kind = 'request_wall_time_exceeded'
+                elif failure_kind is None and (isinstance(error,TimeoutError)
+                        or type(error).__name__=='APITimeoutError'):
+                    failure_kind = 'transport_timeout'
+                public_error=StreamingRequestFailure('Streaming request failed; see archived attempt',
+                    failure_kind=failure_kind,error_type=type(error).__name__,phase=phase,archive_ref=attempt,
+                    output_received=output_received,chunks_received=chunks_received)
+                timeout_detail=request_timeout_details(public_error)
                 save()
                 # Types/errno distinguish connection, header waits and broken streams
                 # without persisting exception messages, URLs, headers or bodies.
@@ -329,6 +387,7 @@ class StreamingRequestArchive(RequestArchive):
                 atomic_json(attempt / 'error.json', redact(dict(
                     error_type=type(error).__name__, http_status=getattr(error, 'status_code', None),
                     failure_phase=phase, failure_kind=failure_kind,
+                    timeout_category=None if timeout_detail is None else timeout_detail['timeout_category'],
                     exception_chain=causes, chunks_received=chunks_received,
                     output_received=output_received,
                     request_total_seconds=total_seconds, no_output_seconds=no_output_seconds,
@@ -342,5 +401,4 @@ class StreamingRequestArchive(RequestArchive):
                     delay = retry_backoff_s[min(attempt_number - 1, len(retry_backoff_s) - 1)] if retry_backoff_s else 0.0
                     time.sleep(min(delay, max(0.0, remaining - 1.0)))
                     continue
-                raise StreamingRequestFailure('Streaming request failed; see archived attempt',
-                    failure_kind=failure_kind,error_type=type(error).__name__,phase=phase,archive_ref=attempt) from error
+                raise public_error from error

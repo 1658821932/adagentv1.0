@@ -9,8 +9,8 @@ FIELDS = {
     "scene_instance_generator": ("scene_requirement","target_effect","candidates"),
     "video_retriever": ("video_path","source_file","source_segment","match_score","mode"),
     "edit_planner": ("suitability","reasons","edit_plan","edit_options","retrieval_suggestion","scene_id","scene_token","target_effect","attack_input"),
-    "attack_vehicle_editor": ("status","stage","mode","run_dir","scene_id","scene_token","operation","plan_choice","target_track","selected_candidate_id","frozen_scene_path","frames_path","trajectory_path","provenance_path","submission_path","simulation_input","native_export","rendered_videos","pdm_probe_result_path","vadv2_probe_result_path","policy_collision_report"),
-    "ego_trajectory_editor": ("status","stage","mode","run_dir","scene_id","scene_token","attack_run_dir","target_track","selected_candidate_id","selected_source","expert_trajectory_path","trajectory_metadata_path","conflict_brief_path","submission_path","simulation_input","native_export","expert_motion_summary","ilft_training_data","rendered_videos"),
+    "attack_vehicle_editor": ("status","stage","mode","run_dir","scene_id","scene_token","operation","plan_choice","shared_history","target_track","selected_candidate_id","frozen_scene_path","frames_path","trajectory_path","provenance_path","submission_path","simulation_input","native_export","rendered_videos","pdm_probe_result_path","vadv2_probe_result_path","policy_collision_report","policy_evaluation"),
+    "ego_trajectory_editor": ("status","stage","mode","run_dir","scene_id","scene_token","attack_run_dir","target_track","selected_candidate_id","selected_source","expert_trajectory_path","trajectory_metadata_path","conflict_brief_path","submission_path","simulation_input","native_export","expert_motion_summary","ilft_training_data","rendered_videos","render_status"),
     "policy_runner": ("result_dir","policy_result","collision_report","evaluation_scope","pdm_subscores","policy_behavior_summary","rollout_dir","reward_dir","candidate_rewards_present","rlft_training_data","rlft_data_report","pdm_challenge","startup_timing_report"),
     "failure_case_filter": ("is_failure_case","pdm_scores_file","scene_count","failure_cases","scene_results"),
     "policy_trainer": ("checkpoint","training_mode","log_path","work_dir","epochs","final_loss","training_config","export_dir"),
@@ -65,6 +65,8 @@ def summarize(tool, payload):
             if isinstance(observation,dict) and observation.get("record_dir"):
                 result["evidence"]["observation_record_dir"]=observation["record_dir"]
     elif tool in ("attack_vehicle_editor","ego_trajectory_editor"):
+        if tool=='ego_trajectory_editor' and isinstance(payload.get('expert_feedback'),dict):
+            result['expert_feedback']=deepcopy(payload['expert_feedback'])
         if "checks" in payload:
             result["checks"]=check_view(payload["checks"])
         result.update(pick(payload,BUSINESS_FIELDS))
@@ -73,10 +75,13 @@ def summarize(tool, payload):
         # Keep measured recovery feedback, without archived internal requests.
         detail=payload.get("detail")
         if isinstance(detail,dict):
-            result["recovery_feedback"]=pick(detail,("status","reason","stop_reason","revision_feedback",
+            result["recovery_feedback"]=pick(detail,("status","reason","stop_reason","search_stage","revision_feedback",
                 "guidance","failed_requirements","measurements","reuse_completed_from",
+                "rejected_initial_placements",
                 "termination_evidence","request_count","attempt_count","remaining_budget",
-                "api_budget","constructor_budget","resumable_candidate_ids","retry_allowed"))
+                "api_budget","constructor_budget","resumable_candidate_ids","retry_allowed",
+                "recovery_action","recovery_hint","finalization_grace_used","request_timeout_recovery",
+                "editing_timeout_recovery_used"))
     elif tool=="policy_runner":
         reports=payload.get("reports")
         if isinstance(reports,list):

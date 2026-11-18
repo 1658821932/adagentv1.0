@@ -108,6 +108,18 @@ def summarize_frames(frames,target_track,takeover_step):
         scope='Observed closed-loop geometry; interpolated possible contact is separate. No physical-impact or continuous-time certification.')
 
 
+def collision_evaluation_scope(report, scene_ids, history, frames):
+    """A collision probe verifies actual coverage without claiming an official PDM score."""
+    if (report.get('status')!='completed' or report.get('target_collision_detected') is None
+            or report.get('frame_count')!=frames or report.get('policy_takeover_step')!=history-1
+            or scene_ids!={report.get('scene_id')}
+            or abs(report.get('policy_takeover_time_s',-1)-(history-1)*.5)>1e-6):
+        raise RuntimeError('Collision-only coverage does not match the completed rollout')
+    return dict(scope='native_target_collision',official_pdm_score=False,status='completed',
+        start_time_s=(history-1)*.5,end_time_s=(frames-1)*.5,
+        num_history=history,max_frame_per_scene=frames,scene_id=report['scene_id'])
+
+
 def install_recorder(path):
     from worldengine.manager.render_manager import RenderManager
     path=Path(path)

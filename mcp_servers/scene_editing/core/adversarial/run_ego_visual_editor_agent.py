@@ -82,6 +82,10 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     if controlled_generation:
         config.update(controlled_generation=True,foci_enabled=foci_enabled,target_effect=target_effect)
     config['decision_loop_version']='focused_comparison.v1'
+    # Keep old request reconstruction stable when resuming an archived run.
+    if not resume or archived.get('selected_inspection_policy'):
+        config['selected_inspection_policy']='automatic_after_selection.v1'
+        agent_prompt+='\nSelecting the initial candidate automatically attaches its trajectory diagram to the next request. Read that attached diagram and choose an edit or submission; no separate mandatory inspection call is needed. Manual inspection remains available for other candidates. Image delivery and exact-candidate submission checks remain binding.'
     config['tool_transport_version']='native_result_with_image_capability.v2'
     config['image_tool_choice']=profile.get('image_tool_choice','required')
     if profile.get('thinking_mode'):
@@ -207,7 +211,9 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     if type(stage_timeout_s) not in (int, float) or stage_timeout_s <= 0:
         raise ValueError('stage_timeout_s must be positive')
     deadline = time.perf_counter() + stage_timeout_s
-    layout_delivery_turn = actions+1
+    # A resumed request must match its archived images. Do not resend the
+    # initial layout on an arbitrary later failed turn.
+    layout_delivery_turn = 1
     try:
         for turn in range(actions+1, max_turns+1):
             remaining = deadline - time.perf_counter()
@@ -338,6 +344,8 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                 arguments_validated=True
                 if name == 'select_constructor_candidate' and set(args) == {'candidate_id','reason'}:
                     result = editor.select_constructor(args)
+                    if result.get('status')=='selected' and config.get('selected_inspection_policy'):
+                        result['automatic_inspection']=inspect(args['candidate_id'],automatic=True)
                 elif name == 'inspect_trajectory' and set(args) == {'candidate_id'}:
                     cached = any(row['candidate_id']==args['candidate_id'] for row in inspections)
                     allowance = review_state(editor.nodes, inspections, deliveries, None, pending_review, max_inspections)

@@ -102,6 +102,15 @@ def test_retry_metadata_is_separate_from_business_arguments():
     result=Orchestrator(NS(call_functions=lambda *a:response)).decide("test",{})
     assert result["arguments"]=={"token":"scene","_execution":{"retry":True}}
 
+
+def test_background_and_reconnection_metadata_stays_outside_policy_arguments():
+    for execution in ({'background':True},{'background':False,'job_id':'existing-job'}):
+        response=reply('policy_runner',{'reason':'Evaluate the frozen attack independently',
+            'arguments':{},'execution':execution})
+        result=Orchestrator(NS(call_functions=lambda *a:response)).decide('test',{})
+        assert result['action']=='call_tool'
+        assert result['arguments']=={'_execution':execution}
+
 def test_definitions_are_valid_at_function_root():
     for tool in get_function_tools():
         root=tool["function"]["parameters"]

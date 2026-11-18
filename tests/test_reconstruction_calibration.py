@@ -12,7 +12,7 @@ import pytest
 CORE=Path(__file__).resolve().parents[1]/'mcp_servers/scene_editing/core/adversarial'
 if str(CORE) not in sys.path:sys.path.insert(0,str(CORE))
 from reconstruction_calibration import ReconstructionCalibration, load_reconstruction_calibration, recorded_pose_at
-from road_height import ego_height_reference
+from road_height import RoadHeightMap, ego_height_reference
 from mcp_servers.worldengine.adapter.replay_pose import shift_ego_calibration
 
 
@@ -50,6 +50,26 @@ def test_height_anchor_is_independent_of_bad_frame_zero_and_later_utm_drift():
     for f in frames:f['ego2global'][2][3]-=100
     after=ego_height_reference(frames,Road(),[100,200,19],calibration=calibration)
     assert after==result
+
+
+def test_first_frame_height_hole_uses_surrounding_measured_plane():
+    axis = np.linspace(-4., 4., 41)
+    x, y = np.meshgrid(axis, axis)
+    heights = -2. + .1*x + .2*y
+    heights[(abs(x) <= .9) & (abs(y) <= .9)] = np.nan
+    road = RoadHeightMap(heights, np.eye(2), [4., 4.], 5.)
+    with pytest.raises(ValueError, match='insufficient surrounding measurements'):
+        road.height_with_local_plane(0., 0., radius_m=.75)
+    ground = road.height_with_local_plane(0., 0.)
+    assert ground['source'] == 'enclosed_local_plane'
+    assert ground['height'] == pytest.approx(-2.)
+    pose = np.eye(4)
+    pose[:3, 3] = [100., 200., 1.]  # An unrelated UTM height.
+    result = ego_height_reference([{'ego2global': pose}], road, [100., 200., 19.],
+                                  calibration=reference())
+    assert result['reference_m'] == pytest.approx(.35)
+    with pytest.raises(ValueError, match='outside the road height map'):
+        road.height_with_local_plane(4.1, 0.)
 
 
 def test_edited_pose_keeps_requested_xy_yaw_and_measured_road_clearance():

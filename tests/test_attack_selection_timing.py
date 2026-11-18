@@ -31,7 +31,8 @@ def test_first_object_response_is_processed_before_prefix_loop_binds_time(tmp_pa
         ego_path_from_frames=lambda frames:(times,ego,np.zeros(3)),
         observed_objects_from_frames=lambda frames:actors,load_official_drivable=lambda path:None,
         _road_sections=lambda *args:[],EGO_FRONT=3.,EGO_REAR=1.,EGO_WIDTH=2.,
-        OBJECT_TOOLS=[],OBJECT_PROMPT='fixture',compact_model_context=lambda value:value,image_part=lambda path:dict(path=str(path)),
+        OBJECT_TOOLS=[],placement_preview_tool=lambda:dict(type='function',function={'name':'preview_attack_options'}),
+        OBJECT_PROMPT='fixture',compact_model_context=lambda value:value,image_part=lambda path:dict(path=str(path)),
         decode_call=lambda attempt:(call,'finish_search',dict(reason='fixture')),
         archive_exchange=exchange,revision_evidence=lambda constraints:{})
     node=next(n for n in ast.parse((CORE/'run_attack_workflow.py').read_text()).body

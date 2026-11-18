@@ -11,7 +11,8 @@ ADV_DIR = Path(__file__).resolve().parents[1] / "mcp_servers/scene_editing/core/
 if str(ADV_DIR) not in sys.path:
     sys.path.insert(0, str(ADV_DIR))
 
-from streaming_requests import NoOutputTimeout, StreamingRequestArchive, deadline_events, StreamingRequestFailure
+from streaming_requests import (NoOutputTimeout, StreamingRequestArchive, deadline_events,
+                               StreamingRequestFailure, RequestDeadlineExceeded, request_timeout_details)
 from defense_request_recovery import retryable_request
 
 
@@ -148,6 +149,8 @@ class StreamingRetryAndTimeoutTests(unittest.TestCase):
             self.assertEqual(caught.exception.error_type,"TimeoutError")
             self.assertEqual(caught.exception.phase,"reading_response_stream")
             self.assertIsInstance(caught.exception.__cause__,TimeoutError)
+            self.assertEqual(caught.exception.failure_kind,'transport_timeout')
+            self.assertIs(caught.exception.output_received,True)
 
     def test_defense_request_recovery_accepts_no_output_timeout_on_latest_attempt(self):
         with tempfile.TemporaryDirectory() as tmp:

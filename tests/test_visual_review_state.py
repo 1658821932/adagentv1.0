@@ -5,8 +5,18 @@ import json
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 CORE=Path(__file__).resolve().parents[1]/'mcp_servers/scene_editing/core/adversarial'
+
+
+@pytest.fixture(autouse=True)
+def scene_layout(monkeypatch):
+    import sys
+    monkeypatch.syspath_prepend(str(CORE))
+    import decision_scene_view
+    monkeypatch.setattr(decision_scene_view,'render_overview',lambda *a,**k:Path('fixture-layout.png'))
+    monkeypatch.setattr(decision_scene_view,'actor_view',lambda *a,**k:{'actors':[]})
 
 
 def module(name):
@@ -119,7 +129,7 @@ def test_repeated_visual_inspection_reuses_image_and_budget(tmp_path):
     run,contexts=runner(tmp_path,events)
     result=run(tmp_path,tmp_path,None,tmp_path/'run',max_turns=5,max_inspections=1)
     assert result['selected_candidate_id']=='a'
-    assert result['inspection_calls']==1 and len(result['inspections'])==1
+    assert result['inspection_calls']==0 and len(result['inspections'])==1
     assert len(result['completed_image_deliveries'])==1
     assert len(list((tmp_path/'run/inspections').glob('inspection_*.json')))==1
     assert contexts[3]['last_tool_result']['cached'] is True
@@ -199,6 +209,8 @@ def runner(tmp_path, events, scene_context=None, edit_status='reference_screen_p
             if kwargs.get('resume'):return
             self.run_dir=run_dir;run_dir.mkdir();self.nodes=nodes();self.current=None;self.submitted=None
             self.edit_count=0;self.history=[];self.effective_policy={}
+            self.times=np.array([0.,1.]);self.baseline_xy=np.array([[0.,0.],[1.,0.]])
+            self.baseline_yaw=np.zeros(2);self.actors=[[],[]];self.road_official=self.road=None
         def model_context(self,*args,**kwargs):
             result=dict(scene_context or {}, current_edit_parent_id=self.current)
             if len(args)>2 and args[2] is not None:result['last_tool_result']=args[2]
@@ -295,9 +307,20 @@ def test_reviewed_initial_candidate_can_submit_without_foci_or_edit(tmp_path,mon
     run,contexts=runner(tmp_path,events)
     result=run(tmp_path,tmp_path,None,tmp_path/'run',max_turns=5,max_inspections=1,controlled_generation=True)
     assert result['selected_candidate_id']=='a' and result['model_actions']==3
-    assert result['automatic_inspection_count']==0
+    assert result['automatic_inspection_count']==1
     assert not contexts[2]['refinement_workflow']['pending']
     assert contexts[2]['refinement_workflow']['status']=='reviewed_initial_candidate_available'
+
+
+def test_selected_initial_image_is_delivered_on_next_decision_without_an_inspection_api(tmp_path):
+    events=[('select_constructor_candidate',dict(candidate_id='a',reason='fixture')),
+        ('submit_candidate',dict(candidate_id='a',reason='reviewed attached initial diagram'))]
+    run,contexts=runner(tmp_path,events)
+    result=run(tmp_path,tmp_path,None,tmp_path/'run',max_turns=4,max_inspections=1)
+    assert result['model_actions']==2 and result['selected_candidate_id']=='a'
+    assert result['inspection_calls']==0 and result['automatic_inspection_count']==1
+    assert contexts[1]['visual_submission_state']['attached_candidate_ids']==['a']
+    assert result['completed_image_deliveries'][0]['request_turn']==2
 
 
 def test_real_generation_branch_auto_delivers_all_outputs_and_allows_original_fallback(tmp_path,monkeypatch):
@@ -306,7 +329,7 @@ def test_real_generation_branch_auto_delivers_all_outputs_and_allows_original_fa
     run,contexts=runner(tmp_path,events,scene_context=dict(comparison_guidance='Retain progress once reserve is met.'))
     result=run(tmp_path,tmp_path,None,tmp_path/'run',max_turns=6,max_inspections=1,controlled_generation=True)
     assert result['selected_candidate_id']=='a' and result['invalid_tool_calls']==0
-    assert result['automatic_inspection_count']==2 and result['inspection_calls']==1
+    assert result['automatic_inspection_count']==3 and result['inspection_calls']==0
     state=contexts[3]['visual_submission_state']
     assert state['attached_candidate_ids']==['edit_001','edit_002']
     assert contexts[3]['refinement_workflow']['pending'] is False
@@ -342,7 +365,7 @@ def test_constructor_outputs_also_receive_images_without_counting_as_refinement(
     assert contexts[3]['visual_submission_state']['attached_candidate_ids']==['edit_001','edit_002']
     assert not contexts[3]['refinement_workflow']['pending']
     assert contexts[4]['visual_submission_state']['attached_candidate_ids']==['edit_003']
-    assert result['selected_candidate_id']=='a' and result['automatic_inspection_count']==3
+    assert result['selected_candidate_id']=='a' and result['automatic_inspection_count']==4
 
 
 def test_real_loop_retains_rejected_target_across_wrong_inspection(tmp_path):
@@ -360,7 +383,7 @@ def test_real_loop_retains_rejected_target_across_wrong_inspection(tmp_path):
 
 def test_failed_attached_request_restores_without_false_delivery(tmp_path):
     events=[('select_constructor_candidate',dict(candidate_id='a',reason='fixture')),
-            ('inspect_trajectory',dict(candidate_id='a')),RuntimeError('network fixture')]
+            RuntimeError('network fixture')]
     run,contexts=runner(tmp_path,events)
     with pytest.raises(RuntimeError,match='network fixture'):
         run(tmp_path,tmp_path,None,tmp_path/'run',max_turns=4,max_inspections=1)
@@ -537,7 +560,7 @@ def test_text_json_is_not_executed_and_is_corrected_within_existing_budget(tmp_p
     result=run(tmp_path,tmp_path,None,tmp_path/'run',max_turns=6,max_inspections=2)
     assert result['selected_candidate_id']=='edit_001'
     assert result['model_actions']==5 and result['invalid_tool_calls']==1
-    assert result['automatic_inspection_count']==1
+    assert result['automatic_inspection_count']==2
     assert all(context['_test_tool_choice']=='required' for context in contexts)
     assert contexts[3]['last_tool_result']['executed'] is False
     assert contexts[3]['last_tool_result']['error_code']=='native_tool_call_required'
@@ -594,7 +617,7 @@ def test_explicit_image_auto_preserves_images_and_still_corrects_text_without_ex
         ('submit_candidate',dict(candidate_id='edit_001',reason='reviewed native result'))]
     run,contexts=runner(tmp_path,events,image_tool_choice='auto')
     result=run(tmp_path,tmp_path,None,tmp_path/'run',max_turns=6,max_inspections=2)
-    assert [c['_test_tool_choice'] for c in contexts]==['required','required','auto','required','auto']
+    assert [c['_test_tool_choice'] for c in contexts]==['auto','auto','auto','required','auto']
     assert contexts[2]['visual_submission_state']['attached_candidate_ids']==['a']
     assert contexts[4]['visual_submission_state']['attached_candidate_ids']==['edit_001']
     assert contexts[3]['last_tool_result']['executed'] is False

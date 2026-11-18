@@ -8,7 +8,7 @@ from run_ego_reference import EGO_FRONT, EGO_REAR, EGO_WIDTH
 
 def validate_objective(arguments, times, prefix, edit_start_s=None):
     required = {'parent_candidate_id', 'objective', 'max_candidates', 'reason'}
-    if not required <= set(arguments) or set(arguments) - required - {'edit_window_s', 'preserve_outside_window'}:
+    if not required <= set(arguments) or set(arguments) - required - {'edit_window_s', 'preserve_outside_window','initial_pose_search'}:
         raise ValueError('Provide parent_candidate_id, objective, max_candidates and reason')
     if type(arguments['max_candidates']) is not int or not 1 <= arguments['max_candidates'] <= 3:
         raise ValueError('max_candidates must be 1..3')

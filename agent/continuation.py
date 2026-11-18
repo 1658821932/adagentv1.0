@@ -92,6 +92,7 @@ def recover(logs_root, run_id, message):
     state.resume_context = dict(parent_run_id=run_id, previous_status=saved.get('status', metadata.get('status')),
                                 previous_error=saved.get('error'), inherited_history_count=len(history))
     state.pending_job = deepcopy(saved.get('pending_job')) if pending else None
+    state.background_jobs = deepcopy(saved.get('background_jobs',{}))
     lineage = dict(parent_run_id=run_id,
                    conversation_id=conversation,
                    execution_scope=state.execution_scope,

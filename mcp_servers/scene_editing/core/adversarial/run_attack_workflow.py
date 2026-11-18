@@ -20,7 +20,7 @@ from attack_tool_contract import candidate_eligibility, constructor_exhaustion, 
 from model_context import compact_model_context
 from attack_editor import AttackEditor, read_seed, write_trajectory
 from attack_configuration import normalize_constraints, same_scene_constraints
-from ego_road_checks import check_drivable_area_official, load_official_drivable
+from ego_road_checks import load_official_drivable
 from experiment_runtime import ROOT, atomic_json, experiments_root
 from run_ego_decision_agent import image_part
 from run_ego_editor_agent import TOOLS as EGO_TOOLS
@@ -55,6 +55,18 @@ OBJECT_TOOLS = [
                   {'asset_id':{'type':'string'}, 'x_m':NUMBER, 'y_m':NUMBER,
                    'yaw_rad':NUMBER, 'speed_mps':NUMBER, 'reason':REASON}),
 ]
+def placement_preview_tool():
+    common={'option_id':{'type':'string'},'operation':{'type':'string'}}
+    existing=dict(type='object',properties=dict(common,operation={'const':'edit_existing'},track_id={'type':'string'}),
+        required=['option_id','operation','track_id'],additionalProperties=False)
+    added=dict(type='object',properties=dict(common,operation={'const':'add_vehicle'},asset_id={'type':'string'},
+        x_m=NUMBER,y_m=NUMBER,yaw_rad=NUMBER,speed_mps=NUMBER),
+        required=['option_id','operation','asset_id','x_m','y_m','yaw_rad','speed_mps'],additionalProperties=False)
+    return function_tool('preview_attack_options',
+        'Compare1..3 unranked initial vehicle/placement hypotheses in one cheap geometry/reaction preview. '
+        'Creates no candidate and runs no VAD; estimates cannot establish attack success or checked expert feasibility. '
+        'Use select_vehicle/add_vehicle afterward to commit the chosen exact initial state. At most6 evaluated hypotheses across this attack scope.',
+        {'options':dict(type='array',minItems=1,maxItems=3,items={'oneOf':[existing,added]}),'reason':REASON})
 POINT = dict(type='object', properties={'time_s':NUMBER, 'x_m':NUMBER, 'y_m':NUMBER},
              required=['time_s', 'x_m', 'y_m'], additionalProperties=False)
 TRAJECTORY_TOOLS = [function_tool('construct_trajectory',
@@ -67,6 +79,13 @@ TRAJECTORY_TOOLS = [function_tool('construct_trajectory',
     {'points':dict(type='array', items=POINT, minItems=2, maxItems=16),
      'end_velocity_mps':dict(type='array', items=NUMBER, minItems=2, maxItems=2), 'reason':REASON})]
 INTERVAL = dict(type='array', items=NUMBER, minItems=2, maxItems=2)
+POSE_OFFSET=dict(type='object',properties={'forward_m':NUMBER,'left_m':NUMBER},
+    required=['forward_m','left_m'],additionalProperties=False)
+POSE_SEARCH=dict(type='object',properties={
+    'forward_offsets_m':dict(type='array',items=NUMBER,minItems=1,maxItems=4),
+    'left_offsets_m':dict(type='array',items=NUMBER,minItems=1,maxItems=4),
+    'yaw_mode':dict(type='string',enum=['preserve','route_aligned','offset','explicit']),
+    'yaw_offset_rad':NUMBER,'yaw_rad':NUMBER,'initial_speed_mps':NUMBER},additionalProperties=False)
 KEYFRAME = dict(type='object', properties={
     'time_window_s':INTERVAL, 'hold_duration_s':NUMBER,
     'relative_position':dict(type='object', properties={'forward_m':INTERVAL, 'left_m':INTERVAL}, additionalProperties=False),
@@ -79,6 +98,8 @@ TRAJECTORY_TOOLS.insert(0, function_tool('construct_attack_candidates',
     'New first calls use seed_000. Further calls truly start from parent controls. '
     'Optional edit_window_s limits changed control knots; preserve_outside_window additionally requires reconnection '
     '(outside position<=0.05m, yaw<=0.05rad, velocity<=0.1m/s); failure is reported, never spliced away. '
+    'By default one call automatically mixes bounded initial-position/yaw/speed variants, conflict-corridor seeds and continuous controls under the same budget; no search mode selection is needed. '
+    'Optional initial_pose_search is an explicit reproducible override for up to6 initial-position/yaw/speed variants. '
     'No interaction category or fixed proximity gate is required. Review measured geometry against the task. '
     'reason is explanatory only: all numeric requirements must appear in objective. '
     'Returns fully checked candidates separately from optimization guidance. Motion may be edited from edit_start_s (0s in new runs). No implicit 3-second event delay applies; respect explicit task windows and physical/map checks.',
@@ -87,6 +108,7 @@ TRAJECTORY_TOOLS.insert(0, function_tool('construct_attack_candidates',
          'keyframes':dict(type='array', items=KEYFRAME, minItems=0, maxItems=6)},
          required=[],additionalProperties=False),
      'edit_window_s':INTERVAL, 'preserve_outside_window':{'type':'boolean'},
+     'initial_pose_search':POSE_SEARCH,
      'max_candidates':dict(type='integer',minimum=1,maximum=3), 'reason':REASON},
     required=['parent_candidate_id','objective','max_candidates','reason']))
 TRAJECTORY_TOOLS += [copy.deepcopy(tool) for tool in EGO_TOOLS if tool['function']['name'] in {
@@ -94,22 +116,34 @@ TRAJECTORY_TOOLS += [copy.deepcopy(tool) for tool in EGO_TOOLS if tool['function
 for tool in TRAJECTORY_TOOLS:
     if tool['function']['name']=='edit_speed_profile':
         tool['function']['description']+=' In this attack stage the unchanged bicycle policy rejects reverse travel. Generator support for signed speeds does not override that policy.'
-TRAJECTORY_TOOLS += [function_tool('inspect_trajectory', 'View a candidate BEV and reference checks before submitting it.',
+TRAJECTORY_TOOLS += [function_tool('inspect_trajectory', 'View a candidate BEV and reference checks before submitting it. Repeated inspection returns the cached image and evidence without rendering again.',
                                   {'candidate_id':{'type':'string'}})]
+TRAJECTORY_TOOLS += [function_tool('adjust_initial_pose',
+    'Create a new candidate version with bounded initial-position, optional initial yaw and optional initial-speed adjustments. Existing and added actors share scene-local x-forward/y-left offsets. preserve keeps yaw; route_aligned uses the nearest recorded ego-route heading; offset adds yaw_offset_rad; explicit sets yaw_rad. Moving actors regenerate their trajectory from inherited controls; stationary actors are rigidly transformed and must keep zero speed. Full checks and exact-version VAD testing are required again.',
+    {'parent_candidate_id':{'type':'string'},'position_offset_m':POSE_OFFSET,
+     'yaw_mode':dict(type='string',enum=['preserve','route_aligned','offset','explicit']),
+     'yaw_offset_rad':NUMBER,'yaw_rad':NUMBER,'initial_speed_mps':NUMBER,'reason':REASON},
+    required=['parent_candidate_id','position_offset_m','reason'])]
 
 OBJECT_PROMPT = """Select the object for the requested scene edit. Obey the user's instruction: use an
 existing vehicle when requested, or add a vehicle when requested. You choose between the available
 tools; no stationary/cut-in mode is preselected. The next stage receives your object and edits its
 trajectory using generic tools. For a new object choose a plausible initial center, yaw and speed;
 this straight-motion seed is an initial proposal that may be edited from the first editable time (0s in
-current runs); only the t=0 pose is fixed. Choose a safe
+current runs); this selection fixes the starting pose until a later explicit initial-pose adjustment. Choose a safe
 initial pose with space for a valid early trajectory. Final candidates must pass their explicit task, road and motion checks.
+Stage A prepares and freezes ego history before this selection. Read fixed_ego_history: the
+actual takeover position, speed and heading are known. Choose/edit the OTHER actor only. Do not
+attach ego speed commands here. The post-1.5s reference path is not what VAD must drive; use the
+actual takeover state, not an assumed later recorded acceleration, to judge the challenge.
 When plan_options are supplied, compare them once and choose a promising existing or added actor;
 option order is not a quality rank. You may adapt an option within the unchanged scene mechanism.
 Use optional option_id and explain the actual choice/deviation in reason. Do not run all alternatives.
 previous_object_feedback contains real failures: reconsider unsupported targets and use an added
 vehicle when that resolves a placement or inherited-state problem. Only explicit required_operation
-and required_track are hard object requirements. Existing t=0 poses cannot be relocated; a newly
+and required_track are hard object requirements. Existing t=0 poses are fixed during this selection step; a later explicit
+initial-pose adjustment requires a selected object. Rejected initial placements identify their actual actor,
+operation and measured check. Choose an available actor or a different proposed placement after a rejection. A newly
 placed stationary car should use add_vehicle with speed_mps=0 and a supported initial pose.
 Coordinates are metres in the initial ego frame: x forward, y left, yaw counterclockwise radians.
 Consider the full ego timeline and stopped traffic before selecting the initial state. A safe initial
@@ -124,24 +158,27 @@ Do not reconstruct a whole scene from coordinates or repeat the numeric reports 
 INPUTS: scene_layout contains a small relevance summary; all actors and full-precision trajectories remain
 in deterministic checks and scene-evidence.json. Pictures show geometry of this scene version, not a camera
 render or tested policy rollout. Recorded ego is a reference. Original cameras are pre-edit observations.
-GOALS: explicit caller task_contract and configured event window are hard; interaction quality is for your judgment. New attack events default to 1.5–7.5s;
+GOALS: explicit caller task_contract and configured event window are hard. New runs require sampled reference target-body contact inside the event window for constructor/VAD eligibility; near-miss alone is insufficient. New attack events default to 1.5–7.5s;
 editing/braking/steering may start at 0s. Agent-generated keyframes are optimization preferences unless an
-explicit contract makes them required. Read acceptance_basis and actual measurements; explain whether a
-candidate still meets the qualitative instruction when a preference misses. Do not change caller requirements.
-TOOLS: first use construct_attack_candidates with achievable optional motion keyframes. No contact/near-miss/either class is used.
+explicit contract makes them required. Read reference_contact_evidence and actual measurements; reference contact is only setup evidence, not proof that VAD will collide. Do not change caller requirements.
+TOOLS: first use construct_attack_candidates with achievable optional motion keyframes. No near-miss/either class is used.
 Only structured fields guide construction; reason is a brief explanation. Every hold_duration_s must fit its
 own time_window_s. Use edit_speed_profile for signed speed targets; use edit_route for smooth lateral offsets
 and return. Select an objective-bearing parent exposed by the tool enum. Preview checks do not create a candidate.
 Read decision_summary and recommended_previews; an explicit goal revision is different from a numeric repair.
+Use adjust_initial_pose for a bounded new initial-position/yaw version, or initial_pose_search in
+construct_attack_candidates to compare a small set of initial poses within the same cumulative budget.
+Both existing and added actors use these tools; stationary actors move/rotate rigidly, while moving actors
+regenerate their trajectory from inherited controls. Every changed initial pose requires all checks and a new VAD test.
 Body-relative goal positions use ego BODY center; scene coordinates use initial ego forward/left. Center
-separation is not bumper clearance. Reference contact and clearance are measured facts, not mandatory event classes or proof that VADv2 will crash. Do not make a stopped car slide or rotate in place.
+separation is not bumper clearance. Reference contact is required for new-run eligibility. The exact-candidate VAD rollout checks target collision and drivable-area compliance. Do not make a stopped car slide or rotate in place.
 CHECK: physical/map checks and native-replay checks must pass. Generated and replayed paths can differ, so
 use both reports. Speed limits here are a named research profile, not certified vehicle capabilities.
 REVIEW: initial layout and newly constructed candidate pictures are supplied automatically. Inspect another
 candidate when needed. The diagram must actually be delivered before submission; a policy-test overlay or
 layout-only BEV does not satisfy that review. No unnecessary edit is required after the task is satisfied.
-If an enabled policy self-test is configured, complete its exact-candidate test; PDM zero or road failure alone
-is not target collision. When policy tests are disabled, report reference validity without claiming policy defeat.
+If policy self-test is enabled, complete its exact-candidate test. Report sampled target collision and
+drivable-area violation separately. When policy tests are disabled, report reference validity only.
 BUDGET: read cumulative_api_budget, constructor_budget and stage_seconds_remaining. In finalization_only,
 choose an existing qualified candidate for review/submission or finish_search; do not restart construction.
 A new tool call cannot reset cumulative budgets. If no candidate can meet the task, finish honestly with the
@@ -149,7 +186,8 @@ measured cause. Use one exposed native tool call and a short reason per turn."""
 
 
 STATIC_EDIT_PROMPT = """Validate the selected stationary placement. Only the selected target is added or
-edited; ego and observed others replay their records. The target pose is fixed for the entire scene.
+edited; ego and observed others replay their records. Within each candidate version the target pose is fixed for the entire scene.
+Use adjust_initial_pose to create a new rigidly translated/rotated version when a different placement is justified; full checks and any VAD evidence restart for that version.
 Read seed_000's reference checks, fixed task contract and geometry_feedback. Use measured body overlap
 times, never mental center-arrival estimates. No implicit three-second event constraint applies; use the explicit task interval. Do not invent a narrower hard window, hold duration or reaction delay.
 Only explicit task requirements and named checking policy are hard; read provenance and uncertainties.
@@ -157,9 +195,8 @@ If pdm_self_check is enabled, passing geometry only makes the placement eligible
 Test first; a safely defended placement needs reselection or an honest finish. A tested PDM-failing
 placement must still use inspect_trajectory and receive the image before submit_candidate(seed_000).
 Only when no policy self-test is enabled do geometry plus trajectory inspection alone permit submission.
-No motion construction, point editing or repair is available or needed. evaluate_candidate reads existing
-measurements without optimization. A failed placement can request_object_reselection once, creating a
-new scene branch with a new checked prefix; otherwise finish_search with measured reasons.
+No motion construction or speed/route editing is available for a static candidate. evaluate_candidate reads existing
+measurements without optimization. A failed placement can use adjust_initial_pose or request_object_reselection within the shared budgets; otherwise finish_search with measured reasons.
 Road coverage does not establish lane identity. Check the BEV against the instruction; if lane evidence
 remains unknown, preserve that uncertainty in your submission reason. Geometry is not physical execution.
 Use one tool call per turn, and do not optimize optional scores after the fixed requirements pass."""
@@ -192,19 +229,33 @@ request position reselection as needed within the existing shared action/probe b
 still requires its own Agent submission and independent checks.'''
 
 VADV2_PROBE_PROMPT = '''VADv2 self-test is enabled. Construct/edit a candidate, pass its trajectory
-and task checks, call probe_vadv2, inspect actual VAD trajectory feedback, then revise if the selected
-attack vehicle was not hit. Submission requires a successful test on the exact candidate. Geometry
-or contact with recorded ego alone is not enough. Use min_target_clearance_m, closest_approach time,
+and task checks, including required in-window reference target-body contact for new runs, then call probe_vadv2.
+A target collision or a confirmed drivable-area violation by actual VADv2 after takeover qualifies as
+a policy failure. Use policy_evaluation.failure_reasons and the exact candidate version for submission.
+Use min_target_clearance_m, closest_approach time,
 policy_behavior_summary (stopped_detected, progress_ratio_vs_recorded, signed_yaw_change_deg),
-forward/left/closing_speed and the plot to understand braking/early-stop or steering avoidance. Road violation,
-PDM zero, history contact and interpolated-only contact do not establish VAD failure. Tests share
-vadv2_self_test.remaining across edits/reselection. Do not repeat unchanged controls after no contact.
+forward/left/closing_speed and the plot to understand braking/early-stop or steering avoidance.
+Treat missing road coverage as inconclusive and use only actual sampled post-takeover contact.
+The test uses 1.5–7.5s with the same model, cameras and native controller as evaluation; videos,
+official PDM and training exports are skipped. Tests share vadv2_self_test.remaining across
+edits/reselection. Simulation wait does not consume stage_seconds_remaining; whole-tool timeout
+still applies. Do not reject a new test solely because its earlier elapsed_s exceeds stage_seconds_remaining.
+Yaw change or target-left offset alone does not prove avoidance in a turning scene; compare actual path and progress.
+Use compact feedback and the plot: early stopping far away suggests checking exposure,
+placement and event timing; steering avoidance suggests checking where the actual ego path went.
+These are hypotheses, not fixed parameter changes. Stage B keeps the stage-A history fixed.
+If actual VAD feedback identifies a starting-state problem, request_ego_history_revision may return
+ONCE to preparation with target_speed_mps at 1.5s. It is separate from target-vehicle editing and
+shares switching/action/API/probe budgets. The new scene invalidates old policy evidence.
+An explicitly supplied caller ego target remains fixed. Coarse options are suggestions: adjust timing,
+position or motion, or switch actor/operation when justified. An untested alternative cannot be
+ruled out solely because it seems harder to construct. Only revise or switch when current evidence does not qualify.
 Keep the original task and physical/map checks. After a successful VAD test, inspect_trajectory still
 supplies attack/road evidence before submission. Main Agent reuses this exact-version evidence.'''
 
 TRAJECTORY_TOOLS.append(function_tool('probe_vadv2',
-    'Run an eligible candidate through WE + VADv2. Returns actual target contact, closest approach '
-    'and an image. Minute-scale bounded test; exact-version repeats reuse evidence.',
+    'Run an eligible candidate through WE + VADv2. Returns target collision, drivable-area compliance, '
+    'closest approach and an image. Minute-scale bounded test; exact-version repeats reuse evidence.',
     {'candidate_id':{'type':'string'}}))
 
 TRAJECTORY_TOOLS.append(function_tool('probe_pdm',
@@ -213,7 +264,7 @@ TRAJECTORY_TOOLS.append(function_tool('probe_pdm',
     {'candidate_id':{'type':'string'}}))
 
 TRAJECTORY_TOOLS.append(function_tool('evaluate_candidate',
-    'Return measured full-horizon reference geometry and task checks for an existing candidate. No optimization.',
+    'Return measured full-horizon reference geometry and task checks for an existing candidate. No optimization. Repeated evaluation returns cached evidence.',
     {'candidate_id':{'type':'string'}}))
 EDIT_PROMPT += (' When plan_options are present, plan_choice describes the chosen suggestion, not another hard contract. '
     'If inherited state or fixed t=0 placement makes this actor unsuitable, request_object_reselection rather than repeatedly constructing with the same unsupported state. '
@@ -221,6 +272,11 @@ EDIT_PROMPT += (' When plan_options are present, plan_choice describes the chose
     'A failed candidate can still be repaired; switching is an option, not a requirement to abandon it.')
 
 TRAJECTORY_TOOLS.append(function_tool('request_object_reselection', 'Return to object selection within the remaining switching budget when the current actor/placement is unsuitable. Auto alternatives may change existing/added operation; explicit caller locks stay binding. Retain spent API, construction, action and policy-test budgets.', {'reason':REASON}))
+TRAJECTORY_TOOLS.append(function_tool('request_ego_history_revision',
+    'Return once to stage A with a new ego target speed at 1.5s, then restart attack editing on that frozen history. '
+    'Only for a justified starting-state problem; all API/construction/action/probe budgets remain shared. '
+    'Use actual VAD feedback; do not edit ego jointly with a target-vehicle action.',
+    {'target_speed_mps':{'type':'number','minimum':0},'reason':REASON}))
 
 def decode_call(attempt):
     response = json.loads((attempt / 'response.json').read_text())
@@ -291,8 +347,8 @@ def check_initial_relation(times,seed,angles,ego,ego_yaw,size,requirement):
 def select_object(scene, folder, instruction, assets, constraints, archive,
                   timeout_seconds, max_tokens, required_operation=None, required_track=None):
     from attack_plan_options import selection_tools, choice
+    from attack_scene_evidence import initial_road_failure
     options=constraints.get('plan_options',[])
-    object_tools=selection_tools(OBJECT_TOOLS,assets,required_operation,required_track,options)
     frames = json.loads((scene / 'metadata/frames.json').read_text())
     times, ego, yaw = ego_path_from_frames(frames)
     actors = observed_objects_from_frames(frames)
@@ -300,9 +356,21 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
     common = set(actor['track'] for actor in actors[0] if actor['label'] == 'vehicle')
     for frame in actors:
         common &= {actor['track'] for actor in frame if actor['label'] == 'vehicle'}
+    proposed_tracks = {option.get('target_track') for option in options if option['operation'] == 'edit_existing'}
+    if required_track is not None:
+        proposed_tracks.add(required_track)
+    rejections = {}
+    attempted_rejections = set()
+    margin = constraints.get('official_margin_m', .1)
     catalog = []
     for track in sorted(common):
         sequence = [next(actor for actor in frame if actor['track'] == track) for frame in actors]
+        if track in proposed_tracks and required_operation != 'add_vehicle':
+            first = sequence[0]
+            failure = initial_road_failure(times[:1], np.array([[first['x'], first['y']]]),
+                [first['yaw']], (first['length'], first['width']), road, margin)
+            if failure is not None:
+                rejections['select_vehicle', track] = dict(failure, operation='edit_existing', track_id=track)
         catalog.append(dict(track_id=track,
             poses=[dict(time_s=float(times[index]), xy_m=[sequence[index]['x'], sequence[index]['y']],
                         yaw_rad=sequence[index]['yaw'])
@@ -329,19 +397,54 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
         role='Select an actor and initial state; trajectory behavior is decided in the next stage')
     folder.mkdir(parents=True, exist_ok=False)
     atomic_json(folder / 'input.json', context)
-    atomic_json(folder / 'tools.json', object_tools)
+
+    def finish(stop_reason, reason):
+        result = dict(status='not_submitted', stop_reason=stop_reason, reason=reason,
+            search_stage='object_selection', rejected_initial_placements=list(rejections.values()))
+        atomic_json(folder/'output.json', result)
+        return result
+
+    locked_failure = rejections.get(('select_vehicle', required_track))
+    if locked_failure is not None:
+        return finish('required_initial_placement_rejected', locked_failure['error'])
     from decision_scene_view import render_overview, actor_view, GUIDANCE
     overview=render_overview(times,ego,yaw,actors,road,folder/'scene-overview.png',required_track,event_window_s=constraints.get('event_window_s'))
     decision_context=dict(context)
     decision_context.pop('actors_at_start',None)
-    decision_context['constraints']={key:value for key,value in constraints.items()
-        if key not in ('plan_options','object_selection_feedback')}
+    from attack_context_view import selection_view,feedback_view
+    from attack_scene_evidence import conflict_context,render_conflict
+    conflict=conflict_context(times,ego,yaw,constraints)
+    conflict_map=render_conflict(times,ego,yaw,actors,road,folder/'conflict-map.png',constraints)
+    atomic_json(folder/'conflict-evidence.json',conflict)
+    decision_context['conflict_evidence']=conflict
+    decision_context['placement_preview_budget']=dict(max_evaluated_hypotheses=6,scope='shared across attack object revisions and retries')
     decision_context['scene_layout']=actor_view(times,ego,actors,required_track)
     decision_context['visual_guidance']=GUIDANCE
+    decision_context=selection_view(decision_context)
     feedback = None
-    for turn in range(1, 5):
-        prompt=OBJECT_PROMPT + '\n' + json.dumps(
-            compact_model_context(dict(context=decision_context, last_tool_result=feedback)), ensure_ascii=False, separators=(',', ':'))
+    for turn in range(1, 7):
+        available = [row for row in catalog if ('select_vehicle', row['track_id']) not in rejections
+                     and required_track in (None, row['track_id'])]
+        object_tools = selection_tools(OBJECT_TOOLS, assets, required_operation, required_track, options)
+        if not available:
+            object_tools = [tool for tool in object_tools if tool['function']['name'] != 'select_vehicle']
+        elif rejections or required_track is not None:
+            for tool in object_tools:
+                if tool['function']['name'] == 'select_vehicle':
+                    tool['function']['parameters']['properties']['track_id']['enum'] = [row['track_id'] for row in available]
+        object_tools.append(placement_preview_tool())
+        if turn == 1:
+            atomic_json(folder/'tools.json', object_tools)
+        decision_context['existing_vehicles'] = available
+        decision_context['rejected_initial_placements'] = list(rejections.values())
+        preview_guidance=('Use conflict_evidence and the time-labelled map to locate interactions inside the event window. '
+            'When alternatives are uncertain, preview_attack_options compares up to3 hypotheses without VAD or candidate creation. '
+            'Reference-path contact is not policy failure; assess slower/coasting/braking estimates without treating them as policy predictions. '
+            'Preserve an expert defense opportunity; moving an obstacle arbitrarily close is not the objective. '
+            'After a failed policy test, use measured fixed-coordinate scene_feedback, not body-relative left offset as a placement command. '
+            'Choose from the unranked measurements; previews are optional, budgeted, and never waive full checks.')
+        prompt=OBJECT_PROMPT + '\n'+preview_guidance+'\n' + json.dumps(
+            compact_model_context(dict(context=decision_context, last_tool_result=feedback_view(feedback))), ensure_ascii=False, separators=(',', ':'))
         if constraints.get('pdm_defense_feedback'):
             prompt=DEFENSE_FEEDBACK_PROMPT+'\n'+prompt
         review=constraints.get('pdm_reselection_feedback')
@@ -352,9 +455,10 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
         content=prompt if not review else [dict(type='text',text=prompt),image_part(review['overlay_path'])]
         messages = [{'role':'user', 'content':content}]
         print('Object selection turn', turn, flush=True)
-        if turn == 1:
-            if isinstance(content,str): content=[{'type':'text','text':content}]
-            messages=[{'role':'user','content':[*content,image_part(overview)]}]
+        # Requests are rebuilt independently: a preview response must not drop
+        # the only layout image from the following selection decision.
+        if isinstance(content,str): content=[{'type':'text','text':content}]
+        messages=[{'role':'user','content':[*content,image_part(conflict_map)]}]
         _, attempt = archive.complete(f'object_{turn:02d}', messages, total_seconds=timeout_seconds,
             no_output_seconds=min(60, timeout_seconds), retries=2,
             max_tokens=max_tokens, extra_body={'thinking':{'type':'enabled'}}, reasoning_effort=reasoning_effort(),
@@ -370,12 +474,23 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 raise ValueError('Unknown coarse option_id')
             if not isinstance(args.get('reason'), str) or not args['reason'].strip():
                 raise ValueError('A nonempty selection reason is required')
+            if name=='preview_attack_options':
+                if set(args)!={'options','reason'}:raise ValueError('Preview requires options and reason')
+                from attack_scene_evidence import preview_options
+                ledger_path=constructor_budget_path(folder).with_name('placement-preview-budget.json')
+                ledger=json.loads(ledger_path.read_text()) if ledger_path.exists() else dict(evaluations=0)
+                hypotheses=args['options']
+                if not isinstance(hypotheses,list) or not 1<=len(hypotheses)<=3:raise ValueError('Preview needs1..3 hypotheses')
+                if ledger['evaluations']+len(hypotheses)>6:raise ValueError('Cumulative placement preview budget exhausted; select from evidence or finish')
+                ledger['evaluations']+=len(hypotheses);atomic_json(ledger_path,ledger)
+                feedback=preview_options(hypotheses,times,ego,yaw,actors,road,assets,constraints,required_operation,required_track)
+                feedback['remaining_hypotheses']=6-ledger['evaluations']
+                atomic_json(folder/'previews'/f'turn_{turn:02d}.json',feedback)
+                archive_exchange(folder,turn,call,feedback,started=tool_started)
+                continue
             if name == 'finish_search' and set(args) == {'reason'}:
-                result=dict(status='not_submitted',stop_reason='finished_without_object_selection',
-                            reason=args['reason'],search_stage='object_selection')
-                atomic_json(folder/'output.json',result)
                 archive_exchange(folder,turn,call,dict(status='finished',reason=args['reason']),started=tool_started)
-                return result
+                return finish('finished_without_object_selection', args['reason'])
             if name == 'select_vehicle':
                 if set(args) != {'track_id', 'reason'} or args['track_id'] not in common:
                     raise ValueError('Choose a fully observed vehicle from the catalog')
@@ -388,6 +503,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 raw_index = frames[0]['anns']['track_tokens'].index(track)
                 size = frames[0]['anns']['gt_boxes'][raw_index][3:6]
                 target = dict(operation='edit_existing', track_id=track, size_m=size, asset_path=None)
+                placement_key = (name, track)
             elif name == 'add_vehicle':
                 expected = {'asset_id', 'x_m', 'y_m', 'yaw_rad', 'speed_mps', 'reason'}
                 if set(args) != expected or required_operation == 'edit_existing' or required_track is not None:
@@ -410,11 +526,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 target = dict(operation='add_vehicle', track_id=track, size_m=size,
                               asset_path=asset['path'], initial_speed_mps=args['speed_mps'],
                               initial_state=dict(x_m=args['x_m'], y_m=args['y_m'], yaw_rad=args['yaw_rad']))
-                initial_road = check_drivable_area_official(times[:1], seed[:1], angles[:1], road,
-                    front=size[0] / 2, rear=size[0] / 2, width=size[1],
-                    min_margin_m=constraints['official_margin_m'])
-                if not initial_road['passed']:
-                    raise ValueError('New vehicle initial footprint is outside the official road margin')
+                placement_key = (name, args['asset_id'], *numbers)
             else:
                 raise ValueError('Unknown object-selection tool')
             # Reject unsafe seed poses at t=0; the rest of the trajectory is editable.
@@ -423,10 +535,21 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
             prefix_times = np.linspace(times[0], fixed_end, 31) if fixed_end>times[0] else np.asarray([times[0]])
             prefix_xy = sample_xy(times, seed, prefix_times)
             prefix_yaw = np.interp(prefix_times, times, angles)
-            prefix_road = check_drivable_area_official(prefix_times, prefix_xy, prefix_yaw, road,
-                front=size[0] / 2, rear=size[0] / 2, width=size[1], min_margin_m=constraints['official_margin_m'])
-            if not prefix_road['passed']:
-                raise ValueError('Selected seed leaves the road during the fixed initial interval')
+            rejection = rejections.get(placement_key)
+            if rejection is None:
+                rejection = initial_road_failure(prefix_times, prefix_xy, prefix_yaw, size, road, margin)
+                if rejection is not None:
+                    rejections[placement_key] = dict(rejection, operation=target['operation'], track_id=track,
+                        **({'initial_state': target['initial_state']} if name == 'add_vehicle' else {}))
+            if rejection is not None:
+                repeated = placement_key in attempted_rejections
+                feedback = dict(rejections[placement_key], option_id=option_id, repeated=repeated,
+                    next_action='Choose an available actor or a different initial placement.')
+                archive_exchange(folder, turn, call, feedback, started=tool_started)
+                if repeated:
+                    return finish('object_selection_repeated_rejection', feedback['error'])
+                attempted_rejections.add(placement_key)
+                continue
             ego_prefix = sample_xy(times, ego, prefix_times)
             ego_angles = np.interp(prefix_times, times, yaw)
             series = actor_observation_series(times, actors, track)
@@ -462,6 +585,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 plan_choice=choice(options,selection_args,target) if options else None,
                 selection_reason=args['reason'],initial_relation=initial_relation, annotation_changes=dict(operation='none',
                     note='Identity and motion seed only; full scene is materialized after trajectory acceptance'))
+            selection['editing_scene']=str(scene)
             forecast_editor = AttackEditor(scene, selection, folder / f'placement_check_{turn:02d}', constraints)
             selection['geometry_feedback'] = forecast_editor.public('seed_000')
             atomic_json(folder / 'output.json', selection)
@@ -471,16 +595,16 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
         except (ValueError, KeyError, TypeError, StopIteration) as error:
             feedback = dict(status='invalid', error=str(error)[:350])
             archive_exchange(folder, turn, call or _undecoded_call(turn), feedback, started=tool_started)
-    result=dict(status='not_submitted',stop_reason='object_selection_budget_exhausted',
-                search_stage='object_selection',reason='No valid object selection or initial placement was found within the object-selection budget.')
-    atomic_json(folder/'output.json',result)
-    return result
+    return finish('object_selection_budget_exhausted',
+        'No valid object selection or initial placement was found within the object-selection budget.')
 
 
 @timed_operation('attack.agent_loop', None)
+@timed_operation('attack.vehicle_editing',None)
 def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_turns, stage_timeout_s=420):
     from attack_budget import BudgetedArchive, AttackBudgetExhausted
     from attack_tool_contract import candidate_eligibility
+    from streaming_requests import request_protocol_details,request_timeout_details
     folder = editor.run_dir
     atomic_json(folder / 'input.json', dict(selection=selection, constraints=editor.constraints))
     if editor.constraints.get('vadv2_self_test'):
@@ -492,13 +616,17 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
     available_tools = [tool for tool in TRAJECTORY_TOOLS if not (
         (editor.constraints.get('require_structured_objective') or editor.constraints.get('task_contract')) and tool['function']['name']=='construct_trajectory')]
     if editor.constraints.get('stationary_target'):
-        allowed = {'evaluate_candidate', 'inspect_trajectory', 'submit_candidate',
-                   'request_object_reselection', 'finish_search', 'probe_pdm', 'probe_vadv2'}
+        allowed = {'evaluate_candidate', 'inspect_trajectory', 'submit_candidate','adjust_initial_pose',
+                   'request_object_reselection','request_ego_history_revision', 'finish_search', 'probe_pdm', 'probe_vadv2'}
         available_tools = [tool for tool in available_tools if tool['function']['name'] in allowed]
     if editor.pdm_probe is None:
         available_tools=[tool for tool in available_tools if tool['function']['name']!='probe_pdm']
     if editor.policy_probe is None:
         available_tools=[tool for tool in available_tools if tool['function']['name']!='probe_vadv2']
+    if (not editor.constraints.get('prepare_ego_history') or editor.constraints.get('ego_history_revision_count',0)>=1
+            or editor.constraints.get('expert_margin_revision_count',0)>=1
+            or editor.constraints.get('ego_history_target_speed_mps') is not None):
+        available_tools=[tool for tool in available_tools if tool['function']['name']!='request_ego_history_revision']
     atomic_json(folder / 'tools.json', available_tools)
     seed = editor.nodes.get('seed_000')
     fast_stationary = bool(editor.constraints.get('stationary_target') and seed is not None
@@ -517,12 +645,21 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
         deadline=editor_deadline(stage_timeout_s)
     else:deadline = perf_counter() + stage_timeout_s
     finalization_grace_used = False
+    timeout_recovery = None
+    protocol_recovery = None
+    editing_timeout_recovery_used = False
     previous_failure = None
     try:
         for turn in range(1, max_turns + 3):
             remaining = deadline - perf_counter()
             qualified=[key for key,node in editor.nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible']]
             session_budget=archive.context() if isinstance(archive,BudgetedArchive) else None
+            if session_budget is not None and not qualified and (
+                    session_budget['search_requests_remaining']<=0 or session_budget['search_api_seconds_remaining']<=0):
+                stop='cumulative_attack_api_budget_exhausted'
+                termination=dict(reason='Cumulative attack search/API budget exhausted without a qualified candidate; finalization reserve cannot fund a new search.',
+                    scope='main_agent_execution_scope',global_infeasibility_proven=False)
+                break
             closing = bool(qualified) and (remaining < 60 or turn > max_turns or finalization_grace_used
                 or session_budget is not None and (session_budget['requests_remaining']<=2 or session_budget['api_seconds_remaining']<=90))
             if turn > max_turns and not closing:
@@ -543,6 +680,10 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                            finalization_only=closing,stage_seconds_remaining=round(remaining,1))
             if closing:
                 context['finalization_instruction']='Review and submit an existing qualified candidate, or finish honestly. No more construction or edits.'
+            if timeout_recovery is not None:
+                context['request_timeout_recovery']=timeout_recovery
+            if protocol_recovery is not None:
+                context['request_protocol_recovery']=protocol_recovery
             if isinstance(archive,BudgetedArchive):
                 archive.closing=closing
                 context['cumulative_api_budget']=session_budget
@@ -550,7 +691,8 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
             if termination is not None:
                 stop = termination['stop_reason']
                 break
-            context = compact_model_context(context)
+            from attack_context_view import editing_view
+            context = compact_model_context(editing_view(context,editor.public))
             prompt = (STATIC_EDIT_PROMPT if editor.constraints.get('stationary_target') else EDIT_PROMPT) + '\n' + json.dumps(context, ensure_ascii=False, separators=(',', ':'))
             if editor.pdm_probe is not None:
                 prompt=PDM_PROBE_PROMPT+'\n'+prompt
@@ -596,11 +738,45 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 # The API may use auto for thinking; the selected phase remains exact locally.
                 turn_names = {choice['function']['name']}
             print('Trajectory editing turn', turn, flush=True)
-            _, attempt = archive.complete(f'edit_{turn:02d}', [{'role':'user', 'content':content}],
-                total_seconds=min(timeout_seconds, max(1, remaining)),
-                no_output_seconds=min(60, max(1, remaining)), retries=2, max_tokens=max_tokens,
-                extra_body={'thinking':{'type':'enabled'}}, reasoning_effort=reasoning_effort(),
-                tools=turn_tools, tool_choice=choice, parallel_tool_calls=False, allow_tool_calls=True)
+            try:
+                _, attempt = archive.complete(f'edit_{turn:02d}', [{'role':'user', 'content':content}],
+                    total_seconds=min(timeout_seconds, max(1, remaining)),
+                    no_output_seconds=min(60, max(1, remaining)), retries=2, max_tokens=max_tokens,
+                    extra_body={'thinking':{'type':'enabled'}}, reasoning_effort=reasoning_effort(),
+                    tools=turn_tools, tool_choice=choice, parallel_tool_calls=False, allow_tool_calls=True)
+            except Exception as error:
+                timed_out=request_timeout_details(error)
+                budget=archive.context() if isinstance(archive,BudgetedArchive) else None
+                can_finalize=(budget is None or budget['requests_remaining']>0 and budget['api_seconds_remaining']>0)
+                search_remains=(budget is None or budget['search_requests_remaining']>0 and budget['search_api_seconds_remaining']>0)
+                protocol_error=request_protocol_details(error)
+                if (protocol_error is not None and protocol_recovery is None and not closing
+                        and deadline-perf_counter()>0 and search_remains):
+                    protocol_recovery=dict(protocol_error,mode='single_tool_call_correction',
+                        policy='Return exactly one exposed native tool call; no partial call was executed')
+                    feedback=dict(status='invalid',error='The previous response contained multiple tool calls. No tool was executed; return exactly one exposed native tool call.',
+                        executed=False,candidate_created=False,archive_ref=protocol_error.get('archive_ref'))
+                    continue
+                if (timed_out is not None and not closing and not editing_timeout_recovery_used
+                        and deadline-perf_counter()>=60 and search_remains):
+                    # A single-request deadline does not exhaust the stage. Keep
+                    # its original deadline and actual VAD feedback; no partial
+                    # response is appended and the thinking profile is unchanged.
+                    editing_timeout_recovery_used=True
+                    timeout_recovery=dict(timed_out,mode='continue_editing',
+                        policy='one recovery decision within the original remaining stage/search budget; preserve evidence and take a concrete next action')
+                    continue
+                needs_finalization=closing or deadline-perf_counter()<60 or not search_remains
+                if timed_out is None or not qualified or finalization_grace_used or not can_finalize or not needs_finalization:
+                    raise
+                # A timed-out partial call is never decoded or executed. Re-enter
+                # once with only saved-candidate review tools, under a bounded clock.
+                finalization_grace_used=True
+                deadline=perf_counter()+90.
+                timeout_recovery=dict(timed_out,mode='finalization_only',
+                    policy='one bounded review of existing qualified candidates; no new construction')
+                feedback=dict(status='request_timed_out',reason='The previous request did not complete. Review saved candidates or finish; partial tool arguments were not executed.')
+                continue
             if pending is not None:
                 for record in pending_records:
                     if record.get('purpose') not in ('pdm_probe','vadv2_probe','scene_layout'):
@@ -621,10 +797,17 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 if name not in ('inspect_trajectory', 'evaluate_candidate', 'probe_pdm','probe_vadv2') and (not isinstance(args.get('reason'), str) or not args['reason'].strip()):
                     raise ValueError('A nonempty action reason is required')
                 if name == 'evaluate_candidate' and set(args) == {'candidate_id'}:
+                    repeated_evaluation=args['candidate_id'] in evaluated_candidates
                     feedback = editor.evaluate_candidate(args['candidate_id'])
+                    if repeated_evaluation:feedback=dict(feedback,cached=True,cache_scope='previous_evaluation')
                     evaluated_candidates.add(args['candidate_id'])
                 elif name == 'probe_vadv2' and set(args)=={'candidate_id'}:
-                    feedback=editor.policy_probe.probe(args['candidate_id'])
+                    from attack_plan_options import exclude_probe_wait
+                    probe_started=perf_counter()
+                    try:
+                        feedback=editor.policy_probe.probe(args['candidate_id'])
+                    finally:
+                        deadline+=exclude_probe_wait(perf_counter()-probe_started)
                     if feedback.get('status')=='completed':
                         pending=dict(candidate_id=args['candidate_id'],path=feedback['overlay_path'],purpose='vadv2_probe')
                 elif name == 'probe_pdm' and set(args)=={'candidate_id'}:
@@ -646,12 +829,27 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                     feedback = editor.edit_motion(normalize_edit_call(name,args))
                 elif name == 'repair_candidate' and {'parent_candidate_id', 'target_candidate_id', 'ratio', 'reason'} <= set(args) <= {'parent_candidate_id', 'target_candidate_id', 'ratio', 'reason', 'window_s'}:
                     feedback = editor.repair(args)
+                elif name == 'adjust_initial_pose' and set(args) <= {'parent_candidate_id','position_offset_m','yaw_mode','yaw_offset_rad','yaw_rad','initial_speed_mps','reason'}:
+                    feedback = editor.adjust_initial_pose(args)
+                    pending = editor.inspect(feedback['candidate_id'])
                 elif name == 'inspect_trajectory' and set(args) == {'candidate_id'}:
                     feedback = editor.inspect(args['candidate_id'])
-                    pending = feedback
+                    pending = None if feedback.get('cached') else feedback
                 elif name == 'submit_candidate' and set(args) == {'candidate_id', 'reason'}:
                     feedback = editor.submit(args['candidate_id'], args['reason'])
                     stop = 'candidate_submitted'
+                elif name == 'request_ego_history_revision' and set(args)=={'reason','target_speed_mps'}:
+                    if editor.policy_probe is not None:editor.policy_probe.require_reselection_evidence()
+                    from attack_ego_preparation import prepare_acceleration
+                    prepared=prepare_acceleration(editor.scene,folder/f'history_revision_{turn:02d}',
+                        policy.resolve(editor.constraints.get('acceptance_policy')),target_speed_mps=args['target_speed_mps'])
+                    if prepared['status']=='unavailable':
+                        feedback=dict(status='invalid',reason=prepared['reason'],report_path=prepared['report_path'])
+                    else:
+                        editor.constraints['_ego_history_revision_target']=args['target_speed_mps']
+                        editor.constraints['_ego_history_revision_requested']=True
+                        feedback=dict(status='object_reselection_requested',reason=args['reason'],shared_state=prepared['shared_state'])
+                        stop='object_reselection_requested'
                 elif name == 'request_object_reselection' and set(args) == {'reason'}:
                     if editor.policy_probe is not None:
                         editor.policy_probe.require_reselection_evidence()
@@ -685,8 +883,8 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
             if editor.policy_probe is not None:
                 state=editor.policy_probe.context()
                 if state['remaining']==0 and not any(item.get('policy_attack_success') is True for item in state['candidates'].values()):
-                    stop='vadv2_probe_budget_exhausted_without_target_contact'
-                    termination=dict(reason='Cumulative VADv2 budget exhausted without observed post-takeover target contact.',
+                    stop='vadv2_probe_budget_exhausted_without_policy_failure'
+                    termination=dict(reason='Cumulative VADv2 budget exhausted without confirmed target collision or drivable-area violation after takeover.',
                         scope='current_tools_and_budget',global_infeasibility_proven=False,
                         calls=state['calls'],latest_feedback=state['latest_feedback'])
                     break
@@ -699,13 +897,14 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
         stop='cumulative_attack_api_budget_exhausted'
         termination=dict(reason=str(error),scope='main_agent_execution_scope',global_infeasibility_proven=False)
     except Exception as error:
-        timed_out=(getattr(error,'failure_kind',None)=='request_wall_time_exceeded'
-            or type(error).__name__ in {'TimeoutExpired','TimeoutError','APITimeoutError','RequestDeadlineExceeded'})
-        if timed_out:
+        timed_out=request_timeout_details(error)
+        if timed_out is not None:
             stop = 'stage_timeout_exhausted' if perf_counter() >= deadline-1 else 'request_timeout_exhausted'
-            termination = dict(reason=('Attack trajectory stage exceeded its wall-clock budget.' if stop=='stage_timeout_exhausted' else 'A model request exceeded its wall-clock budget; saved candidates remain available.'),
+            reason=('The model produced partial output but no completed decision before the request deadline.'
+                if timed_out['timeout_category']=='model_decision_timeout' else 'A model request timed out; see timeout category and archived evidence.')
+            termination = dict(timed_out,reason=reason,
                 stage_timeout_seconds=stage_timeout_s,scope='current_tools_and_budget',global_infeasibility_proven=False,
-                failure_kind=getattr(error,'failure_kind',None),archive_ref=getattr(error,'archive_ref',None))
+                finalization_grace_used=finalization_grace_used)
         else:
             stop = 'request_or_execution_failed'
             raise
@@ -721,6 +920,9 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
             api_budget=archive.context() if isinstance(archive,BudgetedArchive) else None,
             resumable_candidate_ids=[key for key,node in editor.nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible']],
             finalization_grace_used=finalization_grace_used,
+            request_timeout_recovery=timeout_recovery,
+            request_protocol_recovery=protocol_recovery,
+            editing_timeout_recovery_used=editing_timeout_recovery_used,
             annotation_changes=dict(operation='export_target_trajectory', frames_json_modified=False),
             physical_collision='undetermined'))
     return editor.submitted
@@ -741,13 +943,16 @@ def reselect_object(scene,output,instruction,assets,config,editor,summary,reason
     revised=dict(config,object_reselection_count=count+1,object_reselection_reason=reason,
         object_selection_feedback=feedback,
         inherited_constructor_budget={k:editor.context()['constructor_budget'][k] for k in ('calls','evaluations')})
+    if editor.constraints.get('_ego_history_revision_requested'):
+        revised['_ego_history_revision_target']=editor.constraints['_ego_history_revision_target']
+        revised['ego_history_revision_count']=config.get('ego_history_revision_count',0)+1
     if editor.pdm_probe is not None:
         latest=editor.pdm_probe.context()['latest_feedback']
         if latest is not None:revised['pdm_reselection_feedback']=latest
     if editor.policy_probe is not None:
         latest=editor.policy_probe.context()['latest_feedback']
         if latest is not None:revised['revision_feedback']=dict(stage='native_vadv2',outcome='target_not_hit',evidence=latest,
-            guidance='Revise the original task using actual VADv2 collision feedback')
+            guidance='Revise the original task using actual VADv2 collision and road-compliance feedback')
     followup=output/f'object_revision_{count+1:02d}'
     child=run(scene,followup,instruction,assets,revised,timeout_seconds,max_tokens,remaining_turns,required_operation,required_track)
     return dict(status='continued_in_object_revision',followup_run=str(followup),followup_status=child['status'])
@@ -763,13 +968,19 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
     if not isinstance(instruction, str) or not instruction.strip():
         raise ValueError('A nonempty user instruction is required')
     config = normalize_constraints(constraints)
-    if continue_from is not None and config.get('plan_options'):
+    if continue_from is not None:
         prior_path=Path(continue_from)/'input.json'
         if prior_path.is_file():
             saved=json.loads(prior_path.read_text()).get('constraints',{})
             if not same_scene_constraints(saved,config):raise ValueError('Continuation constraints differ')
-            for key in ('object_reselection_count','object_reselection_reason','object_selection_feedback'):
+            for key in ('object_reselection_count','object_reselection_reason','object_selection_feedback','ego_history_revision_count','expert_margin_revision_count'):
                 if key in saved:config[key]=saved[key]
+            for key in ('vadv2_probe_root','pdm_probe_root'):
+                if saved.get(key):
+                    previous_root=Path(saved[key]).resolve()
+                    allowed=Path(os.getenv('ADVERSARIAL_CONTINUATION_ROOT',str(experiments_root()))).resolve()
+                    if allowed not in previous_root.parents:raise ValueError('Prior probe budget is outside the continuation area')
+                    config[key]=str(previous_root)
     if config.get('vadv2_self_test'):
         if config.get('pdm_self_check'):raise ValueError('Choose VADv2 self-test or legacy PDM, not both')
         config.setdefault('vadv2_probe_root',str(output/'vadv2-probes'))
@@ -839,6 +1050,58 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
     summary = dict(schema_version='attack_workflow.v1', status='failed', physical_collision='undetermined',attack_difficulty=difficulty)
     stage = 'object_selection'
     try:
+        budget=archive.context()
+        if continue_from is None and (budget['search_requests_remaining']<=0 or budget['search_api_seconds_remaining']<=0):
+            summary.update(status='not_submitted',stop_reason='cumulative_attack_api_budget_exhausted',
+                reason='Cumulative attack search/API budget exhausted before a new selection; reuse qualified saved candidates only.',
+                search_stage=stage,api_budget=budget,resumable_candidate_ids=[])
+            atomic_json(output/stage/'output.json',dict(summary))
+            return summary
+        if config.get('vadv2_self_test'):
+            from mcp_servers.worldengine.adapter.planner_prewarm import start as start_prewarm
+            start_prewarm(config['vadv2_policy_config'],output/'vad-prewarm.json')
+        preparation=None
+        if 'prepare_ego_history' in config:
+            prior_scene=None
+            if continue_from is None:
+                from expert_attack_feedback import revision_history
+                prior_scene=revision_history(config,scene,instruction,output,required_operation,required_track)
+            if continue_from is not None:
+                prior=Path(continue_from).resolve()
+                allowed=Path(os.getenv('ADVERSARIAL_CONTINUATION_ROOT',str(experiments_root()))).resolve()
+                if prior==output or allowed not in prior.parents:
+                    raise ValueError('Continuation source must be another experiments run')
+                archived_input=json.loads((prior/'input.json').read_text())
+                from ego_history import source_scene
+                if (source_scene(archived_input['scene'])!=source_scene(scene)
+                        or not same_scene_constraints(archived_input['constraints'],config)
+                        or archived_input['instruction']!=instruction or archived_input['assets']!=assets
+                        or archived_input.get('required_operation')!=required_operation
+                        or archived_input.get('required_track')!=required_track):
+                    raise ValueError('Continuation scene, constraints and instruction must match')
+                prior_choice=json.loads((prior/'object_selection/output.json').read_text())
+                prior_scene=prior_choice.get('editing_scene',archived_input.get('editing_scene',archived_input['scene']))
+            stage='ego_history_prepare'
+            from attack_ego_preparation import prepare_acceleration
+            preparation=prepare_acceleration(scene,output/'ego_history',effective,
+                enabled=config['prepare_ego_history'],
+                target_speed_mps=config.get('_ego_history_revision_target',config.get('ego_history_target_speed_mps')),
+                previous_scene=prior_scene)
+            summary['ego_history_preparation']=preparation
+            if preparation['status']=='unavailable':
+                summary.update(status='not_submitted',stop_reason='ego_history_unavailable',reason=preparation['reason'],search_stage=stage)
+                atomic_json(output/'ego_history_prepare/output.json',summary)
+                return summary
+            scene=Path(preparation['scene'])
+            config['_fixed_ego_history']=dict(preparation['shared_state'],status=preparation['status'],report_path=preparation['report_path'])
+            config.pop('_ego_history_revision_target',None)
+            saved=json.loads((output/'input.json').read_text());saved['editing_scene']=str(scene)
+            saved['ego_history_preparation']=preparation
+            atomic_json(output/'input.json',saved)
+        stage='official_map_coverage'
+        from official_map_coverage import prepare_coverage
+        scene=prepare_coverage(scene, output)
+        stage='object_selection'
         from attack_plan_options import selection_seconds
         selection_timeout=selection_seconds(timeout_seconds) if config.get('plan_options') else timeout_seconds
         if selection_timeout<=0:
@@ -858,7 +1121,8 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
             if previous == output or continuation_root not in previous.parents:
                 raise ValueError('Continuation source must be another experiments run')
             prior_input = json.loads((previous / 'input.json').read_text())
-            if Path(prior_input['scene']).resolve() != scene or not same_scene_constraints(prior_input['constraints'],config) or prior_input['instruction'] != instruction or prior_input['assets'] != assets or prior_input.get('required_operation') != required_operation or prior_input.get('required_track') != required_track:
+            from ego_history import source_scene
+            if source_scene(prior_input['scene']) != source_scene(scene) or not same_scene_constraints(prior_input['constraints'],config) or prior_input['instruction'] != instruction or prior_input['assets'] != assets or prior_input.get('required_operation') != required_operation or prior_input.get('required_track') != required_track:
                 raise ValueError('Continuation scene, constraints and instruction must match')
             selection = json.loads((previous / 'object_selection/output.json').read_text())
             if selection.get('status') != 'completed':
@@ -872,8 +1136,22 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
                                                    note='Previously accepted selection data, not a new model response'))
             atomic_json(folder / 'output.json', selection)
         if selection.get('status') == 'not_submitted':
-            summary.update(selection)
+            summary.update(selection, api_budget=archive.context())
             return summary
+        if preparation is not None:
+            selection['editing_scene']=str(scene)
+            atomic_json(output/'object_selection/output.json',selection)
+        if selection.get('editing_scene'):
+            scene=Path(selection['editing_scene'])
+            from ego_history import verify,clone
+            if continue_from is not None and preparation is None:
+                scene=clone(scene,output/'shared_history')
+                selection['editing_scene']=str(scene)
+                atomic_json(output/'object_selection/output.json',selection)
+            verify(scene)
+            path=output/'input.json'
+            archived=json.loads(path.read_text());archived['editing_scene']=str(scene)
+            atomic_json(path,archived)
         stage = 'trajectory_editing'
         editor = AttackEditor(scene, selection, output / 'trajectory_editing', config)
         summary['plan_choice']=selection.get('plan_choice')
@@ -909,6 +1187,7 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
                 method = {'construct_trajectory':editor.construct,
                           'edit_speed_profile':editor.edit_motion,'edit_route':editor.edit_motion,
                           'repair_candidate':editor.repair, 'construct_from_offsets':editor.construct_offsets,
+                          'adjust_initial_pose':editor.adjust_initial_pose,
                           'construct_vehicle_motion':editor.construct_motion,
                           'construct_vehicle_controls':editor.construct_controls}[operation['tool']]
                 if operation['tool'] in ('edit_speed_profile','edit_route'):
@@ -957,6 +1236,8 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
                 from freeze_attack_scene import freeze
                 frozen = output / 'materialized/frozen_scene'
                 freeze(scene, editor.run_dir, selected, target['track_id'], frozen)
+            from ego_history import attach
+            attach(scene,frozen)
             from ego_edit_evidence import defense_difficulty_or_unknown
             summary['defense_difficulty']=defense_difficulty_or_unknown(frozen,target['track_id'],config.get('acceptance_policy'))
             summary.update(frozen_scene_path=str(frozen),
@@ -971,6 +1252,16 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
         atomic_json(output/stage/'output.json',dict(summary))
         return summary
     except Exception as error:
+        from streaming_requests import request_timeout_details
+        timed_out=request_timeout_details(error)
+        if timed_out is not None:
+            summary.update(status='not_submitted',stop_reason='request_timeout_exhausted',
+                reason=('The model produced partial output but no completed decision before the request deadline.'
+                    if timed_out['timeout_category']=='model_decision_timeout' else 'A model request timed out; see timeout category and archived evidence.'),
+                search_stage=stage,api_budget=archive.context(),resumable_candidate_ids=[],
+                termination_evidence=dict(timed_out,scope='current_tools_and_budget',global_infeasibility_proven=False))
+            atomic_json(output/stage/'output.json',dict(summary))
+            return summary
         summary.update(status='failed', error_type=type(error).__name__, error=str(error)[:350])
         stage_output = output / stage / 'output.json'
         if not stage_output.exists():

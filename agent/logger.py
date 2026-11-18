@@ -208,7 +208,9 @@ class RunLogger:
         duration = None if started is None else time.perf_counter() - started
         status = result.get("status", "unknown")
         self._write_json(tool_dir / 'timing.json', dict(status=status,
-                         elapsed_seconds=duration, finished_at=self._now()))
+                         elapsed_seconds=duration, finished_at=self._now(),
+                         job_id=(result.get('job') or {}).get('job_id'),
+                         job_elapsed_seconds=(result.get('job') or {}).get('elapsed_seconds')))
 
         with (tool_dir / "execution.log").open("a", encoding="utf-8") as file:
             if duration is None:

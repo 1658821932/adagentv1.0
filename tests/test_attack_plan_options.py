@@ -16,6 +16,24 @@ from attack_plan_options import choice, editor_deadline, selection_tools, shared
 import run_attack_workflow as workflow
 
 
+def test_native_wait_preserves_remaining_editor_time_across_object_switches(monkeypatch,tmp_path):
+    import attack_plan_options as plans
+    now=[100.]
+    monkeypatch.setattr(plans.time,'perf_counter',lambda:now[0])
+    @shared_auto_session
+    def session(output,constraints):
+        first=editor_deadline(420)
+        now[0]+=30  # selection/edit work consumes the shared clock
+        started=now[0]
+        now[0]+=446  # an expensive real-policy probe
+        plans.exclude_probe_wait(now[0]-started)
+        assert plans.selection_seconds(420)==390
+        assert editor_deadline(420)==first+446
+        now[0]+=10  # next actor selection still consumes the same budget
+        assert plans.selection_seconds(420)==380
+    session(tmp_path,{'plan_options':options()})
+
+
 def options():
     return [dict(option_id='existing',operation='edit_existing',target_track='lead',
                  instruction='Brake the existing lead.',rationale='Visible lead.',uncertainty='Check initial state.'),
@@ -153,8 +171,56 @@ def test_explicit_fixed_target_does_not_switch_automatically(offline_workflow,tm
     assert seen.selections[0]['track']=='lead' and not seen.edits
 
 
+def test_selection_stream_deadline_preserves_category_in_bounded_outcome(offline_workflow,tmp_path,monkeypatch):
+    from streaming_requests import StreamingRequestFailure
+    from business_outcome import bounded_outcome
+    def stalled(*args,**kwargs):
+        raise StreamingRequestFailure('offline deadline',failure_kind='stream_wall_time_exceeded',
+            error_type='TimeoutError',phase='reading_response_stream',archive_ref='/offline/attempt',
+            output_received=True,chunks_received=30)
+    monkeypatch.setattr(workflow,'select_object',stalled)
+    result=run_auto(offline_workflow,tmp_path)
+    assert result['status']=='not_submitted' and result['search_stage']=='object_selection'
+    assert result['termination_evidence']['timeout_category']=='model_decision_timeout'
+    refusal=bounded_outcome('attack_editing',result,tmp_path/'attack')
+    assert refusal['detail']['retry_allowed'] is False
+    assert not offline_workflow.edits
+
+
+def test_exhausted_new_selection_stops_without_preparation_or_api(offline_workflow,tmp_path,monkeypatch):
+    root=tmp_path/'shared';root.mkdir()
+    (root/'api-budget.json').write_text(json.dumps(dict(requests=5,api_seconds=810.)))
+    monkeypatch.setenv('ADVERSARIAL_ATTACK_SESSION',str(root))
+    result=run_auto(offline_workflow,tmp_path)
+    assert result['stop_reason']=='cumulative_attack_api_budget_exhausted'
+    assert result['api_budget']['search_api_seconds_remaining']==0
+    assert not offline_workflow.selections and not offline_workflow.edits
+
+
+def test_vad_framework_prewarm_starts_before_selection(offline_workflow,tmp_path,monkeypatch):
+    from mcp_servers.worldengine.adapter import planner_prewarm
+    offline_workflow.precheck=False
+    events=[]
+    select=workflow.select_object
+    def prewarm(policy,path):
+        events.append('prewarm')
+        return {'status':'warming'}
+    def choose(*args,**kwargs):
+        events.append('selection')
+        return select(*args,**kwargs)
+    monkeypatch.setattr(planner_prewarm,'start',prewarm)
+    monkeypatch.setattr(workflow,'select_object',choose)
+    cfg=tmp_path/'offline-config.py';cfg.touch()
+    weights=tmp_path/'offline-weights.pth';weights.touch()
+    workflow.run(offline_workflow.scene,tmp_path/'warm-attack','fixture',max_turns=5,
+        constraints={'plan_options':options(),'vadv2_self_test':True,'vadv2_policy_config':{
+            'worldengine_root':str(tmp_path),'python':sys.executable,'config_path':str(cfg),'checkpoint_path':str(weights)}})
+    assert events==['prewarm','selection']
+
+
 @pytest.mark.parametrize('operation',['edit_existing','add_vehicle'])
-def test_real_selector_parses_option_id_and_returns_actual_choice(tmp_path,monkeypatch,operation):
+@pytest.mark.parametrize('with_preview',[False,True])
+def test_real_selector_parses_option_id_and_returns_actual_choice(tmp_path,monkeypatch,operation,with_preview):
     import decision_scene_view
     scene=tmp_path/'scene';(scene/'metadata').mkdir(parents=True)
     frames=[dict(timestamp=1000000+i*500000,ego2global=np.eye(4).tolist(),
@@ -162,9 +228,12 @@ def test_real_selector_parses_option_id_and_returns_actual_choice(tmp_path,monke
     (scene/'metadata/frames.json').write_text(json.dumps(frames))
     actors=[[dict(track='lead',label='vehicle',x=30.,y=0.,yaw=0.,length=4.2,width=1.8)] for _ in frames]
     monkeypatch.setattr(workflow,'observed_objects_from_frames',lambda frames:actors)
-    monkeypatch.setattr(workflow,'load_official_drivable',lambda path:None)
+    from ego_road_checks import OfficialDrivableMap
+    from shapely.geometry import box
+    road=OfficialDrivableMap([box(-100,-20,100,20)],{})
+    monkeypatch.setattr(workflow,'load_official_drivable',lambda path:road)
+    monkeypatch.setenv('ADVERSARIAL_ATTACK_SESSION',str(tmp_path/'budget'))
     monkeypatch.setattr(workflow,'_road_sections',lambda *args:[])
-    monkeypatch.setattr(workflow,'check_drivable_area_official',lambda *args,**kw:{'passed':True})
     monkeypatch.setattr(workflow,'actor_observation_series',lambda *args:[])
     monkeypatch.setattr(workflow,'image_part',lambda path:{'type':'image_url','image_url':{'url':'offline'}})
     monkeypatch.setattr(decision_scene_view,'render_overview',lambda *args,**kw:tmp_path/'bev.png')
@@ -178,7 +247,15 @@ def test_real_selector_parses_option_id_and_returns_actual_choice(tmp_path,monke
             if operation=='edit_existing':arguments['track_id']='lead';name='select_vehicle'
             else:
                 arguments.update(asset_id='car',x_m=20.,y_m=0.,yaw_rad=0.,speed_mps=0.);name='add_vehicle'
-            folder=tmp_path/'response';folder.mkdir()
+            if with_preview and len(recorded)==1:
+                name='preview_attack_options'
+                arguments=dict(reason='Compare cheaply before committing',options=[
+                    dict(option_id='preview-a',operation='add_vehicle',asset_id='car',x_m=20.,y_m=0.,yaw_rad=0.,speed_mps=0.)])
+            if with_preview and len(recorded)==2:
+                assert 'prefix_target_contact' in json.dumps(messages)
+                assert any(part.get('type')=='image_url' for part in messages[0]['content'])
+                assert not (tmp_path/'choice/output.json').exists()
+            folder=tmp_path/f'response_{len(recorded)}';folder.mkdir()
             call=dict(id='call_1',type='function',function={'name':name,'arguments':json.dumps(arguments)})
             (folder/'response.json').write_text(json.dumps({'choices':[{'message':{'tool_calls':[call]}}]}))
             return '',folder
@@ -189,7 +266,11 @@ def test_real_selector_parses_option_id_and_returns_actual_choice(tmp_path,monke
     assert selection['target']['operation']==operation
     assert selection['plan_choice']['option_id']=='existing'
     assert selection['plan_choice']['adapted']==(operation=='add_vehicle')
-    assert len(recorded)==1
+    assert len(recorded)==(2 if with_preview else 1)
+    if with_preview:
+        ledger=json.loads((tmp_path/'budget/placement-preview-budget.json').read_text())
+        assert ledger['evaluations']==1
+        assert json.loads((tmp_path/'choice/previews/turn_01.json').read_text())['candidate_created'] is False
 
 
 def test_auto_budget_checkpoint_reuses_ledger_and_rejects_an_outside_root(tmp_path,monkeypatch):
@@ -212,3 +293,91 @@ def test_auto_budget_checkpoint_reuses_ledger_and_rejects_an_outside_root(tmp_pa
     with pytest.raises(ValueError,match='outside'):
         session(tmp_path/'third',{'plan_options':options()},continue_from=second)
     assert not (tmp_path/'third').exists() and AUTO_SESSION_ROOT.get() is None
+
+
+@pytest.mark.parametrize('repeat_rejected', [False, True])
+def test_low_initial_margin_excludes_the_track_from_selection(tmp_path, monkeypatch, repeat_rejected):
+    import decision_scene_view
+    from ego_road_checks import OfficialDrivableMap
+    from shapely.geometry import box
+
+    scene = tmp_path/'scene'
+    (scene/'metadata').mkdir(parents=True)
+    frames = [dict(timestamp=1_000_000 + i*500_000, ego2global=np.eye(4).tolist(),
+        anns=dict(track_tokens=['lead'], gt_boxes=[[30.,19.016,0.,4.2,1.8,1.6,0.]])) for i in range(16)]
+    (scene/'metadata/frames.json').write_text(json.dumps(frames))
+    actor = dict(track='lead', label='vehicle', x=30., y=19.016, yaw=0., length=4.2, width=1.8)
+    monkeypatch.setattr(workflow, 'observed_objects_from_frames', lambda rows: [[actor] for _ in rows])
+    monkeypatch.setattr(workflow, 'load_official_drivable', lambda path: OfficialDrivableMap([box(-100,-20,100,20)],{}))
+    monkeypatch.setattr(workflow, '_road_sections', lambda *args: [])
+    monkeypatch.setattr(workflow, 'image_part', lambda path: {'type':'image_url','image_url':{'url':'offline'}})
+    monkeypatch.setattr(decision_scene_view, 'render_overview', lambda *args, **kwargs: tmp_path/'map.png')
+    monkeypatch.setattr(workflow, 'AttackEditor', lambda *args: SimpleNamespace(public=lambda _: {}))
+    calls = []
+
+    class Archive:
+        def complete(self, label, messages, **kwargs):
+            calls.append(label)
+            names = [tool['function']['name'] for tool in kwargs['tools']]
+            assert 'select_vehicle' not in names and 'add_vehicle' in names
+            assert 'initial_road_margin_below_minimum' in json.dumps(messages)
+            if len(calls) == 1 or repeat_rejected:
+                name = 'select_vehicle'
+                args = dict(track_id='lead', option_id='existing', reason='Fixture stale actor choice')
+            else:
+                name = 'add_vehicle'
+                args = dict(asset_id='car', x_m=20., y_m=0., yaw_rad=0., speed_mps=0.,
+                    option_id='added', reason='Fixture alternative')
+            response = tmp_path/label
+            response.mkdir()
+            call = dict(id='call', function=dict(name=name, arguments=json.dumps(args)))
+            (response/'response.json').write_text(json.dumps(dict(choices=[dict(message=dict(tool_calls=[call]))])))
+            return '', response
+
+    folder = tmp_path/'choice'
+    result = workflow.select_object(scene, folder, 'Fixture task',
+        [dict(asset_id='car', path=str(tmp_path/'vehicle.ply'), size_m=[4.2,1.8,1.6])],
+        dict(plan_options=options(), official_margin_m=.1, attack_prefix_lock_s=0.), Archive(), 30, 1024)
+    rejected = json.loads((folder/'tool_calls/turn_01/result.json').read_text())
+    assert (rejected['track_id'], rejected['operation']) == ('lead', 'edit_existing')
+    assert rejected['measurements'] == dict(time_s=0., worst_corner_margin_m=.084, required_margin_m=.1)
+    assert calls == ['object_01', 'object_02']
+    if repeat_rejected:
+        assert result['stop_reason'] == 'object_selection_repeated_rejection'
+    else:
+        assert result['status'] == 'completed' and result['target']['operation'] == 'add_vehicle'
+
+
+def test_placement_preview_cap_survives_new_selection_folder_without_materializing(tmp_path,monkeypatch):
+    import decision_scene_view
+    from ego_road_checks import OfficialDrivableMap
+    from shapely.geometry import box
+    scene=tmp_path/'scene';(scene/'metadata').mkdir(parents=True)
+    frames=[dict(timestamp=1_000_000+i*500_000,ego2global=np.eye(4).tolist()) for i in range(16)]
+    (scene/'metadata/frames.json').write_text(json.dumps(frames))
+    monkeypatch.setenv('ADVERSARIAL_ATTACK_SESSION',str(tmp_path/'budget'))
+    monkeypatch.setattr(workflow,'observed_objects_from_frames',lambda frames:[[] for _ in frames])
+    monkeypatch.setattr(workflow,'load_official_drivable',lambda path:OfficialDrivableMap([box(-100,-20,100,20)],{}))
+    monkeypatch.setattr(workflow,'_road_sections',lambda *args:[])
+    monkeypatch.setattr(workflow,'image_part',lambda path:{'type':'image_url','image_url':{'url':'fixture'}})
+    monkeypatch.setattr(decision_scene_view,'render_overview',lambda *args,**kwargs:tmp_path/'map.png')
+    observations=[]
+    class Archive:
+        def __init__(self):self.calls=0
+        def complete(self,label,messages,**kwargs):
+            self.calls+=1;observations.append(json.dumps(messages))
+            if self.calls==1:
+                name='preview_attack_options';args=dict(reason='bounded comparison',options=[dict(
+                    option_id=str(i),operation='add_vehicle',asset_id='car',x_m=20.+i,y_m=0.,yaw_rad=0.,speed_mps=0.) for i in range(3)])
+            else:name='finish_search';args={'reason':'fixture finished'}
+            folder=tmp_path/f'attempt_{len(observations)}';folder.mkdir()
+            call=dict(id='call',function=dict(name=name,arguments=json.dumps(args)))
+            (folder/'response.json').write_text(json.dumps({'choices':[{'message':{'tool_calls':[call]}}]}))
+            return '',folder
+    assets=[dict(asset_id='car',size_m=[4.,2.,1.5])]
+    for i in range(3):
+        result=workflow.select_object(scene,tmp_path/f'selection_{i}','same task',assets,{},Archive(),30,1024)
+        assert result['status']=='not_submitted'
+    assert json.loads((tmp_path/'budget/placement-preview-budget.json').read_text())['evaluations']==6
+    assert 'Cumulative placement preview budget exhausted' in observations[-1]
+    assert not list(tmp_path.rglob('seed_trajectory.csv'))

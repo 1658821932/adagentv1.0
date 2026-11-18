@@ -76,6 +76,7 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
     if scenario_pkl_file_name:
         env["SCENARIO_PKL_FILE_NAME"] = str(scenario_pkl_file_name)
     option_env = {
+        "collision_only": "ADAGENT_COLLISION_ONLY",
         "visualize_video": "VISUALIZE_VIDEO",
         "visualize_BEV": "VISUALIZE_BEV",
         "collision_target_track": "ADAGENT_COLLISION_TARGET_TRACK",
@@ -99,6 +100,7 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         if options.get(key) is not None:
             raise ValueError(f"{key} is not supported by the native runner")
     env.pop('ADAGENT_COLLISION_TARGET_TRACK',None)
+    env.pop('ADAGENT_COLLISION_ONLY',None)
     env.pop('SAMPLING_POSES',None)
     for key, env_key in option_env.items():
         if key in options and options[key] is not None:
@@ -147,14 +149,24 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         raise RuntimeError(
             f"WorldEngine produced no runner report; inspect {log_path}"
         )
-    scope_file=result_dir/'WE_output/pdm_evaluation_scope.json'
-    if not scope_file.is_file():
-        raise RuntimeError('Native PDM produced no verified evaluation coverage; inspect '+str(log_path))
-    evaluation_scope=json.loads(scope_file.read_text())
-    scope_ids={row['scene_id'] for row in evaluation_scope.get('scenes',[]) if row.get('status')=='completed'}
     report_ids={row['scenario_name'] for report in reports for row in (report if isinstance(report,list) else [report]) if row.get('succeeded') is True}
-    if evaluation_scope.get('scope')!='full_rollout_pdm' or not report_ids or report_ids!=scope_ids:
-        raise RuntimeError('Native PDM coverage does not match the completed scenes')
+    if options.get('collision_only'):
+        from .collision_report import collision_evaluation_scope
+        from .evaluation_horizon import DEFAULT_NATIVE_HISTORY, DEFAULT_NATIVE_FRAMES
+        collision=json.loads((result_dir/'WE_output/native_collision_report.json').read_text())
+        evaluation_scope=collision_evaluation_scope(collision,report_ids,
+            int(options.get('num_history',DEFAULT_NATIVE_HISTORY)),
+            int(options.get('max_frame_per_scene',DEFAULT_NATIVE_FRAMES)))
+        if collision.get('target_track')!=options.get('collision_target_track'):
+            raise RuntimeError('Collision-only report belongs to a different target')
+    else:
+        scope_file=result_dir/'WE_output/pdm_evaluation_scope.json'
+        if not scope_file.is_file():
+            raise RuntimeError('Native PDM produced no verified evaluation coverage; inspect '+str(log_path))
+        evaluation_scope=json.loads(scope_file.read_text())
+        scope_ids={row['scene_id'] for row in evaluation_scope.get('scenes',[]) if row.get('status')=='completed'}
+        if evaluation_scope.get('scope')!='full_rollout_pdm' or not report_ids or report_ids!=scope_ids:
+            raise RuntimeError('Native PDM coverage does not match the completed scenes')
     return {
         "run_dir": str(task.root),
         "command": command,

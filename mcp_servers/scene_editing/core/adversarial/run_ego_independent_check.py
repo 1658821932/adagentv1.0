@@ -96,8 +96,9 @@ def main():
     if initial_path.is_file() and args.candidate.startswith('constructor_'):
         record=next(row for row in source['candidates'] if 'constructor_'+row['candidate_id'].removeprefix('candidate_')==args.candidate)
         if record.get('operation') is not None:
-            from ego_trajectory_edit import verify_braking_candidate,apply_curve_checks,apply_intent
-            curve=verify_braking_candidate(times,baseline_xy,baseline_yaw,xy,yaw,record['operation'],policy.edit_start(effective))
+            from ego_trajectory_edit import apply_curve_checks,apply_intent
+            from adaptive_braking import verify_constructor
+            curve=verify_constructor(times,baseline_xy,baseline_yaw,xy,yaw,record['operation'],policy.edit_start(effective),effective)
             if curve != record['generation_curve']:
                 raise ValueError('Constructor curve evidence differs from recomputation')
             apply_curve_checks(screened,curve)
@@ -152,9 +153,9 @@ def main():
                     record=next(row for row in source['candidates'] if 'constructor_'+row['candidate_id'].removeprefix('candidate_')==key)
                     evidence=None
                     if record.get('operation') is not None:
-                        from ego_trajectory_edit import verify_braking_candidate
+                        from adaptive_braking import verify_constructor
                         saved_xy,saved_yaw=lookup(key)
-                        evidence=verify_braking_candidate(times,baseline_xy,baseline_yaw,saved_xy,saved_yaw,record['operation'],policy.edit_start(effective))
+                        evidence=verify_constructor(times,baseline_xy,baseline_yaw,saved_xy,saved_yaw,record['operation'],policy.edit_start(effective),effective)
                         if evidence!=record['generation_curve']: raise ValueError('Parent constructor curve differs from recorded evidence')
                 else:
                     evidence=None

@@ -28,6 +28,8 @@ def tools():
 def test_host_and_backend_have_identical_managed_parameters(monkeypatch,dialect,effort):
     p=profile(dialect,effort);p['api_key']='fake-only-fixture'
     monkeypatch.setattr('common.api_profiles.reasoning_effort_level',lambda:None)
+    # This equivalence test uses the fixture profile, independent of local UI pins.
+    monkeypatch.setattr('common.api_profiles.effort_for',lambda component:None)
     monkeypatch.setattr(service,'get_profile',lambda *a,**kw:p)
     env=service.backend_api_env(['python',str(CORE/'editing_backend.py')],{})
     for k,v in env.items():monkeypatch.setenv(k,v)

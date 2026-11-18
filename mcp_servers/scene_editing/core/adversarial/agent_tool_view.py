@@ -167,9 +167,9 @@ def candidate_card(value):
     for key in (
         'source', 'pdm_probe_eligible', 'task_failed_checks', 'min_ego_clearance_m',
         'min_target_clearance_m', 'closest_time_s', 'minimum_clearance_time_s',
-        'max_speed_mps', 'max_acceleration_mps2', 'official_margin_m',
+        'max_speed_mps', 'max_acceleration_mps2', 'official_margin_m','initial_pose',
     ):
-        if key in value:
+        if key in value and (key!='initial_pose' or value[key] is not None):
             card[key] = value[key]
     if 'coverage' in value:
         card['unknown_checks'] = [key for key, state in (value.get('coverage') or {}).items()
@@ -187,10 +187,16 @@ def compact_action_feedback(result):
         'status', 'candidate_id', 'parent_candidate_id', 'reference_geometry_passed',
         'task_contract_passed', 'reference_screen_passed', 'failed_checks', 'task_failed_checks',
         'candidate_created', 'executed', 'instruction', 'feasible', 'cached', 'error', 'error_code', 'failure_kind',
-        'feasibility_limits', 'speed_edit_summary', 'route_edit_summary', 'archive_ref',
+        'feasibility_limits', 'speed_edit_summary', 'route_edit_summary', 'archive_ref', 'braking_summary',
+        'initial_pose_filter',
     ):
         if key in result:
             compact[key] = result[key]
+    if result.get('initial_pose') is not None:compact['initial_pose']=result['initial_pose']
+    if result.get('rejected_initial_poses'):
+        rejected = result['rejected_initial_poses']
+        compact['initial_pose_filter'] = dict(rejected_count=len(rejected),
+            reasons=list(dict.fromkeys(item['reason'] for item in rejected)))
     if isinstance(result.get('candidates'), list):
         compact['candidate_ids'] = [item.get('candidate_id') for item in result['candidates']
                                     if isinstance(item, dict) and item.get('candidate_id')]

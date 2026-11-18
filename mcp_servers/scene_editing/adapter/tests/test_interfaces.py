@@ -14,6 +14,8 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setenv("ADAGENT_RUNTIME_ROOT",str(tmp_path/"runtime"))
     root=tmp_path/"scene";(root/"metadata").mkdir(parents=True)
     frames=[{"timestamp":1_000_000+i*500_000,"token":str(i),"ego2global_translation":[i,0,0],"anns":{"track_tokens":["vehicle_1"]}} for i in range(3)]
+    for i,frame in enumerate(frames):
+        frame['ego2global']=[[1,0,0,i],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
     for name,value in [("frames",frames),("cameras",{"CAM_F0":{}})]:
         (root/"metadata"/(name+".json")).write_text(json.dumps(value))
     (root/"binding.json").write_text("{}")
@@ -24,7 +26,7 @@ def source(tmp_path, monkeypatch):
 
 
 def attack_args(source):
-    return {"scene_ref":source,"instruction":"Make the annotated lead vehicle slow down.","operation":"edit_existing","target_track":"vehicle_1"}
+    return {"scene_ref":source,"instruction":"Make the annotated lead vehicle slow down.","operation":"edit_existing","target_track":"vehicle_1","vadv2_self_test":False}
 
 
 def test_configuration_failure_survives_public_tool_and_context_compaction(source):
@@ -122,7 +124,7 @@ else:
  traj=out/"expert.csv"
  with traj.open("w") as f:
   w=csv.writer(f);w.writerow(["time_s","ego_x_m","ego_y_m","ego_yaw_rad"])
-  for frame in frames:w.writerow([(frame["timestamp"]-frames[0]["timestamp"])/1000000,0,0,0])
+  for frame in frames:w.writerow([(frame["timestamp"]-frames[0]["timestamp"])/1000000,frame['ego2global'][0][3]-frames[0]['ego2global'][0][3],0,0])
  result={"status":"completed","mode":"real","run_dir":"backend-owned","scene_id":attack["scene_id"],"scene_token":attack["scene_token"],"attack_run_dir":attack["run_dir"],"frozen_scene_path":attack["frozen_scene_path"],"target_track":attack["target_track"],"selected_candidate_id":"foci_001","selected_source":"foci","expert_trajectory_path":str(traj),"trajectory_metadata_path":artifact("trajectory-meta.json",{"coordinate_frame":"initial_ego_rear_axle","position_reference":"ego_rear_axle","length_unit":"m","angle_unit":"rad","time_unit":"s"}),"conflict_brief_path":artifact("conflict-brief.json",{"directions":[]}),"submission_path":artifact("accepted-submission.json",{"candidate_id":"foci_001"}),"checks":checks,"annotation_changes":{"operation":"export_ego_trajectory","frames_json_modified":False}}
 print(json.dumps(result))
 ''')
@@ -142,6 +144,14 @@ def test_configured_json_bridge_keeps_identity_and_outputs_real_files(source,scr
     assert Path(attack["result"]["run_dir"])/"output" in Path(attack["result"]["frames_path"]).parents
     assert ego["result"]["ilft_training_data"] is None
     assert ego["result"]["simulation_input"] is None
+
+
+def test_geometry_only_bridge_cannot_claim_default_vad_self_test_success(source,scripted_backend):
+    args=attack_args(source);args['vadv2_self_test']=True
+    with patch('mcp_servers.scene_editing.adapter.service.stage_command',return_value=scripted_backend):
+        result=call_tool('attack_vehicle_editor',args,mode='real')
+    assert result['status']=='error'
+    assert 'no exact-candidate evidence' in result['error']['message']
 
 
 def test_mock_expert_csv_cannot_be_passed_as_il_labels(source):
@@ -195,6 +205,7 @@ def test_attack_bridge_rejects_invalid_backend_artifacts(source,scripted_backend
     ("bad_time","editing_identity_mismatch"),
     ("bad_coordinates","editing_output_invalid"),
     ("not_finite","editing_output_invalid"),
+    ("bad_history","editing_identity_mismatch"),
 ])
 def test_ego_bridge_rejects_wrong_attack_or_trajectory(source,scripted_backend,fault,expected):
     import subprocess
@@ -207,10 +218,13 @@ def test_ego_bridge_rejects_wrong_attack_or_trajectory(source,scripted_backend,f
         completed=original(*args,**kwargs);result=json.loads(completed.stdout)
         if fault=="wrong_target":result["target_track"]="another-track"
         elif fault=="bad_coordinates":Path(result["trajectory_metadata_path"]).write_text(json.dumps({"coordinate_frame":"world"}))
-        elif fault=="bad_time":
-            p=Path(result["expert_trajectory_path"]);p.write_text(p.read_text().replace("0.5,0,0,0","0.6,0,0,0"))
-        elif fault=="not_finite":
-            p=Path(result["expert_trajectory_path"]);p.write_text(p.read_text().replace("0.5,0,0,0","0.5,nan,0,0"))
+        elif fault in ('bad_time','not_finite','bad_history'):
+            p=Path(result['expert_trajectory_path']);lines=p.read_text().splitlines()
+            values=lines[2].split(',')
+            if fault=='bad_time':values[0]='0.6'
+            elif fault=='not_finite':values[1]='nan'
+            else:values[1]=str(float(values[1])+.1)
+            lines[2]=','.join(values);p.write_text('\n'.join(lines)+'\n')
         return subprocess.CompletedProcess(completed.args,completed.returncode,json.dumps(result),completed.stderr)
     with patch.object(service,"stage_command",return_value=scripted_backend),patch.object(service,"run_logged",side_effect=altered):
         result=call_tool("ego_trajectory_editor",{"attack_result":attack,"target_effect":"Stop safely."},mode="real")

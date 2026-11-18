@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from tools.registry import call_tool
 from tools.tool04_edit_planner.real import run
+from mcp_servers.scene_editing.adapter.schemas import AttackInput
 
 @pytest.fixture
 def scene(tmp_path):
@@ -157,6 +158,7 @@ def test_add_vehicle_uses_supplied_asset_and_size_verbatim(scene,tmp_path):
     result=run(value)
     assert result['status']=='success',result
     arguments5=result['result']['attack_input']
+    assert AttackInput.model_validate(arguments5).vadv2_self_test is True
     assert result['result']['suitability']=='ready'
     assert arguments5['vehicle']==vehicle
     assert arguments5['maneuver']=='stationary' and 'target_track' not in arguments5
@@ -454,7 +456,8 @@ def test_bev_replaces_snapshot_dump_but_preserves_camera_images_and_full_evidenc
     assert calls==[None] and len(image_parts(received[0]))==4
     view=json.loads(received[0][1]['content'][0]['text'])
     assert 'snapshots' not in view and view['actors'][0]['track_id']=='vehicle-A'
-    assert view['editing_capabilities']['edit_existing'].startswith('Edit future motion')
+    assert view['editing_capabilities']['edit_existing'].startswith('Edit a fully observed vehicle')
+    assert 'initial-position/yaw-adjusted' in view['editing_capabilities']['edit_existing']
     raw=json.loads(Path(view['evidence']['full_scene_evidence_path']).read_text())
     assert len(raw['snapshots'])==3
 

@@ -27,16 +27,21 @@ def infer_controls(times, xy, yaw, size, boundary):
                 steering_rad=np.interp(query, times, steering).clip(-.55, .55).tolist())
 
 
+def _control_initial_state(times, xy, yaw, size, boundary, acceptance):
+    state = initial_state(times, xy, yaw, size, boundary, acceptance)
+    if state['speed'] > acceptance['generator_max_speed_mps'] + 1e-6:
+        raise ValueError('unsupported_initial_state: speed exceeds configured generator range')
+    return state
+
+
 def integrate_controls(times, seed_xy, seed_yaw, dense_times, size, controls, boundary=3., acceptance=None):
     import acceptance_policy as policy
     effective = policy.resolve(acceptance)
     speed_limit = effective['generator_max_speed_mps']
     query = np.unique(np.r_[times, dense_times, boundary])
     center = sample_xy(times, seed_xy, [boundary])[0]
-    initial = initial_state(times, seed_xy, seed_yaw, size, boundary, effective)
+    initial = _control_initial_state(times, seed_xy, seed_yaw, size, boundary, effective)
     angle, speed = initial['yaw'], initial['speed']
-    if speed > speed_limit+1e-6:
-        raise ValueError('unsupported_initial_state: speed exceeds configured generator range')
     wheelbase = .6*float(size[0])
     rear = initial['rear_xy'].copy()
     acceleration, steering = 0., initial['steering']
@@ -114,16 +119,138 @@ def signed_box_gap(xy, yaw, size, other_xy, other_yaw, other_size):
     return np.max(projection-own-other, axis=1)
 
 
+def event_window_guidance(times, gap, window, required=False):
+    lower,upper=map(float,window)
+    mask=(times>=lower-.001)&(times<=upper+.001)
+    if not mask.any():
+        raise ValueError('Event window contains no dense samples')
+    contacts=np.flatnonzero(gap<0.)
+    first_contact=None if not len(contacts) else float(times[contacts[0]])
+    minimum=float(gap[mask].min())
+    penetration=max(0.,-minimum)
+    late=0. if first_contact is None else max(0.,first_contact-upper)
+    proximity_weight=10. if required else 2.5
+    late_weight=8. if required else 4.
+    residuals=[proximity_weight*max(0.,minimum),late_weight*late,
+        4.*max(0.,.02-penetration) if required else 0.]
+    metrics=dict(window_min_signed_gap_m=minimum,window_penetration_m=penetration,
+        window_contact_sample_count=int(np.count_nonzero(gap[mask]<0.)),
+        window_reference_contact=bool(np.any(gap[mask]<0.)),
+        first_reference_contact_time_s=first_contact,late_contact_seconds=late)
+    return residuals,metrics
+
+
+def release_starts(control_times, editable, initial, target_time, other_time=None):
+    """Continuous brake/release guesses; times come from the current rollout.
+
+    These are controls before physical execution, not a collision-response model.
+    No poses are spliced and the complete trajectory still needs strict checks.
+    """
+    knots=np.asarray(control_times)[editable]
+    spacing=float(np.median(np.diff(control_times)))
+    # Releasing braking before contact can be necessary: the actuator needs time
+    # to ramp from negative to positive acceleration even while speed is zero.
+    releases=[target_time-offset*spacing for offset in (4,3,2,1,0,-1)]
+    if other_time is not None:
+        releases.append((target_time+other_time)/2)
+    seen=set()
+    n=len(editable)
+    for release in releases:
+        after=knots>=release-1e-6
+        if not after.any() or after.all():continue
+        for acceleration in (2.5,1.5):
+            values=initial.copy()
+            values[:n][after]=acceleration
+            key=tuple(values)
+            if key in seen:continue
+            seen.add(key)
+            yield values
+    # Small temporary steering alternatives also return to the parent controls.
+    # They are proposals, never permission to leave the drivable surface.
+    release=target_time-spacing
+    after=knots>=release-1e-6
+    pulse=after & (knots<target_time+spacing)
+    for steering in (-.03,.03):
+        if not pulse.any() or after.all():continue
+        values=initial.copy()
+        values[:n][after]=2.5
+        values[n:][pulse]+=10*steering
+        key=tuple(values)
+        if key not in seen:
+            seen.add(key)
+            yield values
+
+
+def refinement_groups(values,lower,upper,n):
+    """At most eight shared control offsets, with exact command bounds.
+
+    A full per-knot finite-difference Jacobian can exhaust a small branch before
+    taking any optimization step. Preserve its seed shape and vary segments.
+    """
+    cuts=np.flatnonzero(np.abs(np.diff(values[:n]))>.05)+1
+    acceleration=np.split(np.arange(n),cuts)
+    if len(acceleration)>4:acceleration=np.array_split(np.arange(n),4)
+    candidates=acceleration+[group+n for group in np.array_split(np.arange(n),min(4,n))]
+    groups=[];bounds=[]
+    for group in candidates:
+        if not len(group):continue
+        lo=float(np.max(lower[group]-values[group]));hi=float(np.min(upper[group]-values[group]))
+        if hi-lo<=1e-8:continue
+        groups.append(group);bounds.append((lo,hi))
+    return groups,np.asarray(bounds)
+
+
+def motion_guidance(editor,times,xy,yaw,initial_seed=None):
+    from trajectory_checks import screen_reference
+    from vehicle_motion import check_bicycle
+    from vehicle_trajectory import motion_samples
+    effective=policy.resolve(editor.constraints.get('acceptance_policy'))
+    seed_xy,seed_yaw=(editor.seed_xy,editor.seed_yaw) if initial_seed is None else initial_seed
+    values=motion_samples(editor.times,times,xy,editor.edit_start_s)
+    initial_velocity=(seed_xy[1]-seed_xy[0])/(editor.times[1]-editor.times[0])
+    limits=dict(max_speed_mps=effective['max_speed_mps'],
+        max_acceleration_mps2=effective['max_acceleration_mps2'],
+        max_lateral_acceleration_mps2=effective['attack_max_lateral_acceleration_mps2'],
+        max_yaw_rate_radps=policy.ATTACK_MAX_YAW_RATE_RADPS,
+        max_initial_velocity_error_mps=policy.ATTACK_MAX_INITIAL_SPEED_ERROR_MPS)
+    reports=(screen_reference(values,xy[-1],initial_velocity,limits),
+        check_bicycle(times,xy,yaw,editor.target['size_m']))
+    residuals=[]
+    violations=0
+    names=(('max_speed_mps','max_acceleration_mps2','max_lateral_acceleration_mps2',
+            'max_yaw_rate_radps','max_initial_velocity_error_mps'),
+           ('no_reverse','no_lateral_slide','steering_angle','steering_rate','no_stationary_rotation'))
+    for report,keys in zip(reports,names):
+        measured={item.get('metric',item.get('check')):item for item in report['violations']}
+        for key in keys:
+            item=measured.get(key)
+            if item is None:
+                residuals.append(0.)
+                continue
+            limit=max(abs(float(item['limit'])),1e-6)
+            excess=(float(item['actual'])-float(item['limit']))/limit
+            residuals.append(20.*max(0.,excess))
+            violations+=1
+    return residuals,dict(motion_guidance_violation_count=violations)
+
+
+_CURRENT_POSE = object()
+
+
 class ControlSearch:
     """Cheap continuous guidance; final acceptance always uses full checkers."""
     def __init__(self, editor, arguments):
         self.editor, self.arguments = editor, arguments
         self.parent = editor.nodes[arguments['parent_candidate_id']]
+        from initial_pose_edit import parent_seed, search_specs
+        self.active_pose=None
+        self.active_seed_xy,self.active_seed_yaw,_=parent_seed(editor,self.parent)
         self.times = editor.dense_times
         self.ego = sample_xy(editor.times, editor.ego, self.times)
         self.ego_yaw = np.interp(self.times, editor.times, editor.ego_yaw)
         self.ego_center = self.ego+(EGO_FRONT-EGO_REAR)/2*np.column_stack([np.cos(self.ego_yaw), np.sin(self.ego_yaw)])
         self.boundary = getattr(editor,'edit_start_s',policy.edit_start(editor.constraints.get('acceptance_policy') or editor.constraints))
+        self.pose_specs = self._eligible_pose_specs(search_specs(arguments, editor, self.parent))
         self.base = self.parent['result'].get('control_sequence') or infer_controls(self.times,
             self.parent['dense_xy'], self.parent['dense_yaw'], editor.target['size_m'], self.boundary)
         self.control_times = np.asarray(self.base['times_s'])
@@ -142,6 +269,26 @@ class ControlSearch:
         self.lower = np.r_[np.full(self.n, -4.5), np.full(self.n, -5.5)]
         self.upper = np.r_[np.full(self.n, 2.5), np.full(self.n, 5.5)]
 
+    def _eligible_pose_specs(self, specs):
+        from initial_pose_edit import adjusted_seed
+
+        editor = self.editor
+        effective = policy.resolve(editor.constraints.get('acceptance_policy'))
+        self.rejected_initial_poses = []
+        eligible = []
+        for index, spec in enumerate(specs, 1):
+            try:
+                xy, yaw, _ = adjusted_seed(editor, self.parent, spec)
+                _control_initial_state(editor.times, xy, yaw, editor.target['size_m'],
+                    self.boundary, effective)
+            except ValueError as error:
+                self.rejected_initial_poses.append(dict(variant=index, reason=str(error)))
+            else:
+                eligible.append(spec)
+        if not eligible:
+            raise ValueError(self.rejected_initial_poses[0]['reason'])
+        return eligible
+
     def controls(self, values):
         acceleration = np.asarray(self.base['acceleration_mps2']).copy()
         steering = np.asarray(self.base['steering_rad']).copy()
@@ -149,11 +296,77 @@ class ControlSearch:
         steering[self.editable] = values[self.n:]/10
         return dict(times_s=self.control_times.tolist(), acceleration_mps2=acceleration.tolist(), steering_rad=steering.tolist())
 
-    def simulate(self, controls):
-        return integrate_controls(self.editor.times, self.editor.seed_xy, self.editor.seed_yaw,
+    def activate(self,spec):
+        from initial_pose_edit import adjusted_seed
+        self.active_pose=spec
+        self.active_seed_xy,self.active_seed_yaw,_=adjusted_seed(self.editor,self.parent,spec)
+
+    def simulate(self, controls, initial_pose=_CURRENT_POSE):
+        if initial_pose is not _CURRENT_POSE:self.activate(initial_pose)
+        return integrate_controls(self.editor.times, self.active_seed_xy, self.active_seed_yaw,
             self.times, self.editor.target['size_m'], controls, self.boundary, acceptance=self.editor.constraints.get('acceptance_policy'))
 
+    def route_start(self,values, first_edit_time=None):
+        """Follow the recorded route by geometric lookahead, not wall time.
+
+        This cheap seed estimate obeys the same acceleration ramp. It is not a
+        substitute for integrate_controls or full motion/road acceptance.
+        """
+        wheelbase=.6*float(self.editor.target['size_m'][0])
+        route=self.editor.seed_xy-wheelbase/2*np.column_stack([
+            np.cos(self.editor.seed_yaw),np.sin(self.editor.seed_yaw)])
+        distance=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(route,axis=0),axis=1))]
+        if distance[-1]<.5 or np.any(np.diff(distance)<1e-6):return values.copy()
+        initial=initial_state(self.editor.times,self.active_seed_xy,self.active_seed_yaw,
+            self.editor.target['size_m'],self.boundary,policy.resolve(self.editor.constraints.get('acceptance_policy')))
+        rear=initial['rear_xy'].copy();angle=initial['yaw'];steering=initial['steering']
+        speed=initial['speed'];acceleration=0.;previous=self.boundary
+        commands=self.controls(values)
+        angles=np.asarray(commands['steering_rad']).copy()
+        maximum=policy.resolve(self.editor.constraints.get('acceptance_policy'))['generator_max_speed_mps']
+        segments=np.diff(route,axis=0)
+        lengths=np.diff(distance)
+        editable = set(self.editable)
+        for knot,time in enumerate(self.control_times):
+            if time<self.boundary:continue
+            steps=max(1,int(np.ceil((time-previous)/.025)))
+            dt=(time-previous)/steps
+            for step in range(steps):
+                now=previous+(step+.5)*dt
+                command_index=max(0,int(np.searchsorted(self.control_times,now,side='right')-1))
+                acceleration+=np.clip(commands['acceleration_mps2'][command_index]-acceleration,-4.*dt,4.*dt)
+                following=np.clip(speed+acceleration*dt,0.,maximum)
+                limit=min(.55,float(np.arctan(3.4*wheelbase/max(speed**2,.1))))
+                steering+=np.clip(np.clip(angles[command_index],-limit,limit)-steering,-.7*dt,.7*dt)
+                middle=(speed+following)/2
+                change=middle/wheelbase*np.tan(steering)*dt
+                heading=angle+change/2
+                rear+=dt*(middle*np.array([np.cos(heading),np.sin(heading)])+
+                    initial_lateral_velocity(initial,now)*np.array([-np.sin(heading),np.cos(heading)]))
+                angle+=change
+                speed=following
+            projection=np.sum((rear-route[:-1])*segments,axis=1)/lengths**2
+            fractions=np.clip(projection,0.,1.)
+            closest=route[:-1]+fractions[:,None]*segments
+            index=int(np.argmin(np.linalg.norm(closest-rear,axis=1)))
+            along=float(distance[index]+fractions[index]*lengths[index])
+            if index==0 and projection[0]<0.:along=float(projection[0]*lengths[0])
+            lookahead=max(4.,speed*.8)
+            query=along+lookahead
+            target=np.array([np.interp(query,distance,route[:,axis]) for axis in range(2)])
+            if query<0.:target=route[0]+query*segments[0]/lengths[0]
+            if query>distance[-1]:target=route[-1]+(query-distance[-1])*segments[-1]/lengths[-1]
+            delta=target-rear
+            lateral=-np.sin(angle)*delta[0]+np.cos(angle)*delta[1]
+            if knot in editable and (first_edit_time is None or time >= first_edit_time):
+                angles[knot]=np.arctan2(2*wheelbase*lateral,max(float(delta@delta),.1))
+            previous=float(time)
+        result=values.copy()
+        result[self.n:]=10*angles[self.editable]
+        return result.clip(self.lower,self.upper)
+
     def residual(self, arrays, state):
+        self.last_metrics={}
         xy, yaw = arrays[2:]
         relative = relative_state(self.times, xy, yaw, self.ego, self.ego_yaw)
         residuals = []
@@ -173,9 +386,18 @@ class ControlSearch:
                 residuals.extend(weight*np.sqrt(np.mean(errors[start:end+1]**2, axis=0)+1e-12))
         objective = contract['objective'] if contract else self.arguments['objective']
         gap = signed_box_gap(xy, yaw, self.editor.target['size_m'], self.ego_center, self.ego_yaw, [EGO_FRONT+EGO_REAR, EGO_WIDTH])
+        window=self.editor.constraints.get('event_window_s',objective['interaction_window_s'])
+        event_indices=np.flatnonzero((self.times>=window[0]-.001)&(self.times<=window[1]+.001))
+        self.release_target_time=float(self.times[event_indices[np.argmin(gap[event_indices])]])
+        contact_indices=event_indices[gap[event_indices]<0.]
+        if len(contact_indices):self.release_target_time=float(self.times[contact_indices[0]])
         if getattr(self.editor, 'constraints', {}).get('agent_decides_interaction'):
-            # Only the explicit pre-event no-contact constraint remains. There is
-            # no attraction to collision, near-miss band, or fixed ego distance.
+            # Reference contact guides search only; acceptance remains measurement- and VAD-based.
+            window=self.editor.constraints.get('event_window_s',objective['interaction_window_s'])
+            guidance,metrics=event_window_guidance(self.times,gap,window,
+                required=self.editor.constraints.get('require_reference_contact',False))
+            residuals.extend(guidance)
+            self.last_metrics=metrics
             forbidden=self.times < getattr(self.editor,'danger_start_s',0.)-.001
             residuals.extend(5*np.maximum(-gap[forbidden],0.))
         else:
@@ -201,10 +423,51 @@ class ControlSearch:
         road = self.editor.road.union
         distance = shapely.distance(points, road.boundary)
         signed = np.where(shapely.covers(road, points), distance, -distance)
-        residuals.extend(5*np.maximum(self.editor.constraints.get('official_margin_m', .1)+.03-signed, 0.)/np.sqrt(8))
+        self.last_metrics.update(min_road_signed_margin_m=float(signed.min()),
+            road_guidance_violation=bool(signed.min()<self.editor.constraints.get('official_margin_m',.1)-1e-8))
+        residuals.extend((15 if self.editor.constraints.get('require_reference_contact') else 5)*np.maximum(self.editor.constraints.get('official_margin_m', .1)+.03-signed, 0.)/np.sqrt(8))
+        first_other=None
+        minimum_other=None
+        overlap_count=0
         for observed, poses in self.obstacles:
             separation = signed_box_gap(xy[observed], yaw[observed], self.editor.target['size_m'], poses[:, :2], poses[:, 2], poses[:, 3:5])
-            residuals.extend(5*np.maximum(.12-separation, 0.))
+            minimum_other=float(separation.min()) if minimum_other is None else min(minimum_other,float(separation.min()))
+            contacts=self.times[observed][separation<0.]
+            overlap_count+=len(contacts)
+            if len(contacts):first_other=float(contacts[0]) if first_other is None else min(first_other,float(contacts[0]))
+            residuals.extend((20 if self.editor.constraints.get('require_reference_contact') else 5)*np.maximum(.12-separation, 0.))
+        self.last_metrics.update(min_other_signed_gap_m=minimum_other,
+            other_overlap_count=overlap_count,first_other_contact_time_s=first_other,
+            release_target_time_s=self.release_target_time)
+        guidance,metrics=motion_guidance(self.editor,self.times,xy,yaw,initial_seed=(self.active_seed_xy,self.active_seed_yaw))
+        residuals.extend(guidance)
+        self.last_metrics=dict(getattr(self,'last_metrics',{}),**metrics)
+        contact_time = self.last_metrics.get('first_reference_contact_time_s')
+        if self.last_metrics.get('window_reference_contact') and contact_time is not None:
+            if window[0] - .001 <= contact_time <= window[1] + .001:
+                index = int(np.searchsorted(self.times, contact_time))
+                prefix = slice(None, index + 1)
+                prefix_motion = metrics['motion_guidance_violation_count']
+                if prefix_motion and index >= 2:
+                    _, prefix_metrics = motion_guidance(
+                        self.editor, self.times[prefix], xy[prefix], yaw[prefix],
+                        initial_seed=(self.active_seed_xy, self.active_seed_yaw))
+                    prefix_motion = prefix_metrics['motion_guidance_violation_count']
+                self.last_metrics['contact_prefix'] = {
+                    'time_s': contact_time,
+                    'xy_m': xy[index].tolist(),
+                    'yaw_rad': float(yaw[index]),
+                    'speed_mps': float(state[index, 0]),
+                    'acceleration_mps2': float(state[index, 1]),
+                    'steering_rad': float(state[index, 2]),
+                    'road_margin_m': float(signed.reshape(-1, 8)[prefix].min()),
+                    'third_party_clear': first_other is None or first_other > contact_time,
+                    'motion_violations': prefix_motion,
+                }
+        self.last_metrics['geometry_motion_guidance_feasible']=bool(
+            not self.last_metrics['road_guidance_violation'] and not overlap_count and
+            not metrics['motion_guidance_violation_count'] and
+            (not self.editor.constraints.get('require_reference_contact') or self.last_metrics.get('window_reference_contact')))
         if self.arguments.get('preserve_outside_window'):
             lower, upper = self.arguments['edit_window_s']
             outside = (self.times < lower) | (self.times > upper)
@@ -221,7 +484,7 @@ class ControlSearch:
     def starts(self):
         yield self.initial.copy()
         # Multiple general acceleration/turning guesses; no maneuver-specific path.
-        for braking in (-1., -3., .5):
+        for braking in (-1., -3., -4.5, .5):
             values = self.initial.copy()
             values[:self.n] = braking
             yield values.clip(self.lower, self.upper)
@@ -229,6 +492,13 @@ class ControlSearch:
             values = self.initial.copy()
             values[self.n:] += turn
             yield values.clip(self.lower, self.upper)
+        for acceleration in (-4.5,-2.,1.5,2.5):
+            for onset_fraction in (.25,.5,.7):
+                values=self.initial.copy()
+                onset=min(self.n-1,int(self.n*onset_fraction))
+                duration=max(1,(self.n-onset)//2)
+                values[onset:onset+duration]=acceleration
+                yield values.clip(self.lower,self.upper)
 
     def optimize(self, evaluate, limit, reserve=None):
         """evaluate debits and archives each actual objective evaluation."""
@@ -245,22 +515,79 @@ class ControlSearch:
             arrays, state = self.simulate(controls)
             residual = self.residual(arrays, state)
             record = evaluate(controls, arrays, state, float(residual @ residual))
+            record['search_metrics']=dict(self.last_metrics)
+            record['initial_pose_adjustment']=self.active_pose
+            if self.search_phase:
+                record['search_phase'] = self.search_phase
             records.append((float(residual @ residual), values.copy(), record))
             return residual
 
+        staged = (self.editor.constraints.get('require_reference_contact', False)
+                  and not self.arguments.get('preserve_outside_window')
+                  and not self.editor.constraints.get('stationary_target'))
+        self.search_phase = 'approach' if staged else None
+        self.continuation_source = None
         starts = list(self.starts())
-        for start in starts[:limit]:
-            fun(start)
-        best = sorted(records, key=lambda record: record[0])[:2]
-        for index, (_, start, _) in enumerate(best):
-            local_limit = len(records)+(limit-len(records))//(2-index)
-            def local_fun(values):
-                if len(records) >= local_limit:
-                    raise BudgetReached
+        if len(self.pose_specs)>1:
+            count=min(len(starts),max(4,24//len(self.pose_specs)))
+            starts=starts[:count]
+        # Spend at most half on diverse rollouts; retain enough evaluations for
+        # actual numerical steps instead of restarting a high-dimensional fit
+        # in each tiny pose branch.
+        seed_limit=min(limit,max(len(self.pose_specs),limit//2))
+        for spec_index,spec in enumerate(self.pose_specs):
+            self.activate(spec)
+            branch_start=len(records)
+            branch_limit=branch_start+(seed_limit-branch_start)//(len(self.pose_specs)-spec_index)
+            def branch_fun(values):
+                if len(records)>=branch_limit:raise BudgetReached
                 return fun(values)
+            for start in starts:
+                if len(records)>=branch_limit:break
+                branch_fun(start)
+            # Keep the current pose fixed. Derive release proposals from freshly
+            # evaluated rollouts in this branch, never from another attack run.
+            contact_records=[item for item in records[branch_start:]
+                if item[2].get('search_metrics',{}).get('window_reference_contact')]
+            if contact_records and not self.arguments.get('preserve_outside_window'):
+                _,values,record=min(contact_records,key=lambda item:item[0])
+                metrics=record['search_metrics']
+                guesses=release_starts(self.control_times,self.editable,values,
+                    metrics['release_target_time_s'],metrics.get('first_other_contact_time_s'))
+                for guess in guesses:
+                    if len(records)>=branch_limit:break
+                    branch_fun(self.route_start(guess))
+                    if len(records)>=branch_limit:break
+                    branch_fun(guess.clip(self.lower,self.upper))
+            branch_records=records[branch_start:]
+            if not branch_records:continue
+        if not records:return []
+        if staged:
+            from staged_control_search import continue_contact_prefixes
+            if continue_contact_prefixes(self, records, fun, limit, BudgetReached):
+                return sorted(records, key=lambda record: record[0])
+            self.search_phase = 'approach_refinement'
+        best=min(records,key=lambda item:(
+            not item[2].get('search_metrics',{}).get('geometry_motion_guidance_feasible',False),item[0]))
+        finalists=[best]
+        contacts=[item for item in records if item[2].get('search_metrics',{}).get('window_reference_contact')]
+        if contacts:
+            contact=min(contacts,key=lambda item:item[0])
+            if contact[2]['attempt_id']!=best[2]['attempt_id']:finalists.append(contact)
+        for index,(_,start,record) in enumerate(finalists):
+            if len(records)>=limit:break
+            self.activate(record['initial_pose_adjustment'])
+            groups,bounds=refinement_groups(start,self.lower,self.upper,self.n)
+            if not groups:continue
+            local_limit=len(records)+(limit-len(records))//(len(finalists)-index)
+            def reduced_fun(offsets):
+                if len(records)>=local_limit:raise BudgetReached
+                values=start.copy()
+                for group,offset in zip(groups,offsets):values[group]+=offset
+                return fun(values.clip(self.lower,self.upper))
             try:
-                least_squares(local_fun, start, bounds=(self.lower, self.upper),
-                    diff_step=.01, ftol=1e-4, xtol=1e-4, gtol=1e-4, max_nfev=20)
+                least_squares(reduced_fun,np.zeros(len(groups)),bounds=(bounds[:,0],bounds[:,1]),
+                    ftol=1e-4,xtol=1e-4,gtol=1e-4,max_nfev=20)
             except BudgetReached:
                 pass
         return sorted(records, key=lambda record: record[0])

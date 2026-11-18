@@ -32,6 +32,7 @@ class AgentState:
         self.current_stage = "planning"
         self.status = "running"
         self.pending_job = None
+        self.background_jobs = {}
         self.error: Optional[Any] = None
         self.current_request = task
         self.user_messages = []
@@ -95,6 +96,7 @@ class AgentState:
             "status": self.status,
             "error": self.error,
             "pending_job": self.pending_job,
+            "background_jobs": self.background_jobs,
             "current_request": self.current_request,
             "user_messages": self.user_messages,
             "resume_context": self.resume_context,

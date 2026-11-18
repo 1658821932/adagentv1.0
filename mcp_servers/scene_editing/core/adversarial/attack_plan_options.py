@@ -45,6 +45,14 @@ def editor_deadline(seconds):
     return clock['deadline']
 
 
+def exclude_probe_wait(seconds):
+    """Pause only the editor clock; probe count and external tool timeout still apply."""
+    clock=_CLOCK.get()
+    if clock is not None and clock['deadline'] is not None:
+        clock['deadline']+=seconds
+    return seconds
+
+
 def selection_seconds(default):
     clock=_CLOCK.get()
     if clock is None or clock['deadline'] is None:return default

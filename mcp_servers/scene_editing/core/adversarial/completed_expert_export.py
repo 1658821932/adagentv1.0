@@ -56,7 +56,7 @@ def reexport(arguments, output_dir):
         output_dir/'native_expert', expert_trajectory=Path(result['expert_trajectory_path']), attack_result=attack)
     result.update(run_dir=str(output_dir.parent), simulation_input=native['simulation_input'],
         native_export=dict(export_summary(native), reexported_from=str(source)),
-        rendered_videos={}, ilft_training_data=None,
+        rendered_videos={}, render_status=dict(status='not_run'), ilft_training_data=None,
         checks=dict(reference_screen='passed', checks={k: 'passed' if v else 'failed'
             for k, v in independent['checks'].items()},
             report_path=str(output_dir/'defense-independent.json'), physical_avoidance='undetermined'))

@@ -94,7 +94,7 @@ def trajectory_tools(tools, nodes, evaluated, tested, probes_remaining, *,
             function['parameters']['properties'].setdefault('parent_candidate_id',{'type':'string'})['enum']=ids
         if name=='construct_attack_candidates' and constructor_remaining is not None and constructor_remaining<=0:
             continue
-        if name=='request_object_reselection' and reselections_remaining is not None and reselections_remaining<=0:
+        if name in ('request_object_reselection','request_ego_history_revision') and reselections_remaining is not None and reselections_remaining<=0:
             continue
         if name in ('probe_pdm','probe_vadv2'):
             ids=[key for key,node in nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible'] and key not in tested]
@@ -102,12 +102,12 @@ def trajectory_tools(tools, nodes, evaluated, tested, probes_remaining, *,
                 continue
             function['parameters']['properties']['candidate_id']['enum']=ids
         elif name=='evaluate_candidate':
-            ids=[key for key in nodes if key not in evaluated]
+            ids=list(nodes)
             if not ids:
                 continue
             function['parameters']['properties']['candidate_id']['enum']=ids
         elif name=='inspect_trajectory' and inspected is not None:
-            ids=[key for key in nodes if key not in inspected]
+            ids=list(nodes)
             if not ids:
                 continue
             function['parameters']['properties']['candidate_id']['enum']=ids

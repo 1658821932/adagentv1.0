@@ -55,7 +55,7 @@ def actor_view(times, ego, actors, target_track=None, target_xy=None, limit=12):
         distance_kind='reference center distance, not bumper clearance',precision='display only; full precision is used by tools')
 
 
-def render_overview(times, ego, yaw, actors, road, path, target_track=None, target_xy=None, event_window_s=None):
+def render_overview(times, ego, yaw, actors, road, path, target_track=None, target_xy=None, event_window_s=None,route_time_labels=False):
     """Two readable scene snapshots, without any WE/GPU/video execution."""
     import matplotlib
     matplotlib.use('Agg')
@@ -84,6 +84,11 @@ def render_overview(times, ego, yaw, actors, road, path, target_track=None, targ
         for geometry in getattr(road,'polygons',[]):
             axis.add_patch(Patch(np.asarray(geometry.exterior.coords),facecolor='#edf3e8',edgecolor='#bac8b0',linewidth=.5))
         axis.plot(ego[:,0],ego[:,1],color='#1565c0',label='recorded ego reference')
+        if route_time_labels:
+            queries=np.unique(np.clip(np.r_[1.5,np.linspace(window[0],window[1],5)],times[0],times[-1]))
+            points=np.column_stack([np.interp(queries,times,ego[:,a]) for a in (0,1)])
+            axis.scatter(points[:,0],points[:,1],s=12,color='#1565c0')
+            for t,p in zip(queries,points):axis.annotate(f'{t:.1f}s',p,fontsize=7,xytext=(3,4),textcoords='offset points')
         center=ego[index]+(EGO_FRONT-EGO_REAR)/2*np.array([np.cos(yaw[index]),np.sin(yaw[index])])
         body=polygon(*center,yaw[index],EGO_FRONT+EGO_REAR,EGO_WIDTH)
         axis.add_patch(Patch(np.asarray(body.exterior.coords),fill=False,edgecolor='#1565c0',linewidth=2))

@@ -160,7 +160,7 @@ def inspect_scene(data):
         box_coordinates='Original source annotation coordinates; transforms are supplied where available.',
         scene_requirement=data.scene_requirement,target_effect=data.target_effect,edit_strategy=data.edit_strategy,
         editing_capabilities=dict(
-            edit_existing='Edit future motion of a fully observed vehicle; its t=0 position and heading stay fixed. No instantaneous relocation or whole-track translation tool.',
+            edit_existing='Edit a fully observed vehicle from its recorded initial state by default. Tool05 can create a bounded initial-position/yaw-adjusted version and must regenerate or rigidly transform the trajectory, then rerun every check.',
             add_vehicle='With a supplied asset, choose a new initial pose and speed; stationary can keep the new vehicle at that pose for the whole scene.',
             motion_feasibility='Detailed generated-trajectory checks belong to tool05. Original future motion is not a hard rejection in tool04.',
             distance_hints='Recorded proximity is advisory, not a vehicle eligibility or scenario rejection gate.'))
@@ -193,10 +193,10 @@ def enrich(data,response):
             result['reasons']=[*result['reasons'],'Provide a real added-vehicle asset and size for these alternatives.']
         else:
             arguments=dict(scene_ref=data.retrieval_result_ref or data.scene_ref.model_dump(mode='json'),
-                operation='auto',plan_options=options,
+                operation='auto',plan_options=options,vadv2_self_test=True,
                 instruction='Construct this scene mechanism: '+data.scene_requirement+
                     '\nCorrect ego behavior to preserve for expert editing: '+data.target_effect+
-                    '\nCompare the supplied alternatives, choose or adapt one using actual scene evidence; alternatives are not hard contracts.')
+                    '\nChoose or adapt a coarse alternative, test VADv2 and use its actual avoidance feedback to refine the attack. Alternatives are not hard contracts; needing to brake alone is not attack success.')
             if has_asset:arguments['vehicle']=data.vehicle.model_dump(mode='json')
             AttackInput.model_validate(arguments)
             result['attack_input']=arguments

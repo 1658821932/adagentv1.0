@@ -24,7 +24,7 @@ def constructor_binding(scene, target_track, acceptance, count):
     for name in ('run_ego_reference.py', 'ego_action_tool.py', 'ego_trajectory_edit.py',
                  'ego_road_checks.py', 'acceptance_policy.py', 'defense_probe_feedback.py',
                  'vehicle_initial_state.py', 'vehicle_motion.py', 'vehicle_control_search.py',
-                 'defense_behavior.py', 'defense_behavior_preferences.json'):
+                 'defense_behavior.py', 'defense_behavior_preferences.json','adaptive_braking.py'):
         path = ROOT/name
         stat = path.stat()
         implementation.append(dict(path=str(path), size=stat.st_size, modified_ns=stat.st_mtime_ns))

@@ -63,9 +63,40 @@ class ExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Nonuniform'):
             self.exporter.build(frames,{},'s','a')
 
-    def test_edited_first_three_seconds_are_exported_with_consistent_actor_coordinates(self):
+    def test_jittered_takeover_pose_is_locked_in_edit_and_native_export(self):
+        from ego_trajectory_edit import modern_edit
+        from mcp_servers.scene_editing.shared_history import shared_history_end_index
+        np=self.np
+        for jitter_us in (528, 2000):
+            with self.subTest(jitter_us=jitter_us):
+                frames=self.frames()
+                frames[3]['timestamp']+=jitter_us
+                times,xy,yaw=self.exporter.ego_path_from_frames(frames)
+                prefix_end=shared_history_end_index(times)
+                self.assertEqual(prefix_end,3)
+                operation=dict(edit_mode='speed_schedule',operation='set_speed_targets',
+                    parent_candidate_id='recorded_baseline',start_time_s=1.5,reason='Slow down',
+                    targets=[dict(time_s=3.5,speed_mps=0.)])
+                edited_xy,edited_yaw,curve=modern_edit(times,lambda key:(xy,yaw),operation,float(times[prefix_end]))
+                self.assertEqual(curve['actual_start_state']['time_s'],times[3])
+                np.testing.assert_allclose(edited_xy[:4],xy[:4],atol=1e-8,rtol=0)
+                self.assertFalse(np.allclose(edited_xy[4:],xy[4:]))
+                calibration=self.calibration(frames)
+                attack,_=self.exporter.build(frames,{},'s','a',reconstruction=calibration)
+                expert,checks=self.exporter.build(frames,{},'s','a',expert=(times,edited_xy,edited_yaw),
+                    reconstruction=calibration)
+                self.assertEqual(checks['time_alignment']['shared_history_end_frame_index'],3)
+                for key in ('position','heading','velocity'):
+                    np.testing.assert_allclose(expert['object_track']['ego']['state'][key][:4],
+                        attack['object_track']['ego']['state'][key][:4],atol=1e-8,rtol=0)
+                edited_xy[3,0]+=.00011
+                with self.assertRaisesRegex(ValueError,'shared 0–1.5s history'):
+                    self.exporter.build(frames,{},'s','a',expert=(times,edited_xy,edited_yaw),
+                        reconstruction=calibration)
+
+    def test_expert_edits_after_shared_history_have_consistent_actor_coordinates(self):
         np=self.np;frames=self.frames();times,xy,yaw=self.exporter.ego_path_from_frames(frames)
-        edited=xy.copy();edited[times>0,0]-=.2*np.minimum(times[times>0],2.)
+        edited=xy.copy();edited[times>1.5,0]-=.2*np.minimum(times[times>1.5]-1.5,2.)
         scene,checks=self.exporter.build(frames,{'CAM_F0':{}},'scene','asset',expert=(times,edited,yaw),reconstruction=self.calibration(frames))
         centres=scene['object_track']['ego']['state']['position'][:,:2]
         self.assertTrue(np.allclose(centres-[1.461,0.],edited))

@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 import re
+from subprocess import TimeoutExpired
 import sys
 from pathlib import Path
 
@@ -49,13 +50,16 @@ def attack_output(arguments, output_dir):
         official_margin_m=acceptance['official_margin_m'], max_ego_clearance_m=2., min_travel_m=0.,
         vehicle_motion_model='bicycle.v1', require_structured_objective=False,
         agent_decides_interaction=True,
+        require_reference_contact=True,reference_contact_policy='target_body_contact_in_event_window.v1',
         acceptance_policy=acceptance)
     constraints['attack_stage_timeout_s'] = min(arguments.get('stage_timeout_s',420),max(1,arguments['timeout']-60))
     constraints['generated_objectives_are_preferences'] = True
+    constraints['prepare_ego_history']=arguments.get('prepare_ego_history',True)
+    constraints['ego_history_target_speed_mps']=arguments.get('ego_history_target_speed_mps')
     required_operation=None if arguments['operation']=='auto' else arguments['operation']
     if arguments.get('plan_options'):
         constraints['plan_options']=arguments['plan_options']
-    if arguments.get('vadv2_self_test',False):
+    if arguments.get('vadv2_self_test',True):
         constraints.update(vadv2_self_test=True,vadv2_probe_budget=arguments.get('vadv2_probe_budget',3),
             vadv2_policy_config=SETTINGS['vadv2'],policy_source_scene_ref=source)
     if arguments.get('task_contract') is not None:
@@ -88,25 +92,28 @@ def attack_output(arguments, output_dir):
         try:
             prior_input_path = candidate_dir / 'input.json'
             prior_selection_path = candidate_dir / 'object_selection/output.json'
-            if not prior_input_path.is_file() or not prior_selection_path.is_file():
-                raise ValueError('Missing completed attack selection checkpoint')
-            prior_selection = json.loads(prior_selection_path.read_text())
+            if not prior_input_path.is_file():
+                raise ValueError('Missing attack checkpoint metadata')
+            prior_selection = json.loads(prior_selection_path.read_text()) if prior_selection_path.is_file() else {}
             if prior_selection.get('status') != 'completed':
-                raise ValueError('Prior object_selection did not complete')
-            prior_input = json.loads(prior_input_path.read_text())
-            if (Path(prior_input['scene']).resolve() != scene.resolve()
-                    or prior_input.get('instruction') != arguments['instruction']
-                    or prior_input.get('assets') != assets
-                    or prior_input.get('required_operation') != required_operation
-                    or prior_input.get('required_track') != arguments.get('target_track')):
-                raise ValueError('Prior attack scene, instruction, assets or target requirement differs')
-            from attack_configuration import same_scene_constraints
-            if not same_scene_constraints(prior_input.get('constraints',{}), constraints):
-                raise ValueError('Prior attack constraints differ')
-            for key in ('object_reselection_count','object_reselection_reason','object_selection_feedback'):
-                if key in prior_input.get('constraints',{}):constraints[key]=prior_input['constraints'][key]
-            continue_from = candidate_dir
-            atomic_json(output_dir/'attack-reuse.json', dict(status='reused', source=str(candidate_dir)))
+                atomic_json(output_dir/'attack-reuse.json', dict(status='recompute',
+                    reason='Prior object_selection did not complete', source=str(candidate_dir)))
+            else:
+                prior_input = json.loads(prior_input_path.read_text())
+                from ego_history import source_scene
+                if (source_scene(prior_input['scene']) != scene.resolve()
+                        or prior_input.get('instruction') != arguments['instruction']
+                        or prior_input.get('assets') != assets
+                        or prior_input.get('required_operation') != required_operation
+                        or prior_input.get('required_track') != arguments.get('target_track')):
+                    raise ValueError('Prior attack scene, instruction, assets or target requirement differs')
+                from attack_configuration import same_scene_constraints
+                if not same_scene_constraints(prior_input.get('constraints',{}), constraints):
+                    raise ValueError('Prior attack constraints differ')
+                for key in ('object_reselection_count','object_reselection_reason','object_selection_feedback','ego_history_revision_count','expert_margin_revision_count'):
+                    if key in prior_input.get('constraints',{}):constraints[key]=prior_input['constraints'][key]
+                continue_from = candidate_dir
+                atomic_json(output_dir/'attack-reuse.json', dict(status='reused', source=str(candidate_dir)))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             reuse_reason = str(exc)
             atomic_json(output_dir/'attack-reuse.json', dict(status='recompute', reason=reuse_reason, source=str(candidate_dir)))
@@ -132,16 +139,27 @@ def attack_output(arguments, output_dir):
     from native_scene_export import export as export_native
     native=export_native(source,frozen,output_dir/'native_attack',attack_result=dict(operation=result['target']['operation'],target_track=result['target']['track_id']))
     policy_probe=None
+    history_path=frozen/'ego-history.json'
+    shared_history=None
+    if history_path.is_file():
+        history=json.loads(history_path.read_text())
+        shared_history={key:history[key] for key in ('takeover_s','targets','requested_takeover_speed_mps','delivered_takeover_speed_mps')}
+        shared_history['manifest_path']=str(history_path)
+    preparation=result.get('ego_history_preparation')
+    if preparation is not None:
+        shared_history=dict(shared_history or {},**preparation['shared_state'],
+            preparation_status=preparation['status'],preparation_report_path=preparation['report_path'])
     if result.get('vadv2_probe_result_path'):
         policy_probe=json.loads(Path(result['vadv2_probe_result_path']).read_text())
         import hashlib
-        if (policy_probe['target_collision_detected'] is not True or
+        from mcp_servers.scene_editing.policy_evidence import has_policy_failure
+        if (not has_policy_failure(policy_probe, frozen/'metadata/map_drivable_official.json') or
                 policy_probe['frozen_frames_sha256']!=hashlib.sha256((frozen/'metadata/frames.json').read_bytes()).hexdigest()):
-            raise RuntimeError('Submitted scene differs from its successful VADv2 collision test')
+            raise RuntimeError('Submitted scene differs from its successful VADv2 policy test')
     return dict(schema_version='editing_stage.v1', stage='attack_editing',
         status='completed', mode='real', run_dir=str(output_dir.parent),
         source_scene_ref=source, scene_id=source['scene_id'], scene_token=source['scene_token'],
-        operation=result['target']['operation'],plan_choice=result.get('plan_choice'),
+        operation=result['target']['operation'],plan_choice=result.get('plan_choice'),shared_history=shared_history,
         target_track=result['target']['track_id'], selected_candidate_id=result['selected_candidate_id'],
         frozen_scene_path=str(frozen), frames_path=str(frozen/'metadata/frames.json'),
         trajectory_path=result['trajectory_path'], provenance_path=str(frozen/'freeze-info.json'),
@@ -152,6 +170,7 @@ def attack_output(arguments, output_dir):
         annotation_changes=dict(result['annotation_changes'],native_export_report_path=str(output_dir/'native_attack/export-report.json')), simulation_input=native['simulation_input'], native_export=native_export_view(native), rendered_videos={},
         pdm_probe_result_path=result.get('pdm_probe_result_path'),
         vadv2_probe_result_path=result.get('vadv2_probe_result_path'),
+        policy_evaluation=None if policy_probe is None else policy_probe.get('policy_evaluation'),
         policy_collision_report=None if policy_probe is None else policy_probe['collision_report'])
 
 
@@ -164,17 +183,21 @@ def ego_output(arguments, output_dir):
     # Follow the submitted object revision rather than the first search directory.
     attack_run_dir = Path(attack['submission_path']).parent.parent
     target_track = attack['target_track']
+    from mcp_servers.scene_editing.shared_history import shared_history_end_index
+    frames = json.loads((scene/'metadata/frames.json').read_text())
+    times, rec_xy, rec_yaw = ego_path_from_frames(frames)
+    visual_frame = shared_history_end_index(times)
+    takeover_s = float(times[visual_frame])
     attack_input = json.loads((attack_run_dir/'input.json').read_text())
     acceptance = policy.for_new_run(attack_input['constraints']['acceptance_policy'])
+    acceptance['edit_start_s'] = takeover_s
+    acceptance['observation_end_s'] = takeover_s
     acceptance, require_route_progress = policy.resolve_ego_progress_policy(
         acceptance, target_effect=arguments['target_effect'],
         allow_safe_stop=arguments['allow_safe_stop'],
         require_route_progress=arguments.get('require_route_progress'))
     atomic_json(output_dir/'effective-policy.json', acceptance)
     understanding_dir = output_dir/'defense_understanding'
-    frames = json.loads((scene/'metadata/frames.json').read_text())
-    times, _, _ = ego_path_from_frames(frames)
-    visual_frame = min(range(len(times)), key=lambda i: abs(times[i]-acceptance['observation_end_s']))
     from ego_stage_reuse import (binding as stage_binding, restore as restore_stage, save_completed,
         preparation_deadline, PreparationTimeout)
     count = SETTINGS['defaults']['defense_constructor_candidates']
@@ -268,31 +291,43 @@ def ego_output(arguments, output_dir):
     candidate = defense['selected_candidate_id']
     independent = run_independent(scene, defense_dir, candidate, target_track,
         output_dir/'defense-independent.json', 300)
-    case_id = re.sub(r'[^A-Za-z0-9_-]+', '_', attack['scene_id'])
-    render_config = dict(SETTINGS, scene=attack['source_scene_ref']['sample_root'])
-    render = run_render(render_config, dict(frozen_scene_path=attack['frozen_scene_path'],
-        target=dict(operation='edit_existing' if attack.get('operation') == 'edit_existing' else 'add_vehicle',
-            track_id=target_track), selected_candidate_id=attack['selected_candidate_id']),
-        attack_run_dir, defense_dir, candidate, pipeline_video_dir(output_dir.parent.name, case_id))
+    import numpy as np
+    from ego_road_checks import read_trajectory_csv
+    from native_scene_export import export as export_native, validate_expert_trajectory
+    trajectory = defense_dir/'candidates'/candidate/'trajectory.csv'
+    ex_t, ex_xy, ex_yaw = read_trajectory_csv(trajectory)
+    validate_expert_trajectory(times, rec_xy, rec_yaw, (ex_t, ex_xy, ex_yaw))
+    from expert_attack_feedback import collect as collect_expert_feedback
+    expert_feedback=collect_expert_feedback(attack,defense_dir,candidate,
+        output_dir/'defense-independent.json',acceptance,output_dir/'expert-attack-feedback.json')
     selected_source = ('constructor' if candidate.startswith('constructor_') else
         'foci' if candidate.startswith('foci_') else 'agent_edit' if candidate.startswith('edit_') else 'repair')
     metadata = output_dir/'trajectory-metadata.json'
     atomic_json(metadata, dict(coordinate_frame='initial_ego_rear_axle', position_reference='ego_rear_axle',
         length_unit='m', angle_unit='rad', time_unit='s'))
-    trajectory = defense_dir/'candidates'/candidate/'trajectory.csv'
     accepted=json.loads((defense_dir/'accepted-submission.json').read_text())
     selected_source=accepted.get('generation_source',selected_source)
-    from native_scene_export import export as export_native
     native=export_native(attack['source_scene_ref'],scene,output_dir/'native_expert',expert_trajectory=trajectory,attack_result=attack)
-    import csv, numpy as np
-    with trajectory.open(newline='') as stream:
-        traj_rows = list(csv.DictReader(stream))
-    ex_t = np.array([float(r['time_s']) for r in traj_rows])
-    ex_xy = np.array([[float(r['ego_x_m']), float(r['ego_y_m'])] for r in traj_rows])
-    ex_yaw = np.unwrap([float(r['ego_yaw_rad']) for r in traj_rows])
+    case_id = re.sub(r'[^A-Za-z0-9_-]+', '_', attack['scene_id'])
+    render_config = dict(SETTINGS, scene=attack['source_scene_ref']['sample_root'])
+    render_output = pipeline_video_dir(output_dir.parent.name, case_id)
+    try:
+        render = run_render(render_config, dict(frozen_scene_path=attack['frozen_scene_path'],
+            target=dict(operation='edit_existing' if attack.get('operation') == 'edit_existing' else 'add_vehicle',
+                track_id=target_track), selected_candidate_id=attack['selected_candidate_id']),
+            attack_run_dir, defense_dir, candidate, render_output)
+        render_status = dict(status='passed' if render.get('pipeline_output_dir') else 'not_run')
+    except (OSError, RuntimeError, ValueError, TimeoutExpired) as error:
+        # A missing visualization must not discard a reviewed and exported trajectory.
+        render = {}
+        render_status = dict(status='failed', error_type=type(error).__name__, reason=str(error)[:500])
+        render_log = Path(str(render_output)+'.log')
+        if render_log.is_file():
+            render_status['log_path'] = str(render_log)
+    atomic_json(output_dir/'render-status.json', render_status)
+    ex_yaw = np.unwrap(ex_yaw)
     traveled_m = float(np.linalg.norm(np.diff(ex_xy, axis=0), axis=1).sum())
     terminal_speed_mps = float(np.linalg.norm(ex_xy[-1] - ex_xy[-2]) / (ex_t[-1] - ex_t[-2])) if len(ex_t) > 1 else 0.0
-    _, rec_xy, rec_yaw = ego_path_from_frames(frames)
     rec_yaw = np.unwrap(rec_yaw)
     recorded_progress_m = float(np.linalg.norm(np.diff(rec_xy, axis=0), axis=1).sum())
     _, progress_reason = policy.task_progress(
@@ -320,12 +355,12 @@ def ego_output(arguments, output_dir):
         expert_trajectory_path=str(trajectory), trajectory_metadata_path=str(metadata),
         conflict_brief_path=str(understanding_dir/'conflict-brief.json'),
         submission_path=str(defense_dir/'summary.json'),
-        checks=dict(reference_screen='passed', checks=dict(check_status(independent['checks']),
-            manual_video=('passed' if render.get('pipeline_output_dir') else 'not_checked')),
+        checks=dict(reference_screen='passed', checks=check_status(independent['checks']),
             report_path=str(output_dir/'defense-independent.json'),
             physical_avoidance='undetermined'),
         annotation_changes=dict(operation='export_ego_trajectory', frames_json_modified=False,native_export_report_path=str(output_dir/'native_expert/export-report.json')),
-        simulation_input=native['simulation_input'], native_export=native_export_view(native), expert_motion_summary=expert_motion_summary, ilft_training_data=None,
+        simulation_input=native['simulation_input'], native_export=native_export_view(native), expert_motion_summary=expert_motion_summary, expert_feedback=expert_feedback, ilft_training_data=None,
+        render_status=render_status,
         rendered_videos=({'manual_explained': str(Path(render['pipeline_output_dir'])/'manual-explained.mp4')}
             if render.get('pipeline_output_dir') else {}))
 

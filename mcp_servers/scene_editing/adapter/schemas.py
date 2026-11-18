@@ -27,7 +27,7 @@ class AttackPlanOption(InputModel):
     operation: Literal['edit_existing','add_vehicle']
     target_track: NonEmptyStr | None = None
     maneuver: Literal['stationary','left_cut_in'] | None = None
-    instruction: Annotated[str, Field(min_length=1,max_length=1600)]
+    instruction: Annotated[str, Field(min_length=1,max_length=1600)] = Field(description='Brief mechanism and qualitative relative placement/motion. Leave coordinates, speed, exact timing and control search to tool05; numeric evidence is advisory unless explicitly required by the user.')
     rationale: Annotated[str, Field(min_length=1,max_length=500)]
     uncertainty: Annotated[str, Field(min_length=1,max_length=500)]
 
@@ -48,10 +48,12 @@ class AttackInput(InputModel):
     target_track: NonEmptyStr | None = Field(default=None, description="Optional existing-vehicle track ID from annotations. If absent, the backend must select an evidenced track from scene annotations before editing; never guess a role ID or frame number.")
     maneuver: Literal["stationary", "left_cut_in"] | None = Field(default=None, description="Required for add_vehicle; the documented new-vehicle constructors have different internal signatures.")
     vehicle: VehicleAsset | None = None
+    prepare_ego_history: bool = Field(default=True,description='Stage A automatically prepares and freezes feasible forward acceleration during 0–1.5s before the attack Agent selects/edits a vehicle. No additional Agent/API call. Explicit false preserves the source history.')
+    ego_history_target_speed_mps: Annotated[float, Field(ge=0)] | None = Field(default=None,description='Optional stage-A target speed at 1.5s. Omit for a bounded programmatic acceleration preference. Explicit targets are checked, never silently weakened.')
     constraints: AttackConstraints = Field(default_factory=AttackConstraints)
     timeout: PositiveInt = Field(default=3600, description='Whole tool execution timeout, including selection/export. This is not the trajectory-stage budget.')
-    stage_timeout_s: PositiveInt = Field(default=420, description='Trajectory editing wall-clock budget. Passing candidates retain a bounded final review/submission phase. Shared API and constructor budgets do not reset on retry.')
-    vadv2_self_test: bool = Field(default=False, description='Enable the attack SubAgent native VADv2 collision loop. Off by default: the editor only guarantees geometric and task checks and returns a frozen scene; verify the attack afterwards with policy_runner(execution_mode=native). Does not call the legacy PDM planner.')
+    stage_timeout_s: PositiveInt = Field(default=420, description='Trajectory editing budget excluding time waiting for native VADv2 probes. Whole-tool timeout and shared probe/API/constructor budgets still apply; retry does not reset them.')
+    vadv2_self_test: bool = Field(default=True, description='Default native VADv2 feedback loop: test target collision and drivable-area compliance during 1.5–7.5s. Either confirmed failure qualifies. Probes skip video, official PDM scoring and training export, preserving native sensors/model/control. Explicit false permits geometry-only editing and makes no policy-failure claim.')
     vadv2_probe_budget: Annotated[int, Field(ge=1,le=5)] = Field(default=3, description='Cumulative native policy tests across candidate edits and object reselection. Geometric/constructor checks happen before these expensive tests.')
     task_contract: dict | None = Field(default=None, description="Optional user-supplied or explicitly approved attack_task.v2 hard contract with provenance. Do not convert the Agent's own coarse-plan preferences into this field.")
     acceptance_policy: dict | None = Field(default=None, description="Optional named research acceptance profile and explicit overrides.")
@@ -71,6 +73,8 @@ class AttackInput(InputModel):
 
     @model_validator(mode="after")
     def operation_arguments(self):
+        if not self.prepare_ego_history and self.ego_history_target_speed_mps is not None:
+            raise ValueError('ego_history_target_speed_mps requires prepare_ego_history=true')
         ids=[option.option_id for option in self.plan_options]
         if len(ids)!=len(set(ids)):raise ValueError('plan_options option_id must be unique')
         if self.operation=='auto':
@@ -124,6 +128,7 @@ class AttackOutput(OutputModel):
     target_track: NonEmptyStr
     selected_candidate_id: NonEmptyStr
     plan_choice: dict[str, Any] | None = Field(default=None,description="Actual object/operation choice, associated suggestion and reason. Does not assert the suggested plan was followed exactly.")
+    shared_history: dict[str, Any] | None = Field(default=None,description='Frozen common 0–1.5s history, speed request/evidence and manifest path. Expert and VAD branches must preserve it; target speeds are distinguished from delivered sampled takeover speed.')
     frozen_scene_path: NonEmptyStr
     frames_path: NonEmptyStr
     trajectory_path: NonEmptyStr
@@ -136,6 +141,7 @@ class AttackOutput(OutputModel):
     rendered_videos: dict[str, NonEmptyStr] = Field(default_factory=dict, description="Camera name to edited render path; empty until rendered. Original recordings must not be relabelled as edited renders.")
     pdm_probe_result_path: NonEmptyStr | None = Field(default=None, description="Completed self-check bound to the submitted candidate; tool07 verifies it against the frozen scene before reuse.")
     vadv2_probe_result_path: NonEmptyStr | None = Field(default=None, description='Exact submitted candidate native VADv2 self-test evidence; reuse rather than repeating evaluation.')
+    policy_evaluation: dict[str, Any] | None = Field(default=None, description='VADv2 target collision and drivable-area checks, combined result and failure reasons.')
     policy_collision_report: dict[str, Any] | None = Field(default=None, description='Measured native contact with the selected attack track after VAD takeover, independently of PDM total or road compliance.')
 
 class EgoInput(InputModel):
@@ -186,7 +192,9 @@ class EgoOutput(OutputModel):
     simulation_input: SimulationInput | None = None
     native_export: dict[str, Any] | None = None
     expert_motion_summary: dict[str, Any] | None = Field(default=None, description="Measured kinematics and route/turn progress of the selected expert trajectory relative to the recorded trajectory.")
+    expert_feedback: dict[str, Any] | None = Field(default=None,description='Measured independent expert clearance/motion headroom and an optional same-task revision_feedback for tool05. Advisory, no new acceptance gate. Preserve the original task, shared history and cumulative budgets; at most one margin revision.')
     ilft_training_data: ILTrainingData | None = Field(default=None, description="Converted expert labels for tool09 ilft. CSV alone is not ann_file; null until export is implemented.")
+    render_status: dict[str, Any] | None = Field(default=None, description="Optional visualization status for this expert trajectory.")
     rendered_videos: dict[str, NonEmptyStr] = Field(default_factory=dict)
 
 

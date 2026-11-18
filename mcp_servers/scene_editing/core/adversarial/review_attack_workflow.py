@@ -4,6 +4,7 @@ from workflow_timing import timed_operation
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import acceptance_policy as policy
 import numpy as np
@@ -12,8 +13,45 @@ from attack_editor import read_seed
 from attack_constructor import acceptance_goal_evidence
 from ego_road_checks import load_official_drivable
 from experiment_runtime import atomic_json
+from initial_pose_edit import POSE_ARGUMENTS, adjusted_seed
 from run_ego_reference import ego_path_from_frames, observed_objects_from_frames, scene_from_frames
 from vehicle_trajectory import sample_xy, screen_attack
+
+
+def replay_initial_seed(candidate_dir, state):
+    """Rebuild the candidate's initial state from the original seed and its edits."""
+    folder = candidate_dir.parent
+    candidate_id = candidate_dir.name
+    operations = []
+    visited = set()
+    while candidate_id not in (None, 'seed_000'):
+        if (not isinstance(candidate_id, str) or not candidate_id or candidate_id in ('.', '..')
+                or Path(candidate_id).name != candidate_id or candidate_id in visited):
+            raise ValueError('Invalid or cyclic attack candidate ancestry')
+        visited.add(candidate_id)
+        record = json.loads((folder/candidate_id/'operation.json').read_text())
+        operation = record['operation']
+        args = operation['input']
+        parent_id = record['parent_candidate_id']
+        if args.get('parent_candidate_id', parent_id) != parent_id:
+            raise ValueError('Archived attack operation has inconsistent parent candidate')
+        operations.append(operation)
+        candidate_id = parent_id
+
+    seed_xy, seed_yaw, pose = state.seed_xy, state.seed_yaw, None
+    adjusted = []
+    for operation in reversed(operations):
+        tool, args = operation['tool'], operation['input']
+        if tool == 'adjust_initial_pose':
+            spec = {key: args[key] for key in POSE_ARGUMENTS if key in args}
+        elif tool == 'construct_vehicle_controls' and args.get('initial_pose_adjustment') is not None:
+            spec = args['initial_pose_adjustment']
+        else:
+            continue
+        parent = dict(initial_seed_xy=seed_xy, initial_seed_yaw=seed_yaw, initial_pose=pose)
+        seed_xy, seed_yaw, pose = adjusted_seed(state, parent, spec)
+        adjusted.append(tool)
+    return seed_xy, seed_yaw, adjusted, operations[0] if operations else None
 
 
 @timed_operation('attack.independent_check', 'run_dir')
@@ -27,13 +65,28 @@ def review(run_dir, output):
         raise ValueError('Review requires a completed and materialized attack')
     selection = json.loads((run_dir / 'object_selection/output.json').read_text())
     trajectory_output = json.loads((run_dir / 'trajectory_editing/output.json').read_text())
-    source = Path(run_input['scene'])
+    source = Path(run_input.get('editing_scene',run_input['scene']))
+    from ego_history import verify
+    verify(source)
     original = json.loads((source / 'metadata/frames.json').read_text())
     frozen = json.loads((Path(result['frozen_scene_path']) / 'metadata/frames.json').read_text())
     times, ego, ego_yaw = ego_path_from_frames(original)
-    native_times, xy, yaw = read_seed(result['trajectory_path'])
-    _, seed_xy, seed_yaw = read_seed(selection['seed_trajectory_path'])
-    dense_times, dense_xy, dense_yaw = read_seed(Path(result['trajectory_path']).with_name('dense_trajectory.csv'))
+    trajectory = Path(result['trajectory_path'])
+    candidate_dir = trajectory.parent
+    native_times, xy, yaw = read_seed(trajectory)
+    seed_times, original_seed_xy, original_seed_yaw = read_seed(selection['seed_trajectory_path'])
+    if seed_times.shape != times.shape or not np.allclose(seed_times, times, atol=1e-6, rtol=0):
+        raise ValueError('Archived attack seed does not match the frozen timeline')
+    saved = json.loads(trajectory.with_name('evaluation.json').read_text())
+    seed_state = SimpleNamespace(times=times, ego=ego, ego_yaw=ego_yaw, seed_xy=original_seed_xy,
+        seed_yaw=original_seed_yaw, constraints=run_input['constraints'])
+    if (candidate_dir/'operation.json').is_file():
+        seed_xy, seed_yaw, pose_operations, operation = replay_initial_seed(candidate_dir, seed_state)
+    else:
+        if saved.get('initial_pose') is not None:
+            raise ValueError('Initial pose adjustment has no archived operation')
+        seed_xy, seed_yaw, pose_operations, operation = original_seed_xy, original_seed_yaw, [], None
+    dense_times, dense_xy, dense_yaw = read_seed(trajectory.with_name('dense_trajectory.csv'))
     recovered_times, _, _, frozen_actors = scene_from_frames(frozen, result['target']['track_id'])
     recovered = [next(actor for actor in frame if actor['track'] == result['target']['track_id']) for frame in frozen_actors]
     recovered_xy = np.array([[actor['x'], actor['y']] for actor in recovered])
@@ -55,7 +108,7 @@ def review(run_dir, output):
             if len(matches) != 1 or any(before[key][index] != after[key][matches[0]] for key in before):
                 others_preserved = False
     checks = dict(stage_identity=selection['target']['track_id'] == target_id == trajectory_output['target_track'],
-        candidate_identity=trajectory_output['selected_candidate_id'] == result['selected_candidate_id'],
+        candidate_identity=trajectory_output['selected_candidate_id'] == result['selected_candidate_id'] == candidate_dir.name,
         timestamps=(len(original) == len(frozen) == len(native_times) and
                     np.allclose(times, native_times, atol=1e-6, rtol=0) and
                     np.allclose(times, recovered_times, atol=1e-6, rtol=0)),
@@ -65,32 +118,56 @@ def review(run_dir, output):
         target_yaw_roundtrip=bool(np.max(abs(np.arctan2(np.sin(recovered_yaw - yaw), np.cos(recovered_yaw - yaw)))) < 1e-6),
         recomputed_dense_reference=recomputed['reference_screen_passed'],
         native_replay_geometry=replay['reference_screen_passed'])
-    saved = json.loads(Path(result['trajectory_path']).with_name('evaluation.json').read_text())
-    operation_path=Path(result['trajectory_path']).with_name('operation.json')
-    if operation_path.is_file():
-        operation=json.loads(operation_path.read_text())['operation']
-        if isinstance(operation,dict) and operation.get('tool') in ('edit_speed_profile','edit_route'):
-            from ego_trajectory_edit import modern_edit
-            from scipy.interpolate import PPoly
-            folder=Path(result['trajectory_path']).parent.parent
-            def lookup(candidate_id):
-                if candidate_id=='recorded_baseline':return seed_xy,seed_yaw
-                if candidate_id=='seed_000':return seed_xy,seed_yaw
-                _,x,a=read_seed(folder/candidate_id/'trajectory.csv');return x,a
-            args=operation['input'];parent_curve_path=folder/args['parent_candidate_id']/'curve-check.json'
-            parent_curve=json.loads(parent_curve_path.read_text()) if parent_curve_path.is_file() else None
-            _,parent_xy,parent_yaw=read_seed(folder/args['parent_candidate_id']/'dense_trajectory.csv') if args['parent_candidate_id']!='seed_000' else (dense_times,sample_xy(times,seed_xy,dense_times),np.interp(dense_times,times,seed_yaw))
-            expected_xy,expected_yaw,curve=modern_edit(times,lookup,args,run_input['constraints'].get('observation_end_s',3.),parent_curve=parent_curve,acceptance=run_input['constraints'].get('acceptance_policy'),
-                parent_context=dict(reference_point='target_body_center',rear_axle_offset_m=.3*float(result['target']['size_m'][0]),samples=(dense_times,parent_xy,parent_yaw)))
-            cont=curve['continuous_state'];spline=PPoly(np.asarray(cont['xy_coefficients']),np.asarray(cont['times_s']));angle=PPoly(np.asarray(cont['yaw_coefficients']),np.asarray(cont['times_s']))
-            _,parent_xy,parent_yaw=read_seed(folder/args['parent_candidate_id']/'dense_trajectory.csv') if args['parent_candidate_id']!='seed_000' else (dense_times,sample_xy(times,seed_xy,dense_times),np.interp(dense_times,times,seed_yaw))
-            expected_dense=parent_xy.copy();expected_angles=parent_yaw.copy();mask=dense_times>spline.x[0];expected_dense[mask]=spline(dense_times[mask]);expected_angles[mask]=angle(dense_times[mask])
-            effective=policy.resolve(run_input['constraints'].get('acceptance_policy'))
-            checks['continuous_operation_reconstruction']=bool(np.allclose(expected_xy,xy,atol=1e-8,rtol=0) and np.allclose(expected_yaw,yaw,atol=1e-8,rtol=0) and np.allclose(expected_dense,dense_xy,atol=1e-8,rtol=0) and np.allclose(expected_angles,dense_yaw,atol=1e-8,rtol=0))
-            checks['continuous_motion']=curve['max_speed_mps']<=effective['max_speed_mps']+1e-8 and curve['max_acceleration_mps2']<=effective['max_acceleration_mps2']+1e-8
-            if curve.get('edit_contract_version')=='trajectory_edit.v2':
-                from edit_feedback import intent_checks
-                checks['edit_intent']=intent_checks(curve)['passed']
+    if operation is not None and operation['tool'] in ('edit_speed_profile', 'edit_route'):
+        from ego_trajectory_edit import modern_edit
+        from scipy.interpolate import PPoly
+
+        folder = candidate_dir.parent
+
+        def lookup(candidate_id):
+            if candidate_id == 'recorded_baseline':
+                return seed_xy, seed_yaw
+            if candidate_id == 'seed_000':
+                return original_seed_xy, original_seed_yaw
+            _, x, angle = read_seed(folder/candidate_id/'trajectory.csv')
+            return x, angle
+
+        args = operation['input']
+        parent_dir = folder/args['parent_candidate_id']
+        parent_curve_path = parent_dir/'curve-check.json'
+        parent_curve = json.loads(parent_curve_path.read_text()) if parent_curve_path.is_file() else None
+        if args['parent_candidate_id'] == 'seed_000':
+            parent_xy = sample_xy(times, original_seed_xy, dense_times)
+            parent_yaw = np.interp(dense_times, times, original_seed_yaw)
+        else:
+            _, parent_xy, parent_yaw = read_seed(parent_dir/'dense_trajectory.csv')
+        constraints = run_input['constraints']
+        effective = policy.resolve(constraints.get('acceptance_policy'))
+        boundary = float(constraints.get('attack_prefix_lock_s', policy.edit_start(effective)))
+        expected_xy, expected_yaw, curve = modern_edit(times, lookup, args, boundary,
+            parent_curve=parent_curve, acceptance=constraints.get('acceptance_policy'),
+            parent_context=dict(reference_point='target_body_center',
+                rear_axle_offset_m=.3*float(result['target']['size_m'][0]), samples=(dense_times, parent_xy, parent_yaw)))
+        expected_dense = parent_xy.copy()
+        expected_angles = parent_yaw.copy()
+        if not (curve.get('route_edit_summary') or {}).get('identity_edit'):
+            cont = curve['continuous_state']
+            knots = np.asarray(cont['times_s'])
+            spline = PPoly(np.asarray(cont['xy_coefficients']), knots)
+            angle = PPoly(np.asarray(cont['yaw_coefficients']), knots)
+            mask = dense_times > knots[0]
+            expected_dense[mask] = spline(dense_times[mask])
+            expected_angles[mask] = angle(dense_times[mask])
+        checks['continuous_operation_reconstruction'] = (
+            np.allclose(expected_xy, xy, atol=1e-8, rtol=0)
+            and np.allclose(expected_yaw, yaw, atol=1e-8, rtol=0)
+            and np.allclose(expected_dense, dense_xy, atol=1e-8, rtol=0)
+            and np.allclose(expected_angles, dense_yaw, atol=1e-8, rtol=0))
+        checks['continuous_motion'] = (curve['max_speed_mps'] <= effective['max_speed_mps']+1e-8
+            and curve['max_acceleration_mps2'] <= effective['max_acceleration_mps2']+1e-8)
+        if curve.get('edit_contract_version') == 'trajectory_edit.v2':
+            from edit_feedback import intent_checks
+            checks['edit_intent'] = intent_checks(curve)['passed']
     construction_goal = None
     if saved.get('construction_goal_input') is not None:
         arguments = saved['construction_goal_input']
@@ -136,7 +213,7 @@ def review(run_dir, output):
     left = -relative[:, 0] * np.sin(ego_yaw) + relative[:, 1] * np.cos(ego_yaw)
     report = dict(status='passed' if all(checks.values()) else 'failed', checks=checks,
         candidate_id=result['selected_candidate_id'], target_track=target_id, construction_goal=construction_goal,
-        frozen_scene_path=result['frozen_scene_path'],
+        frozen_scene_path=result['frozen_scene_path'], initial_pose_operations=pose_operations,
         max_position_roundtrip_error_m=float(np.max(abs(recovered_xy - xy))), dense_reference=recomputed,
         native_replay_geometry={key:replay[key] for key in ('min_ego_clearance_m', 'first_contact_time_s',
             'other_contacts', 'checked_actor_pairs', 'missing_actor_pairs')},

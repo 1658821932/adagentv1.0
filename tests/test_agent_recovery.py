@@ -179,7 +179,9 @@ def test_new_tool02_default_real_dispatch_and_old_name_is_unavailable(tmp_path, 
     assert out['status']=='success'
     assert out['meta']['mode']=='real'
     assert out['result']==response
-    assert AgentConfig.load().tool_modes['scene_instance_generator']=='real'
+    # Runtime modes are user-editable; the default dispatcher is the contract.
+    from tools.registry import DEFAULT_TOOL_MODES
+    assert DEFAULT_TOOL_MODES['scene_instance_generator']=='real'
     with pytest.raises(ValueError,match='Unknown tool'):
         call_tool('scene_requirement_generator',{},mode='mock')
 

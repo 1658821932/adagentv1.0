@@ -57,8 +57,12 @@ class Orchestrator:
                     raise ValueError("arguments must be an object")
                 execution = payload.get("execution")
                 if execution is not None:
-                    if not isinstance(execution,dict) or set(execution)-{"retry"} or type(execution.get("retry")) is not bool:
-                        raise ValueError("execution accepts only a boolean retry")
+                    if not isinstance(execution,dict) or set(execution)-{"retry","background","job_id"}:
+                        raise ValueError('execution accepts retry, background and job_id')
+                    for field in ('retry','background'):
+                        if field in execution and type(execution[field]) is not bool:raise ValueError(field+' must be boolean')
+                    if 'job_id' in execution and (not isinstance(execution['job_id'],str) or not execution['job_id'].strip()):
+                        raise ValueError('job_id must be a nonempty string')
                 # Validate before a job is launched. Keep original references/arguments.
                 self.input_models[name].model_validate(arguments)
                 arguments = dict(arguments)

@@ -51,7 +51,7 @@ def test_backend_images_goal_and_on_demand_foci_reach_editor(monkeypatch,tmp_pat
     defaults=dict(defense_constructor_candidates=24,defense_initial_foci_candidates=2,
         defense_initial_foci_enabled=initial,defense_max_turns=10,defense_max_edit_candidates=5,defense_max_inspections=3)
     namespace=dict(Path=Path,json=json,atomic_json=atomic,policy=types.SimpleNamespace(resolve=lambda value:dict(value),for_new_run=lambda value:dict(value),edit_start=lambda value:value.get('edit_start_s',value['observation_end_s']),resolve_ego_progress_policy=__import__('acceptance_policy').resolve_ego_progress_policy),
-        ego_path_from_frames=lambda frames:(np.array([0.,3.,11.5]),None,None),
+        ego_path_from_frames=lambda frames:(np.r_[0., .5003, 1.0006, 1.500528, np.arange(2., 12., .5)],None,None),
         run_understanding=understand,run_constructor=constructor,run_defense_edit=edit,SETTINGS=dict(defaults=defaults))
     node=next(n for n in ast.parse((CORE/'editing_backend.py').read_text()).body if isinstance(n,ast.FunctionDef)and n.name=='ego_output')
     exec(compile(ast.Module(body=[node],type_ignores=[]),str(CORE/'editing_backend.py'),'exec'),namespace)
@@ -61,6 +61,9 @@ def test_backend_images_goal_and_on_demand_foci_reach_editor(monkeypatch,tmp_pat
     with pytest.raises(ReachedEditor):namespace['ego_output'](args,output)
     assert observed['understanding']['image_scene']=='/original/scene'
     assert observed['understanding']['target_effect']==args['target_effect']
+    assert observed['understanding']['visual_frame'] == 3
+    assert observed['understanding']['acceptance']['edit_start_s'] == 1.500528
+    assert observed['understanding']['acceptance']['observation_end_s'] == 1.500528
     positional,options=observed['editor']
     prepare=enabled and initial
     assert positional[2]==(output/'defense_foci' if prepare and has_pool else None)
@@ -124,7 +127,7 @@ def test_constructor_timeout_returns_recoverable_result_and_reuses_understanding
         defense_max_turns=10,defense_max_edit_candidates=5,defense_max_inspections=3,
         defense_preparation_timeout_seconds=.1)
     namespace=dict(Path=Path,json=json,atomic_json=atomic,policy=types.SimpleNamespace(resolve=lambda value:dict(value),for_new_run=lambda value:dict(value),edit_start=lambda value:value.get('edit_start_s',value['observation_end_s']),resolve_ego_progress_policy=__import__('acceptance_policy').resolve_ego_progress_policy),
-        ego_path_from_frames=lambda frames:(np.array([0.,3.,11.5]),None,None),
+        ego_path_from_frames=lambda frames:(np.arange(0.,12.,.5),None,None),
         run_understanding=understand,run_constructor=constructor,run_defense_edit=edit,SETTINGS=dict(defaults=defaults))
     node=next(n for n in ast.parse((CORE/'editing_backend.py').read_text()).body if isinstance(n,ast.FunctionDef)and n.name=='ego_output')
     exec(compile(ast.Module(body=[node],type_ignores=[]),str(CORE/'editing_backend.py'),'exec'),namespace)
