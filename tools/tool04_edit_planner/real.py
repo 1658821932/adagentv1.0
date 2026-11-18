@@ -3,6 +3,7 @@ from contextvars import ContextVar
 import json
 import math
 from pathlib import Path
+from time import perf_counter
 
 # A vehicle is only worth editing if it is close to the ego path and ahead of it once.
 ELIGIBLE_MAX_DISTANCE_M = 30.0
@@ -149,17 +150,17 @@ def bound_result(data,summary,response):
         evidence=summary["evidence"])
 
 
-def insufficient(data,summary,reasons):
+def insufficient(data,summary,reasons,elapsed_seconds):
     """Missing scene prerequisites: report what is missing instead of planning on an empty scene."""
     result=bound_result(data,summary,dict(
         suitability="needs_information",reasons=list(reasons),
         checks=dict(road="unknown",lanes="unknown",space="unknown"),
         adapted_plan=None,retrieval_suggestion=None))
     return dict(status="success",tool="edit_planner",result=Output.model_validate(result).model_dump(mode="json"),
-        meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=0.0))
+        meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=elapsed_seconds))
 
 
-def unsuitable_from_precheck(data,summary,checks):
+def unsuitable_from_precheck(data,summary,checks,elapsed_seconds):
     """Trusted data verdict rejects the structure before any observation or model call."""
     reasons=list(summary["evidence"].get("map_reasons") or [])
     reasons.append("Measured structure contradicts the target scene, so no visual review or plan is produced.")
@@ -171,7 +172,7 @@ def unsuitable_from_precheck(data,summary,checks):
     result["evidence"]=dict(result["evidence"],verification_source="measured_map_precheck")
     return dict(status="success",tool="edit_planner",
         result=Output.model_validate(result).model_dump(mode="json"),
-        meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=0.0))
+        meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=elapsed_seconds))
 
 
 def enrich(data,response):
@@ -212,6 +213,7 @@ TOOL=LLMTool(name='edit_planner',directory=Path(__file__).parent,input_model=Inp
 
 
 def run(input_data):
+    started=perf_counter()
     try:data=Input.model_validate({k:v for k,v in input_data.items() if k!='_llm_client'})
     except (AttributeError,ValueError,TypeError,KeyError) as error:
         return dict(status='error',tool='edit_planner',error=dict(type='input_validation_error',message='Tool input does not match its schema',validation_errors=validation_details(error)))
@@ -221,10 +223,12 @@ def run(input_data):
         return dict(status='error',tool='edit_planner',error=dict(type='scene_inspection_error',message='Cannot inspect the retrieved scene',validation_errors=validation_details(error)))
     summary=inspection[0]
     if summary['evidence']['missing_resources']:
-        return insufficient(data,summary,summary['evidence']['missing_resources'])
+        elapsed_seconds=round(perf_counter()-started,4)
+        return insufficient(data,summary,summary['evidence']['missing_resources'],elapsed_seconds)
     precheck_checks=summary['evidence'].get('map_checks') or {}
     if 'fail' in precheck_checks.values():
-        return unsuitable_from_precheck(data,summary,precheck_checks)
+        elapsed_seconds=round(perf_counter()-started,4)
+        return unsuitable_from_precheck(data,summary,precheck_checks,elapsed_seconds)
     token=_INSPECTION.set((data.model_dump(mode='json'),inspection))
     observation_token=ACTIVE_OBSERVATION.set(None)
     try:

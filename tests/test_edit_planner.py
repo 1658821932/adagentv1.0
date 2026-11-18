@@ -230,8 +230,10 @@ def test_legacy_input_fields_are_rejected(scene):
         assert result['error']['type'] == 'input_validation_error', extra
 
 
-def test_missing_source_images_return_information_without_a_model(scene):
+def test_missing_source_images_return_information_without_a_model(scene, monkeypatch):
     Path(scene['sample_root'], 'frame.png').unlink()
+    clock = iter((200.0, 200.3))
+    monkeypatch.setattr('tools.tool04_edit_planner.real.perf_counter', lambda: next(clock))
     result = run(arguments(scene))           # no _llm_client: the guard fails on any model call
     assert result['status'] == 'success', result
     output = result['result']
@@ -239,6 +241,7 @@ def test_missing_source_images_return_information_without_a_model(scene):
     assert output['adapted_plan'] is None
     assert output['checks'] == {'road': 'unknown', 'lanes': 'unknown', 'space': 'unknown'}
     assert result['meta']['attempts'] == 0
+    assert result['meta']['elapsed_seconds'] == 0.3
 
 
 def test_missing_render_asset_does_not_block_the_structural_review(scene):
@@ -295,6 +298,8 @@ def test_trusted_map_failure_returns_unsuitable_without_any_model(scene, monkeyp
     """Scheduling test only: the current sample cannot be asserted to fail from data."""
     stub_map(monkeypatch, {'road': 'fail', 'lanes': 'unknown', 'space': 'unknown'},
              suggestion='检索具有三臂路口的场景。')
+    clock = iter((100.0, 101.25))
+    monkeypatch.setattr('tools.tool04_edit_planner.real.perf_counter', lambda: next(clock))
     result = run(arguments(scene))               # no _llm_client: the guard forbids any model call
     assert result['status'] == 'success', result
     output = result['result']
@@ -306,6 +311,7 @@ def test_trusted_map_failure_returns_unsuitable_without_any_model(scene, monkeyp
     assert output['evidence']['map_facts'] == {'stub': True}
     assert output['evidence']['map_available'] is True
     assert result['meta']['attempts'] == 0
+    assert result['meta']['elapsed_seconds'] == 1.25
 
 
 def test_unavailable_map_reaches_the_visual_review(scene, monkeypatch):
