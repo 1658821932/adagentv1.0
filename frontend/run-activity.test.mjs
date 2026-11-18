@@ -10,6 +10,23 @@ async function write(path, value) {
   await writeFile(path, JSON.stringify(value));
 }
 
+test('ego preparation and actor editing are separate visible stages with real state', async () => {
+  const run=await mkdtemp(join(tmpdir(),'adagent-two-stages-'));
+  await write(join(run,'operations/prepare.json'),{
+    event_id:'prepare',name:'attack.ego_history_prepare',status:'returned',result_status:'prepared',
+    context:{step:4},elapsed_seconds:.8,started_at:'2026-11-16T16:00:00Z',finished_at:'2026-11-16T16:00:01Z',
+  });
+  await write(join(run,'operations/edit.json'),{
+    event_id:'edit',name:'attack.vehicle_editing',status:'running',context:{step:4},
+    started_at:'2026-11-16T16:00:02Z',
+  });
+  const items=await readSubagentActivity(run);
+  assert.equal(items.length,2);
+  assert.equal(items[0].summary,'加速历史已生成并冻结');
+  assert.equal(items[0].elapsed_seconds,.8);
+  assert.equal(items[1].name,'attack.vehicle_editing');assert.equal(items[1].status,'running');
+});
+
 test('runtime tool exchanges supplement pending events without duplicating archived actions', async () => {
   const base = await mkdtemp(join(tmpdir(), 'adagent-activity-'));
   const runDir = join(base, 'run');

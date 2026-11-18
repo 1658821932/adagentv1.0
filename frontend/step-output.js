@@ -55,6 +55,26 @@ function formatErrorText(err) {
   return parts.join(': ') || JSON.stringify(err);
 }
 
+function attackPolicySummary(evaluation) {
+  if (!evaluation || typeof evaluation !== 'object') return [];
+  const verdict = evaluation.policy_attack_success === true
+    ? 'VADv2 自测：攻击成功'
+    : evaluation.status === 'passed'
+      ? 'VADv2 自测：攻击未成功'
+      : 'VADv2 自测：证据不足';
+  const collision = evaluation.target_collision_failed === true
+    ? '目标碰撞已发生'
+    : evaluation.target_collision_failed === false ? '未确认目标碰撞' : '目标碰撞证据不足';
+  const road = evaluation.drivable_area;
+  if (road?.status === 'failed') {
+    const time = Number.isFinite(road.first_violation_time_s)
+      ? `（首次 t=${formatMetricValue(road.first_violation_time_s)}s）`
+      : '';
+    return [verdict, collision, `驶出可行驶区${time}`];
+  }
+  return [verdict, collision, road?.status === 'passed' ? '可行驶区检查通过' : '可行驶区证据不足'];
+}
+
 /** 每个工具产出的核心结论（不截断、无 [object Object]） */
 export function summaryFor(s) {
   const r = s?.output?.result;
@@ -119,7 +139,8 @@ export function summaryFor(s) {
       const target = r.target_track ? `目标 ${r.target_track}` : '';
       const cand = r.selected_candidate_id ? `候选 ${r.selected_candidate_id}` : '';
       const sim = r.simulation_input ? '已导出仿真包' : '';
-      return ['已完成攻击场景冻结', op, target, cand, sim].filter(Boolean).join(' · ');
+      return ['已完成攻击场景冻结', op, target, cand, sim, ...attackPolicySummary(r.policy_evaluation)]
+        .filter(Boolean).join(' · ');
     }
     const status = r.status === 'unable_to_complete' ? '未能完成' : (r.status || '未完成');
     return [status, truncateText(r.reason || r.stop_reason, 220)].filter(Boolean).join(' — ');
@@ -130,7 +151,8 @@ export function summaryFor(s) {
       const cand = r.selected_candidate_id ? `候选 ${r.selected_candidate_id}` : '';
       const src = r.selected_source ? `来源 ${String(r.selected_source).toUpperCase()}` : '';
       const sim = r.simulation_input ? '已导出仿真包' : '';
-      return ['已完成自车专家轨迹', cand, src, sim].filter(Boolean).join(' · ');
+      const render = r.render_status?.status === 'failed' ? '回放生成失败' : '';
+      return ['已完成自车专家轨迹', cand, src, sim, render].filter(Boolean).join(' · ');
     }
     const status = r.status === 'defense_not_found'
       ? '未找到可行防御'

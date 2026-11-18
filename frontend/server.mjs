@@ -19,6 +19,7 @@ import { createRunCoordinator, conversationDetails } from './run-coordinator.mjs
 import { stopRun } from './run-stop.mjs';
 import { previewMedia } from './run-media.mjs';
 import { readSubagentActivity } from './run-activity.mjs';
+import { resolveJobSteps } from './run-jobs.mjs';
 import { resolveFfmpeg } from './video-tools.mjs';
 import { videoCacheIdentity } from './video-cache.mjs';
 
@@ -264,8 +265,10 @@ async function getRunDetail(runId) {
   const meta = await readJson(join(runDir, 'run.json')) || {};
   const finalState = await readJson(join(runDir, 'final_state.json'));
   const runSummary = await readJson(join(runDir, 'summary.json'));
-  const runState = await resolveRunStatus(meta, finalState, activeRuns.get(runId));
-  const [conversation, activities] = await Promise.all([conversationDetails(runDir), readSubagentActivity(runDir)]);
+  const runState = await resolveRunStatus(meta, meta.stop_reason === 'user_requested'
+    ? {...finalState,status:'interrupted'} : finalState, activeRuns.get(runId));
+  const [conversation, activities, liveState] = await Promise.all([
+    conversationDetails(runDir), readSubagentActivity(runDir), readJson(join(runDir,'state.json'))]);
 
   // decision 流（运行中实时可读）
   const decisions = new Map();
@@ -285,7 +288,7 @@ async function getRunDetail(runId) {
 
   // 工具步骤目录
   const toolsDir = join(runDir, 'tools');
-  const steps = [];
+  let steps = [];
   if (existsSync(toolsDir)) {
     const entries = await readdir(toolsDir, { withFileTypes: true });
     for (const e of entries) {
@@ -331,7 +334,7 @@ async function getRunDetail(runId) {
         elapsed_seconds: runState.active ? elapsedSeconds : null,
         evidence: evidenceVideos(tool, output),
         media: previewMedia(tool, output, { projectRoot:ROOT, weRoot:WE_ROOT, closedLoopRoot:CLOSED_LOOP_ROOT }),
-        activities: activities.filter(item => item.step === stepNum).map(item => !runState.active && ['running','started'].includes(item.status) && !item.finished_at ? { ...item, status:'interrupted' } : item),
+        activities: activities.filter(item => item.step === stepNum),
         // 主 Agent 思考开销（来自 agent.jsonl 的 llm_request）
         llm: llmOf(decision),
         input,
@@ -343,6 +346,31 @@ async function getRunDetail(runId) {
     }
   }
   steps.sort((a, b) => a.step - b.step);
+  const jobs = await resolveJobSteps({steps,logsRoot:LOGS,
+    scope:liveState?.execution_scope || meta.execution_scope || meta.lineage?.execution_scope || runId});
+  steps = jobs.steps;
+  const backgroundActive = jobs.active_jobs.length > 0;
+  const active = runState.active || backgroundActive;
+  let runDuration = runState.duration_seconds;
+  const runStart = Date.parse(meta.start_time || meta.started_at || meta.created_at);
+  if (Number.isFinite(runStart)) {
+    if (backgroundActive) runDuration = Math.max(0,(Date.now()-runStart)/1000);
+    else {
+      const jobEnd = Math.max(0,...steps.map(step => Date.parse(step.job?.finished_at) || 0));
+      if (jobEnd > (Date.parse(meta.end_time) || Infinity)) runDuration = Math.max(0,(jobEnd-runStart)/1000);
+    }
+  }
+  for (const step of steps) {
+    if (step.job) {
+      const artifacts = [], metrics = [];
+      if (step.output?.result) extractArtifactsAndMetrics(step.output.result,artifacts,metrics);
+      step.artifacts = artifacts;step.metrics = metrics.slice(0,30);
+      step.evidence = evidenceVideos(step.tool,step.output);
+      step.media = previewMedia(step.tool,step.output,{projectRoot:ROOT,weRoot:WE_ROOT,closedLoopRoot:CLOSED_LOOP_ROOT});
+    }
+    if (!active) step.activities = step.activities.map(item => ['running','started'].includes(item.status) && !item.finished_at
+      ? {...item,status:'interrupted'} : item);
+  }
 
   const thinking = await readThinking(runDir);
 
@@ -381,7 +409,7 @@ async function getRunDetail(runId) {
   };
 
   // 无工具目录的决策（通常是最后的 finish/stop），单独返回以便展示最终思考
-  const stepNums = new Set(steps.map((s) => s.step));
+  const stepNums = new Set(steps.flatMap(s => s.dispatch_steps || [s.step]));
   const extraDecisions = ordered
     .filter(([n]) => !stepNums.has(n))
     .map(([n, dec]) => ({
@@ -401,11 +429,14 @@ async function getRunDetail(runId) {
     status:runState.status,
     error: finalState?.error || null,
     started_at: meta.start_time || meta.started_at || meta.created_at || null,
-    duration_seconds:runState.duration_seconds,
+    duration_seconds:runDuration,
     ...conversation,
     llm_model: meta.llm?.model || meta.llm_model || null,
     llm_reasoning_effort: meta.llm?.reasoning_effort || null,
-    active:runState.active,
+    active,
+    background_active:backgroundActive,
+    active_jobs:jobs.active_jobs,
+    dispatch_count:jobs.dispatch_count,
     report_path: existsSync(reportFile) ? reportFile : null,
     summary,
     thinking,

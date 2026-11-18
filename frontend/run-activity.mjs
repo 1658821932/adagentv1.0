@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 const VISIBLE_OPERATIONS = new Set([
+  'attack.ego_history_prepare','attack.vehicle_editing',
   'attack.object_selection', 'attack.inspect', 'attack.submit', 'attack.materialize_added', 'attack.independent_check',
   'ego.understanding', 'ego.constructor', 'ego.foci', 'ego.visual_agent', 'ego.select_constructor',
   'ego.edit', 'ego.submit', 'ego.independent_check',
@@ -13,6 +14,9 @@ async function readJson(path) {
 }
 
 function activitySummary(record, kind) {
+  if (record.name === 'attack.ego_history_prepare' && record.result_status) {
+    return {prepared:'加速历史已生成并冻结',reused:'已复用同一共同历史',unchanged:'保留原始自车历史',unavailable:'所需加速历史不可行'}[record.result_status] || record.result_status;
+  }
   const result = record.result || {};
   if (result.error) return String(typeof result.error === 'string' ? result.error : result.error.message || result.status).slice(0,240);
   if (Array.isArray(result.candidates)) {

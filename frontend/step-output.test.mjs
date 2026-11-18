@@ -104,6 +104,24 @@ test('renderStepStructured renders clean single summary block without removed wi
   assert.match(sErr, /RuntimeError: WorldEngine crashed/);
 });
 
+test('attack summary shows road-only failure as a successful attack', () => {
+  const step = {
+    tool: 'attack_vehicle_editor',
+    output: { result: {
+      status: 'completed',
+      selected_candidate_id: 'candidate_001',
+      policy_collision_report: { target_collision_detected: false },
+      policy_evaluation: {
+        status: 'failed',
+        policy_attack_success: true,
+        target_collision_failed: false,
+        drivable_area: { status: 'failed', first_violation_time_s: 4 },
+      },
+    } },
+  };
+  assert.match(renderStepStructured(step), /攻击成功.*未确认目标碰撞.*驶出可行驶区（首次 t=4s）/);
+});
+
 test('edit planner displays all unranked options with requirement, goal and traceable identities', () => {
   const step = {
     tool: 'edit_planner',

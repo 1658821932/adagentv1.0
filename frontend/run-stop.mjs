@@ -37,16 +37,19 @@ export async function stopRun({ root, logsRoot, python, runId }) {
   // Tool workers start their own sessions, so killing the main group is insufficient.
   const jobsRoot = join(logsRoot, 'jobs');
   const jobs = await readdir(jobsRoot).catch(() => []);
+  const scoped = await Promise.all(jobs.filter(name => /^[a-f0-9]{32}$/.test(name))
+    .map(name => json(join(jobsRoot,name,'manifest.json'))));
+  const hadBackgroundJobs = scoped.some(job => job?.scope === scope && ['queued','starting','running','orphaned'].includes(job.status));
   if (jobs.some(name => /^[a-f0-9]{32}$/.test(name))) {
     await execute(python, ['-c', 'import sys; from agent.jobs import JobStore; JobStore(sys.argv[1]).stop_scope(sys.argv[2])', jobsRoot, scope],
       { cwd:root, timeout:30000, maxBuffer:1024*1024 });
   }
   const now = new Date().toISOString();
   const latest = await json(path) || meta;
-  if (!latest.end_time && !['finished','success','error','stopped'].includes(latest.status)) {
-    await save(path, { ...latest, status:'interrupted', end_time:now, stop_reason:'user_requested', stopped_at:now });
+  if (hadBackgroundJobs || !latest.end_time && !['finished','success','error','stopped'].includes(latest.status)) {
+    await save(path, { ...latest, previous_status:latest.status, status:'interrupted', end_time:now, stop_reason:'user_requested', stopped_at:now });
     const statePath = join(folder, 'state.json'), state = await json(statePath);
-    if (state && !['finished','success','error'].includes(state.status))
+    if (state && (hadBackgroundJobs || !['finished','success','error'].includes(state.status)))
       await save(statePath, { ...state, status:'interrupted' });
   }
   return { ok:true, status:'interrupted' };

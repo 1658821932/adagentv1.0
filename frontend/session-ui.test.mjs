@@ -133,6 +133,17 @@ test('connection error card reports only the retries recorded for this run',()=>
   assert.doesNotMatch(legacy,/已自动重试/);
 });
 
+test('duration carries rounded seconds into the next minute', () => {
+  const start = source.indexOf('function fmtDuration(');
+  const end = source.indexOf('\n}', start) + 2;
+  assert.ok(start >= 0 && end > start);
+  const context = vm.createContext({});
+  vm.runInContext(source.slice(start, end), context);
+  assert.equal(context.fmtDuration(299.961), '5m0s');
+  assert.equal(context.fmtDuration(116.686), '1m57s');
+  assert.equal(context.fmtDuration(0.006), '6ms');
+});
+
 test('subagent rows translate FOCI actions and expose elapsed time',()=>{
   const start=source.indexOf('const ACTIVITY_LABELS');
   const end=source.indexOf('function fillToolActivities',start);

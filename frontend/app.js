@@ -154,6 +154,7 @@ function stepStateHtml(s){
 const primaryOutput = summaryFor;
 
 const ACTIVITY_LABELS = {
+  'attack.ego_history_prepare':'准备自车加速历史', 'attack.vehicle_editing':'编辑攻击车',
   model_request:'模型 API 调用',
   'attack.object_selection':'选择攻击车辆', 'attack.inspect':'查看攻击轨迹',
   'attack.submit':'提交攻击轨迹', 'attack.materialize_added':'生成新增车辆',
@@ -166,6 +167,7 @@ const ACTIVITY_LABELS = {
   repair_candidate:'修复候选', inspect_trajectory:'查看轨迹图', evaluate_candidate:'检查候选',
   submit_candidate:'提交候选', finish_search:'结束搜索', request_object_reselection:'重新选择车辆',
   probe_vadv2:'VADv2 自测', probe_pdm:'PDM 自测',
+  request_ego_history_revision:'返回调整加速历史',
 };
 function activityRow(a){
   const labels = { invalid:'参数无效', error:'失败', failed:'失败', fallback:'未完全达标',
@@ -222,11 +224,15 @@ function fillToolResult(card, s){
   const raw = [];
   if (s.input != null) raw.push(`<div class="raw-block"><div class="raw-title">输入 JSON</div><pre>${escape(JSON.stringify(s.input, null, 2))}</pre></div>`);
   if (s.output != null) raw.push(`<div class="raw-block"><div class="raw-title">输出 JSON</div><pre>${escape(JSON.stringify(s.output, null, 2))}</pre></div>`);
-  if (raw.length && !drawerHost.querySelector('.json-block')) {
-    const d = document.createElement('details');
-    d.className = 'json-block';
-    d.innerHTML = '<summary>查看输入与输出 JSON</summary>' + raw.join('');
-    drawerHost.append(d);
+  if (raw.length) {
+    let d = drawerHost.querySelector('.json-block');
+    if (!d) {
+      d = document.createElement('details');
+      d.className = 'json-block';
+      drawerHost.append(d);
+    }
+    const html = '<summary>查看输入与输出 JSON</summary>' + raw.join('');
+    if (d._rawHtml !== html) { d.innerHTML = html; d._rawHtml = html; }
   }
 
   fillToolActivities(card, s);
@@ -459,13 +465,13 @@ function updateRunView(d){
   showRunModel(d);
 
   setWorkbenchState(
-    d.status === 'running' ? phaseNarrative(d) : statusLabel(d),
-    d.status === 'running'
+    active ? phaseNarrative(d) : statusLabel(d),
+    active
       ? `已调用 ${d.steps.length} 个工具`
       : [d.error, `共 ${d.steps.length} 步`,
          d.summary ? `思考 ${d.summary.llm_seconds}s · 工具 ${d.summary.tool_seconds}s` : null]
           .filter(Boolean).join(' · '),
-    d.status === 'running' ? 'running' : (d.status === 'success' || d.status === 'finished') ? 'done' : 'error'
+    active ? 'running' : (d.status === 'success' || d.status === 'finished') ? 'done' : 'error'
   );
 
   let prevStep = null;
@@ -487,11 +493,11 @@ function updateRunView(d){
       scroll();
     }
     fillToolActivities(rec.card, s);
-    if (s.status === 'running') {
-      rec.card.querySelector('.step-times').innerHTML = stepTimes(s);
-    }
-    if (s.status !== 'running' && !rec.filled) {
+    rec.card.querySelector('.step-times').innerHTML = stepTimes(s);
+    const contentVersion = JSON.stringify([s.status,s.media,s.output?.error,s.output?.result?.status,s.output?.result?.selected_candidate_id]);
+    if (s.status !== 'running' && (!rec.filled || rec.contentVersion !== contentVersion)) {
       rec.filled = true;
+      rec.contentVersion = contentVersion;
       fillToolResult(rec.card, s);
       updateCall(key, nameOf(s.tool), s.tool, ['error','interrupted','failed'].includes(s.status) ? 'error' : 'done');
       scroll();
@@ -500,11 +506,14 @@ function updateRunView(d){
     } catch (err) { console.error('step render failed', s.step, err); }
   }
 
-  if (d.status === 'running') {
-    const cur = d.steps.at(-1);
+  if (active) {
+    const executing = d.steps.filter(step => step.status === 'running');
+    const cur = executing.at(-1) || d.steps.at(-1);
     phaseEl.textContent = phaseNarrative(d);
     const latest = cur?.activities?.at(-1);
-    activityEl.textContent = latest ? `${ACTIVITY_LABELS[latest.name] || latest.name} · ${latest.summary || latest.status}` : '';
+    activityEl.textContent = executing.length > 1
+      ? executing.map(step => { const item = step.activities?.at(-1); return `${nameOf(step.tool)}${item ? '：' + (item.summary || item.status) : '：执行中'}`; }).join('；')
+      : latest ? `${ACTIVITY_LABELS[latest.name] || latest.name} · ${latest.summary || latest.status}` : '';
     setProgressMeta(d, true);
   } else if (!progressEl.classList.contains('finished')) {
     progressEl.classList.add('finished');
@@ -542,7 +551,8 @@ setInterval(() => {
 function fmtDuration(sec){
   if (typeof sec !== 'number' || !Number.isFinite(sec)) return '';
   if (sec > 0 && sec < .1) return `${Math.round(sec*1000)}ms`;
-  return sec >= 60 ? `${Math.floor(sec / 60)}m${Math.round(sec % 60)}s` : `${Math.round(sec)}s`;
+  const seconds = Math.round(sec);
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : `${seconds}s`;
 }
 
 // 收尾卡片：标题为“任务总结”，右上角为该次总结的思考耗时
@@ -576,6 +586,10 @@ function answerCard(d, text, dec){
 // 顶栏只讲 agent 在做什么，不暴露具体工具
 function phaseNarrative(d){
   const steps = d.steps || [];
+  const executing = steps.filter(step => step.status === 'running');
+  if (d.background_active && d.status !== 'running') return '后台任务仍在执行';
+  if (executing.length > 1) return '并行执行：' + executing.map(step => nameOf(step.tool)).join('、');
+  if (executing.length === 1) return '正在执行：' + nameOf(executing[0].tool);
   const last = steps.at(-1);
   if (!steps.length) return '正在理解任务';
   if (last.status === 'running') return `正在调用工具 · 第 ${steps.length} 个`;
