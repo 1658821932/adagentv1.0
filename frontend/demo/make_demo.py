@@ -96,32 +96,46 @@ steps.append(step(
              dict(key="failure_analysis.official_metrics.first_violation_step", value=7)]))
 
 # ② 场景生成 -------------------------------------------------------------
+DEMO_ATTACK = dict(map_context="straight_road", ego_action="straight",
+                   other_origin="ahead_same_lane", other_action="stop")
+DEMO_SCENARIO = dict(
+    target_scene="白天的城市直路，自车直行，同车道前方一辆车停止。",
+    attack=DEMO_ATTACK,
+    candidates=[
+        dict(candidate_id="cand_1",
+             base_video_requirement="白天的城市直路，自车前方有一辆可编辑车辆。",
+             attack_edit_strategy="调整前车运动，使其停止在自车接近的车道上。",
+             ego_input_edit_strategy=None,
+             ego_correct_trajectory_strategy="自车合理接近，在制动范围内减速并保持安全间距。"),
+        dict(candidate_id="cand_2",
+             base_video_requirement="白天的城市直路，自车前方有可放置车辆的道路空间。",
+             attack_edit_strategy="在前方车道增加一辆停止车辆。",
+             ego_input_edit_strategy=None,
+             ego_correct_trajectory_strategy="自车识别停止车辆并及时减速避让。"),
+        dict(candidate_id="cand_3",
+             base_video_requirement="白天的城市直路，同车道前方有一辆低速车辆。",
+             attack_edit_strategy="调整低速前车的停止时机。",
+             ego_input_edit_strategy="调整自车接近速度以构建危险场景。",
+             ego_correct_trajectory_strategy="自车观察前车状态，在安全距离内制动。")])
 steps.append(step(
     1, "scene_instance_generator",
-    "把失败机制转成可执行场景需求：同车道前方有近乎静止的车辆，自车保持巡航速度接近。",
-    dict(failure_analysis=dict(failure_type=["跟车未减速/追尾"],
-                               failure_reason="自车接近近乎静止车辆时持续加速，未减速避让。")),
-    dict(scene_requirement="自车在直行城市道路上跟车，前方车辆近乎静止，自车未及时减速并追尾。",
-         target_effect="自车提前识别前方的静止车辆，在进入制动距离前果断减速，保持安全跟车距离。",
-         edit_strategy="在同车道前方 22-28 米放置一辆静止车辆，让自车在 7 秒内必须做出制动决策。",
-         candidates=[
-             dict(id="cand_01", focus="same_lane_stationary", note="同车道静止车，最贴近原失败机制"),
-             dict(id="cand_02", focus="lead_vehicle_brake", note="真实前车急刹，需要场景里存在前车"),
-             dict(id="cand_03", focus="adjacent_cut_in", note="相邻车道切入，需要多车道场景")]),
-    llm=3.0, duration=7.8))
+    "围绕相同目标场景，提供三套配套的检索条件和编辑方案。",
+    dict(failure_analysis=dict(
+        failure=dict(outcome="collision", interaction="rear_end", ego_cause="未及时对停止的前车减速。"),
+        attack=DEMO_ATTACK,
+        environment=dict(time="2021-09-16T15:47:30+00:00", weather="unknown", extra=""),
+        verification=dict(matched=True, notes=[]))),
+    DEMO_SCENARIO, llm=3.0, duration=7.8))
 
-# ③ 视频检索 -------------------------------------------------------------
+# ③ 视频检索：演示预览，不声称运行了真实检索 ------------------------------
 steps.append(step(
     2, "video_retriever",
-    "在本地视频库里检索与'同车道前方有低速或静止车辆'最接近的真实场景，作为攻击编辑的底图。",
-    dict(requirement="城市道路直行，同车道前方有低速或静止车辆，自车保持接近速度", library="default"),
-    dict(video_path=ROOT + "/mcp_servers/sentry_video_search/runtime/run_20261112_081520_9c3f7a21d5be/output/clip_rank01_score0.809787_lossless.mp4",
-         source_file=ROOT + "/mcp_servers/sentry_video_search/data/navtrain_ep_per1_multicam/2a217a228376536e/CAM_F0.mp4",
-         source_segment=dict(start_time=0.0, end_time=11.5),
-         match_score=0.809787,
-         scene_id=SCENE_FULL, scene_token=SCENE, library="default",
-         mode="local_hit_reranked", local_search_seconds=6.2, rerank_seconds=5.4, export_seconds=6.5),
-    evidence=evidence(("前视检索视频", video_url(CLIP_SRC))),
+    "示例：展示候选 cand_1 的检索结果与预览，未运行真实检索。",
+    dict(requirement=DEMO_SCENARIO["candidates"][0]["base_video_requirement"],
+         candidate_id="cand_1", library="default"),
+    dict(video_path=CLIP_SRC, source_file=CLIP_SRC, scene_ref=None,
+         candidate_id="cand_1", mode="mock", match_score=0.809787),
+    evidence=evidence(("模拟检索预览", video_url(CLIP_SRC))),
     llm=2.2, duration=18.2))
 
 # ④ 编辑规划 -------------------------------------------------------------

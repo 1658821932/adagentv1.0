@@ -60,6 +60,95 @@ def _is_archive(path: Path) -> bool:
     return path.is_dir() and (path / "scene_index.csv").is_file()
 
 
+REQUIRED_FACT_KEYS = ("token", "map_location", "violation_step", "failure", "attack",
+                      "environment", "frame_images")
+
+
+def failure_facts(token: str, simulation: str | None = None, timeout_s: float | None = None) -> dict:
+    """Measured failure facts for one archived scene. Raises instead of defaulting.
+
+    The child stays in the caller's process group so the tool-wide timeout can stop it.
+    """
+    if not simulation:
+        raise WfaError("failure_analyzer requires the simulation record that produced the metrics")
+    archive = resolve_simulation(simulation)
+    script = Path(__file__).resolve().parents[3] / "tools/tool01_failure_analyzer/structure_facts.py"
+    if not script.is_file():
+        raise WfaError(f"failure fact extractor is missing: {script}")
+    limit = float(timeout_s) if timeout_s else 180.0
+    try:
+        completed = subprocess.run(
+            [str(_resolve_python()), str(script), "--archive", str(archive), "--token", str(token)],
+            capture_output=True, text=True, timeout=limit)
+    except subprocess.TimeoutExpired:
+        raise WfaError(f"failure fact extractor timed out after {limit:g}s",
+                       stage="data", timeout=True) from None
+    except OSError as error:
+        raise WfaError(f"failure fact extractor could not start ({type(error).__name__})",
+                       stage="data") from None
+    stderr = (completed.stderr or "").strip()[-400:]
+    if completed.returncode:
+        # A failing extractor reports the reason on stdout as {"status": "error", "reason": ...}.
+        try:
+            reported = json.loads(completed.stdout)
+        except ValueError:
+            reported = None
+        reason = reported.get("reason") if isinstance(reported, dict) else None
+        detail = "; ".join(part for part in (reason if isinstance(reason, str) else "", stderr) if part)
+        raise WfaError(f"failure fact extractor exited with {completed.returncode}: {detail}",
+                       stage="data", returncode=completed.returncode)
+    if not completed.stdout.strip():
+        raise WfaError(f"failure fact extractor produced no output: {stderr}", stage="data")
+    try:
+        payload = json.loads(completed.stdout)
+    except ValueError:
+        raise WfaError(f"failure fact extractor produced invalid JSON: {completed.stdout.strip()[:200]!r}",
+                       stage="data") from None
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        reason = payload.get("reason") if isinstance(payload, dict) else None
+        raise WfaError(reason or "failure fact extraction failed", stage="data")
+    missing = [key for key in REQUIRED_FACT_KEYS
+               if key not in payload or payload[key] in (None, "")]
+    if missing:
+        raise WfaError(f"failure fact extractor returned incomplete facts, missing {', '.join(missing)}",
+                       stage="data")
+    if not isinstance(payload["token"], str):
+        raise WfaError("failure fact extractor returned a non-text token", stage="data")
+    payload["archive"] = str(archive)
+    try:
+        payload["simulation_record"] = archive.relative_to(_closed_loop_root()).as_posix()
+    except ValueError:
+        payload["simulation_record"] = str(archive)
+    payload["images_dir"] = str(Path(archive) / "WE_output/openscene_format/sensor_blobs" / payload["token"].split("-")[-1])
+    return payload
+
+
+def scene_facts(archive: Path, token: str) -> dict | None:
+    """Interaction geometry of the analysed failure, read from the archive scene pickle.
+
+    This is what the scenario planner must reproduce: the road structure and the
+    relative motion of the two vehicles, not a vehicle type or place name.
+    """
+    script = Path(__file__).resolve().parents[3] / "tools/tool01_failure_analyzer/structure_facts.py"
+    if not script.is_file():
+        return None
+    try:
+        completed = subprocess.run(
+            [str(_resolve_python()), str(script), "--archive", str(archive), "--token", token],
+            capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return None
+    try:
+        facts = json.loads(completed.stdout)
+    except ValueError:
+        return None
+    if facts.get("status") != "ok":
+        return None
+    return facts
+
+
 def resolve_simulation(spec: str) -> Path:
     """Resolve a WE simulation record spec to its archive directory.
 
@@ -240,6 +329,7 @@ def analyze_scene(
         candidate_assessment=result.get("candidate_assessment", []),
         uncertainty=result.get("uncertainty", ""),
         official_metrics=result.get("official_metrics", {}),
+        failure_facts=scene_facts(archive, token) if archive else None,
         report_path="",
         result_path=str(scene_dir),
         simulation=({

@@ -18,20 +18,20 @@ class LLMClient:
     """Simple wrapper around an OpenAI-compatible chat API."""
 
     @staticmethod
-    def _load_llm_config(profile_name: str = "kimi") -> Dict[str, object]:
+    def _load_llm_config(profile_name=None) -> Dict[str, object]:
         """Read the project-wide LLM profile selected for this caller."""
         return get_profile(profile_name)
 
     def __init__(self, component: str | None = None):
         # A tool may pin its own profile and thinking level; anything unpinned
         # follows active_profile / the global reasoning_effort.
-        profile_name, effort = "kimi", None
+        profile_name, effort = None, None
         if component:
             try:
                 from common.api_profiles import effort_for, profile_argument
                 profile_name, effort = profile_argument(component), effort_for(component)
             except Exception:
-                profile_name, effort = "kimi", None
+                profile_name, effort = None, None
         file_config = self._load_llm_config(profile_name)
         self.request_profile = dict(file_config)
         if effort:

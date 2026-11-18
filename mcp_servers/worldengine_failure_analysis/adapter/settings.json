@@ -1,6 +1,6 @@
 {
   "paths": {
     "python": "environments/simengine/bin/python",
-    "shared_library_dir": "/usr/lib/x86_64-linux-gnu"
+    "shared_library_dir": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ly/shared/system-libs/usr/lib/x86_64-linux-gnu"
   }
 }

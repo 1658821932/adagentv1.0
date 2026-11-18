@@ -3,6 +3,8 @@ import { resetWorkbench, setWorkbenchState, updateCall } from './workbench.js';
 import { createApiClient } from './api-client.js';
 import { createConfigPanelController } from './config-panel-controller.mjs';
 import { panelLoadingHtml, panelErrorHtml, readPanelData } from './panel-loading.mjs';
+import { failureDetailGroups, failureSummary, stageLabel } from './tool01-result.mjs';
+import { scenarioSummary, scenarioDetailGroups, retrievalSummary, retrievalDetailGroups, editPlannerSummary, editPlannerDetailGroups } from './scenario-results.mjs';
 window.addEventListener('error', (e) => {
   const box = document.createElement('div');
   box.className = 'js-error';
@@ -118,8 +120,6 @@ function stepStateHtml(s){
   return '✕';
 }
 
-const SUITABILITY = { ready: '可编辑', needs_information: '信息不足', unsuitable: '不适合编辑' };
-const OPERATION = { add_vehicle: '新增车辆', edit_existing: '修改现有车辆' };
 
 function firstSentence(text, limit = 90){
   if (typeof text !== 'string') return '';
@@ -133,26 +133,16 @@ function summaryFor(s){
   if (!r || typeof r !== 'object') return '';
 
   if (s.tool === 'failure_analyzer') {
-    const fa = r.failure_analysis || {};
-    return firstSentence(fa.failure_reason) || '';
+    return firstSentence(failureSummary(r)) || '';
   }
   if (s.tool === 'scene_instance_generator') {
-    return firstSentence(r.scene_requirement, 140) || '';
+    return firstSentence(scenarioSummary(r), 140);
   }
   if (s.tool === 'video_retriever') {
-    const score = typeof r.match_score === 'number' ? `匹配度 ${r.match_score.toFixed(3)}` : '';
-    const scene = r.scene_ref && r.scene_ref.scene_token ? `场景 ${r.scene_ref.scene_token}` : '';
-    const req = firstSentence(r.requirement, 80);
-    return [req, score, scene].filter(Boolean).join(' · ');
+    return firstSentence(retrievalSummary(r, s.input), 220);
   }
   if (s.tool === 'edit_planner') {
-    const verdict = SUITABILITY[r.suitability] || r.suitability || '';
-    const plan = r.edit_plan || {};
-    const op = OPERATION[plan.operation] || plan.operation || '';
-    const target = plan.target_track ? ` ${plan.target_track}` : '';
-    const head = [verdict, op ? op + target : ''].filter(Boolean).join(' · ');
-    const body = firstSentence(plan.instruction) || firstSentence((r.reasons || [])[0]);
-    return [head, body].filter(Boolean).join(' — ');
+    return firstSentence(editPlannerSummary(r), 220) || '';
   }
   if (s.tool === 'attack_vehicle_editor' || s.tool === 'ego_trajectory_editor') {
     const status = r.status === 'unable_to_complete' ? '未能完成' : r.status === 'defense_not_found' ? '未找到可行防御' : r.status || '';
@@ -168,7 +158,7 @@ function summaryFor(s){
   if (s.tool === 'failure_case_filter') {
     return r.is_failure_case === true ? `失败案例 · ${r.scene_count || 1} 个场景` : '非失败案例';
   }
-  for (const path of ['summary', 'message', 'requirement', 'scene_requirement']) {
+  for (const path of ['summary', 'message', 'requirement']) {
     const v = path.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : undefined), r);
     if (typeof v === 'string' && v) return firstSentence(v, 140);
   }
@@ -176,6 +166,23 @@ function summaryFor(s){
 }
 
 const primaryOutput = summaryFor;
+
+// 工具①证据摘要：本次 run 目录、终态与截图数量
+function evidenceNote(summary){
+  if (!summary || typeof summary !== 'object') return '';
+  const bits = [];
+  const manifest = summary.manifest;
+  if (manifest) {
+    if (manifest.run_id) bits.push(`证据 ${manifest.run_id}`);
+    if (manifest.status) bits.push(`${manifest.status}${manifest.stage ? ' · ' + stageLabel(manifest.stage) : ''}`);
+  }
+  if (Number.isFinite(summary.images) && summary.images > 0) bits.push(`${summary.images} 张截图`);
+  if (summary.error_type) {
+    bits.push(`错误 ${summary.error_type}${summary.stage ? ' · ' + stageLabel(summary.stage) : ''}`);
+  }
+  if (!bits.length && summary.evidence_dir) bits.push(summary.evidence_dir);
+  return bits.filter(Boolean).join(' · ');
+}
 
 // 官方评分字段的中文标签与展示优先级
 const METRIC_LABELS = {
@@ -250,6 +257,25 @@ function fillToolResult(card, s){
     body.append(wrap);
   }
 
+  const groups = s.tool === 'failure_analyzer'
+    ? failureDetailGroups(s.output?.result, s.output?.error)
+    : s.tool === 'scene_instance_generator'
+      ? scenarioDetailGroups(s.output?.result, s.output?.error)
+      : s.tool === 'edit_planner'
+        ? editPlannerDetailGroups(s.output?.result, s.output?.error)
+        : s.tool === 'video_retriever'
+          ? retrievalDetailGroups(s.output?.result, s.input, s.output?.error) : [];
+  if (groups.length) {
+    const box = document.createElement('div');
+    box.className = 'detail-groups';
+    box.innerHTML = groups.map(group => `<div class="detail-group">`
+      + `<div class="raw-title">${escape(group.title)}</div>`
+      + group.rows.map(([label, value]) =>
+        `<div class="detail-row"><span>${escape(label)}</span><b>${escape(value)}</b></div>`).join('')
+      + `</div>`).join('');
+    body.append(box);
+  }
+
   const raw = [];
   if (s.input != null) raw.push(`<div class="raw-block"><div class="raw-title">输入 JSON</div><pre>${escape(JSON.stringify(s.input, null, 2))}</pre></div>`);
   if (s.output != null) raw.push(`<div class="raw-block"><div class="raw-title">输出 JSON</div><pre>${escape(JSON.stringify(s.output, null, 2))}</pre></div>`);
@@ -260,14 +286,26 @@ function fillToolResult(card, s){
     body.append(d);
   }
 
-  const evidenceVideos = Array.isArray(s.evidence) ? s.evidence : [];
-  if (evidenceVideos.length) {
+  const evidenceItems = Array.isArray(s.evidence) ? s.evidence : [];
+  const note = evidenceNote(s.evidence_summary);
+  if (evidenceItems.length || note) {
     const box = document.createElement('div');
     box.className = 'evidence-videos';
-    box.innerHTML = evidenceVideos.map(v =>
-      `<div class="raw-title">${escape(v.title)}</div>`
-      + `<video controls playsinline preload="auto" width="1920" height="1080" src="${escape(v.src)}"></video>`
-    ).join('');
+    const images = evidenceItems.filter(item => item.kind === 'image');
+    const videos = evidenceItems.filter(item => item.kind !== 'image');
+    box.innerHTML = (note ? `<div class="evidence-summary">${escape(note)}</div>` : '')
+      + (images.length
+        ? `<div class="raw-title">本次分析证据</div><div class="evidence-images">`
+          + images.map(item => `<figure class="evidence-image">`
+            + `<img loading="lazy" alt="${escape(item.title)}" src="${escape(item.src)}">`
+            + `<figcaption>${escape([item.title, item.note].filter(Boolean).join(' · '))}</figcaption>`
+            + `</figure>`).join('')
+          + `</div>`
+        : '')
+      + videos.map(v =>
+        `<div class="raw-title">${escape(v.title)}</div>`
+        + `<video controls playsinline preload="auto" width="1920" height="1080" src="${escape(v.src)}"></video>`
+      ).join('');
     box.querySelectorAll('video').forEach(vid => {
       vid.addEventListener('play', e => {
         messages.querySelectorAll('video').forEach(o => { if (o !== e.target) o.pause(); });

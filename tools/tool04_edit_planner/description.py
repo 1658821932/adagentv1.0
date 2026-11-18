@@ -1,12 +1,15 @@
 from tools.llm_runtime import make_description
 from .schemas import Input, Output
-DESCRIPTION=make_description(name='edit_planner',
-    description='Review a retrieved base scene and produce a coarse plan plus validated attack-editor arguments.',
-    when_to_use='Between tool03 retrieval and tool05 attack editing.',input_model=Input,output_model=Output,
-    handoff={'input':'retrieval_result accepts the successful tool03 envelope, result or history result_ref; also supply tool02 scene_requirement, target_effect and the selected edit_strategy. Optional vehicle supplies a real added-car asset and dimensions.',
-             'output':'ready: pass result.attack_input unchanged as attack_vehicle_editor arguments. Keep target_effect for tool06. unsuitable: retrieve again using retrieval_suggestion. needs_information: obtain the named resources, then review again.'},
-    rules=['Initial observation is 12 CAM_F0 frames in three chronological 2x2 contact sheets. The VLM may request other available cameras internally, up to two cameras per round and two extra rounds.',
-           'This quick review does not run trajectory optimization, PDM or scene rendering.',
-           'Existing targets must be valid vehicles observed throughout the scene. Added-car assets and dimensions come from supplied input, not model estimates.',
-           'Non-ready outputs have attack_input=null; a coarse plan alone is not an executable attack request.',
-           'Canonical added-vehicle asset: /inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/assets/vehicle_01.ply with size_m [4.432, 2.033, 1.637] (length, width, height; see data/assets/manifest.json). When the caller supplies it, add_vehicle is executable: prefer operation add_vehicle with maneuver left_cut_in (or stationary) over needs_information for scenes whose observed vehicles are only parked or otherwise not editable.'])
+
+DESCRIPTION = make_description(name='edit_planner',
+    description='Review one selected candidate at the first real junction traversed by the recorded trajectory, data first: raw nuPlan map facts and checks, then images, then the three adapted strategies.',
+    when_to_use='Between tool03 retrieval and the attack/ego editors.', input_model=Input, output_model=Output,
+    handoff={'input': 'scenario_result: successful tool02 envelope, result or result_ref; candidate_id: the selected candidate; retrieval_result: successful tool03 envelope, result or result_ref whose candidate_id must equal the selection.',
+             'output': 'ready: use adapted_plan (three strategies); target_scene and attack are copied from tool02. unsuitable: retrieve again using retrieval_suggestion. needs_information: obtain the missing evidence, then review again.'},
+    rules=['Map facts come from the raw nuPlan map and are measured by code (physical lanes by lane_fid, turns and directions from baseline paths, the fixed recorded-route junction and its lane connectors); the model only reads them.',
+           'For t_junction/cross_intersection, use only the first non-mini junction traversed by the recorded trajectory, including the start junction. A four-arm cross can satisfy a t_junction target when the required approach, lane movements and space exist; extra arms may stay empty. straight_road, curve and merge targets do not need a junction. Do not search later junctions or gate this review on Gaussian asset coverage.',
+           'Missing evidence stays unknown. A confirmed mismatch at this fixed junction requires a new retrieval.',
+           'ready only means the structure supports the scene; no trajectory is generated and no parameter is executable yet.',
+           'Source positions, speeds and timings are editable, so they are reasons to adapt the plan, not to reject the scene.',
+           'ego_input_edit_strategy must synchronize ego approach speed/timing with the edited attack vehicle at the conflict. Preserve meaningful speed and difficulty; early stopping, crawling or avoiding the conflict is not valid difficulty reduction. ego_correct_trajectory_strategy is only the post-conflict correct response.',
+           'This review does not run trajectory optimization, PDM or scene rendering.'])

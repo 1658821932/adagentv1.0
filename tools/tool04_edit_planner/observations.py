@@ -101,8 +101,17 @@ class Observation:
         temporary.write_text(json.dumps(dict(scene_id=self.data.scene_ref.scene_id,scene_token=self.data.scene_ref.scene_token,
             settings=self.cfg,observation=evidence),ensure_ascii=False,indent=2));temporary.replace(path)
 
-    def add_camera(self,camera):
-        entries=source_entries(self.data.scene_ref,self.frames,self.indices,camera,self.binding)
+    def target_indices(self):
+        """Frames closest to the reviewed junction, or None when the region is unreliable."""
+        rows=self.summary['evidence'].get('map_facts') or {}
+        targets=[row for row in (rows.get('frame_target_distance') or []) if row.get('distance_to_target_m') is not None]
+        wanted=self.summary['evidence'].get('target_region_frames') or []
+        selected=[row['frame_index'] for row in targets if row['frame_index'] in wanted]
+        return sorted(selected) or None
+
+    def add_camera(self,camera,indices=None):
+        chosen=self.indices if indices is None else list(indices)
+        entries=source_entries(self.data.scene_ref,self.frames,chosen,camera,self.binding)
         if not any(item['image_path'] for item in entries):
             return dict(camera=camera,available_frames=0,tool_error='No selected source images are available for this camera'),[]
         folder=self.directory/f'view_{len(self.records):02d}'
@@ -115,7 +124,7 @@ class Observation:
                 self.summary['evidence']['keyframes'].append(entry)
                 self.summary['evidence']['source_images'].append(entry['image_path'])
         return dict(camera=camera,available_frames=sum(e['image_path'] is not None for e in entries),
-                    frame_indices=self.indices,sheet_count=len(sheets)),sheets
+                    frame_indices=chosen,sheet_count=len(sheets)),sheets
 
     def content(self,review):
         information,sheets=review
@@ -154,7 +163,7 @@ class ViewClient:
             except (ValueError,TypeError):return response
             if action.get('action')!='request_views':return response
             if self.rounds>=self.observation.cfg['max_extra_rounds']:
-                return json.dumps(dict(suitability='needs_information',reasons=['Additional visual review budget exhausted; more views are needed.'],edit_plan=None,retrieval_suggestion=None))
+                return json.dumps(dict(suitability='needs_information',reasons=['Additional visual review budget exhausted; more views are needed.'],checks=dict(road='unknown',lanes='unknown',space='unknown'),adapted_plan=None,retrieval_suggestion=None))
             self.rounds+=1
             try:
                 request=ViewRequest.model_validate(action)
@@ -164,7 +173,8 @@ class ViewClient:
                 if unknown:raise ValueError('Unknown source cameras: '+', '.join(sorted(unknown)))
                 seen={sheet['camera'] for sheet in self.observation.records if sheet['delivered']}
                 if set(request.cameras)&seen:raise ValueError('These cameras were already delivered; use the existing images')
-                reviews=[self.observation.add_camera(camera) for camera in request.cameras]
+                target=self.observation.target_indices()
+                reviews=[self.observation.add_camera(camera,indices=target) for camera in request.cameras]
                 content=[dict(type='text',text=json.dumps(dict(purpose=request.purpose,remaining_extra_rounds=self.observation.cfg['max_extra_rounds']-self.rounds),ensure_ascii=False))]
                 for review in reviews:content.extend(self.observation.content(review))
                 self.observation.view_requests.append(dict(cameras=request.cameras,purpose=request.purpose,round=self.rounds))

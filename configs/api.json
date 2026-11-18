@@ -1,16 +1,5 @@
 {
-  "active_profile": "kimi",
-  "kimi": {
-    "base_url": "https://apicz.boyuerichdata.com/v1",
-    "model": "kimi-k3",
-    "api_key_env": "OPENAI_API_KEY",
-    "timeout": 300,
-    "max_tokens": 65536,
-    "reasoning_effort": "high",
-    "request_dialect": "kimi",
-    "thinking_mode": "enabled",
-    "tool_choice_policy": "auto"
-  },
+  "active_profile": "ds_flash",
   "retrieval": {
     "api_key_env": "DASHSCOPE_API_KEY",
     "embedding_url": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding",
@@ -75,16 +64,27 @@
     "tool_choice_policy": "auto"
   },
   "tool_profiles": {
-    "failure_analyzer": "active_profile",
-    "edit_planner": "active_profile",
-    "attack_editor": "active_profile",
-    "ego_editor": "active_profile"
+    "failure_analyzer": "qwen_flash",
+    "attack_editor": "kimi",
+    "ego_editor": "kimi",
+    "edit_planner": "kimi"
   },
   "reasoning_effort": "medium",
   "tool_efforts": {
-    "failure_analyzer": "active_profile",
-    "edit_planner": "active_profile",
-    "attack_editor": "active_profile",
-    "ego_editor": "active_profile"
+    "failure_analyzer": "low",
+    "edit_planner": "high",
+    "attack_editor": "low",
+    "ego_editor": "low"
+  },
+  "kimi": {
+    "base_url": "https://apicz.boyuerichdata.com/v1",
+    "model": "kimi-k3",
+    "api_key_env": "OPENAI_API_KEY",
+    "timeout": 300,
+    "max_tokens": 65536,
+    "reasoning_effort": "high",
+    "request_dialect": "kimi",
+    "thinking_mode": "enabled",
+    "tool_choice_policy": "auto"
   }
 }

@@ -10,24 +10,28 @@ RECORDS_ROOT = Path(__file__).resolve().parents[2] / "logs" / "tool02_scene_inst
 
 
 def _validate_result(data, output):
-    if normalized(output.scene_requirement) in {normalized(item) for item in data.existing_instances}:
-        raise ValueError("Scene requirement duplicates an existing description; propose a different interaction or context")
-    pairs = {(normalized(item.base_video_requirement), normalized(item.edit_strategy or "null")) for item in output.candidates}
-    if len(pairs) != 3:
+    upstream = data.failure_analysis.get("attack") or {}
+    if output.attack.model_dump(mode="json") != upstream:
+        raise ValueError("attack must repeat the upstream tool01 structure unchanged")
+    # The construction plan is base video + the two edits; the correct trajectory is
+    # how the ego reacts, so rewording it alone must not look like a new plan.
+    combinations = {
+        (normalized(item.base_video_requirement),
+         normalized(item.attack_edit_strategy or "null"),
+         normalized(item.ego_input_edit_strategy or "null"))
+        for item in output.candidates
+    }
+    if len(combinations) != 3:
         raise ValueError("Provide three distinct base-video and editing-strategy alternatives")
 
 
-# Only the mechanism reaches the model; per-step evidence stays in the tool01 record.
-ANALYSIS_FIELDS = ("failure_reason", "wrong_behavior", "expected_behavior",
-                   "failure_type", "name", "group_id", "id")
-
-
 def _payload(data):
+    """Only failure, attack, environment and verification reach the model; source stays local."""
     payload = data.model_dump(mode="json")
     analysis = payload.get("failure_analysis")
     if isinstance(analysis, dict):
-        payload["failure_analysis"] = {k: v for k, v in analysis.items() if k in ANALYSIS_FIELDS}
-    return payload
+        analysis.pop("source", None)
+    return {key: value for key, value in payload.items() if value not in ({}, [])}
 
 
 TOOL = LLMTool(

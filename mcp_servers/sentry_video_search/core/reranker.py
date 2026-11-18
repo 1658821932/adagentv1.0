@@ -12,6 +12,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import formatdate
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import requests
@@ -116,6 +117,7 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
     settings = _settings()
 
     uploaded: list[str] = []
+    uploaded_lock = Lock()
     details: dict[str, Any] = {"model": profile["rerank_model"], "candidate_count": len(candidates), "candidates": []}
     try:
         scratch = run_dir.parent / "input" if run_dir.name == "logs" else run_dir / "input"
@@ -131,7 +133,12 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                 if not 24 * 1024 <= upload_clip.stat().st_size <= MAX_RERANK_VIDEO_BYTES:
                     raise RuntimeError(f"Rerank video exceeds API size limits: {upload_clip}")
                 key = f"{settings[4]}/run-{run_label}-{index:02d}-{int(time.time())}.mp4"
-                return _upload(upload_clip, key, settings)
+                signed_url = _upload(upload_clip, key, settings)
+                # Register in the worker: an earlier future may fail before this
+                # successful result is consumed by the ordered result loop.
+                with uploaded_lock:
+                    uploaded.append(signed_url)
+                return signed_url
 
             # 各候选互不依赖，并行准备（实测排序结果与串行完全一致）
             prep_start = time.perf_counter()
@@ -140,7 +147,6 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                 documents = []
                 for index, future in enumerate(futures):
                     signed_url = future.result()
-                    uploaded.append(signed_url)  # 先登记，便于失败时统一清理
                     documents.append({"video": signed_url})
                     details["candidates"].append({**candidates[index], "candidate_index": index})
             details.setdefault("timings", {})["rerank_prep_seconds"] = round(time.perf_counter() - prep_start, 3)
@@ -152,7 +158,7 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                     "top_n": len(documents),
                     "return_documents": True,
                     "fps": 1.0,
-                    "instruct": "按照查询判断视频整体场景和关键交通行为的相关性，并对候选视频排序。",
+                    "instruct": "按查询明确要求的环境、道路和车辆状态排序，只评估源视频可见条件；不推测编辑效果，不额外要求冲突、碰撞或失败已经发生；看不清的条件不视为满足。",
                 },
             }
             api_start = time.perf_counter()

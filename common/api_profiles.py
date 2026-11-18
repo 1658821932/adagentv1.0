@@ -56,10 +56,10 @@ def tool_profile(component: str) -> str:
     return os.getenv(ENV[component]) or selections().get(component, DEFAULT)
 
 
-def profile_argument(component: str) -> str:
-    """Argument for get_profile(): 'kimi' is the historical alias for active_profile."""
+def profile_argument(component: str):
+    """Argument for get_profile(): None means follow the main agent."""
     name = tool_profile(component)
-    return "kimi" if name == DEFAULT else name
+    return None if name == DEFAULT else name
 
 
 def effort_selections() -> dict:

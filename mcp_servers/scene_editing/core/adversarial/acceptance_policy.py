@@ -29,7 +29,10 @@ ATTACK_MAX_INITIAL_SPEED_ERROR_MPS = 2.
 STOP_SPEED_MPS = .1
 COMFORT_REFERENCE_MPS2 = 2.4
 ATTACK_NEAR_MISS_MIN_GAP_M = .15
-ATTACK_EVENT_MAX_GAP_M = 2.
+# A 2 m near miss still scores ~0.58 on PDM, so it never becomes a training sample.
+# Require the attack to nearly reach the ego; only real contact or road departure
+# drives the official score to zero.
+ATTACK_EVENT_MAX_GAP_M = .5
 ROAD_FOOTPRINT_FLATNESS_M = .1
 ATTACK_REVERSE_TOLERANCE_MPS = .05
 ATTACK_LATERAL_SLIP_MPS = .3

@@ -18,11 +18,16 @@ if str(PROJECT_ROOT) not in sys.path:
 from tools.registry import call_tool
 
 ANALYSIS={
-    "failure_type":["late_response"],
-    "failure_reason":"Synthetic test: delayed response to a slowing lead vehicle.",
-    "key_scene_factors":["same-lane lead vehicle","straight road"],
-    "risk_factors":["short headway"],
-    "supporting_case_ids":[],
+    "token": "2021.09.16.19.49.00_veh-42_00990_01609-4abb45d9ee1a5c5c",
+    "simulation": "experiment/batch",
+    "map_location": "us-pa-pittsburgh-hazelwood",
+    "evidence_dir": "",
+    "failure": {"outcome": "collision", "interaction": "crossing",
+                "ego_cause": "在丁字路口右转时，没有对从右侧支路左转过来的车辆让行"},
+    "attack": {"map_context": "t_junction", "ego_action": "turn_right",
+               "other_origin": "right_arm", "other_action": "turn_left"},
+    "environment": {"time": "2021-09-16T20:16:41+00:00", "weather": "cloudy", "extra": "路面干燥"},
+    "verification": {"matched": True, "notes": []},
 }
 
 
@@ -41,7 +46,9 @@ def run_smoke(mode: str) -> dict:
             from tools.tool03_video_retriever.schemas import Input
             Input.model_validate({"requirement":candidate["base_video_requirement"]})
             if mode=="mock":
-                check(f"retrieval_candidate_{index+1}","video_retriever",{"requirement":candidate["base_video_requirement"]})
+                check(f"retrieval_candidate_{index+1}","video_retriever",{
+                    "requirement":candidate["base_video_requirement"],
+                    "candidate_id":candidate["candidate_id"]})
     passed=all(item["output"].get("status")=="success" for item in checks)
     return {
         "mode":mode,"synthetic_inputs":True,"passed":passed,

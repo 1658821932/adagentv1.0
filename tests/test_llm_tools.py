@@ -123,10 +123,13 @@ def test_fenced_json_is_supported_without_accepting_surrounding_prose():
 
 def test_source_context_is_attached_by_code_and_upstream_errors_are_not_evidence():
     requirement=call_tool("scene_instance_generator",{"failure_analysis":{
-        "status":"success","tool":"failure_analyzer","result":{"failure_analysis":ANALYSIS}
+        "status":"success","tool":"failure_analyzer","result":ANALYSIS
     }},mode="mock")
-    assert json.loads((Path(requirement["meta"]["record_dir"])/"input.json").read_text())["failure_analysis"]==ANALYSIS
-    assert set(requirement["result"])=={"scene_requirement","target_effect","candidates"}
+    saved=json.loads((Path(requirement["meta"]["record_dir"])/"input.json").read_text())["failure_analysis"]
+    assert set(saved)=={"failure","attack","environment","verification","source"}
+    assert saved["source"]["token"]==ANALYSIS["token"]
+    assert saved["attack"]==ANALYSIS["attack"]
+    assert set(requirement["result"])=={"target_scene","attack","candidates"}
     from tools.tool03_video_retriever.schemas import Input
     for candidate in requirement["result"]["candidates"]:
         Input.model_validate({"requirement":candidate["base_video_requirement"]})

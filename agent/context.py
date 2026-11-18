@@ -5,19 +5,18 @@ import json
 
 # Fields needed for orchestration, completion, recovery and the next tool.
 FIELDS = {
-    "failure_analyzer": ("token","report_path","result_path"),
-    "scene_instance_generator": ("scene_requirement","target_effect","candidates"),
-    "video_retriever": ("video_path","source_file","source_segment","match_score","mode"),
-    "edit_planner": ("suitability","reasons","edit_plan","retrieval_suggestion","scene_id","scene_token","target_effect","attack_input"),
+    "failure_analyzer": ("token","simulation","map_location","evidence_dir","failure","attack",
+                         "environment","verification"),
+    "scene_instance_generator": ("target_scene","attack","candidates"),
+    "video_retriever": ("video_path","source_file","source_segment","match_score","mode","candidate_id"),
+    "edit_planner": ("suitability","reasons","scene_id","scene_token","candidate_id","target_scene",
+                     "attack","checks","adapted_plan","retrieval_suggestion"),
     "attack_vehicle_editor": ("status","stage","mode","run_dir","scene_id","scene_token","operation","target_track","selected_candidate_id","frozen_scene_path","frames_path","trajectory_path","provenance_path","submission_path","simulation_input","rendered_videos","pdm_probe_result_path","vadv2_probe_result_path","policy_collision_report"),
     "ego_trajectory_editor": ("status","stage","mode","run_dir","scene_id","scene_token","attack_run_dir","target_track","selected_candidate_id","selected_source","expert_trajectory_path","trajectory_metadata_path","conflict_brief_path","submission_path","simulation_input","expert_motion_summary","ilft_training_data","rendered_videos"),
     "policy_runner": ("result_dir","policy_result","collision_report","evaluation_scope","pdm_subscores","policy_behavior_summary","rollout_dir","reward_dir","candidate_rewards_present","rlft_training_data","rlft_data_report","pdm_challenge"),
     "failure_case_filter": ("is_failure_case","pdm_scores_file","scene_count","failure_cases","scene_results"),
     "policy_trainer": ("checkpoint","training_mode","log_path","work_dir","epochs","final_loss","training_config","export_dir"),
 }
-ANALYSIS_FIELDS = ("name","group_id","id","failure_type","failure_reason","base_scene",
-                   "interaction","wrong_behavior","expected_behavior","key_scene_factors",
-                   "official_metrics","uncertainty","risk_factors","supporting_case_ids","uncovered_case_ids")
 SCENE_FIELDS = ("scene_id","scene_token","dataset","sample_root","matched_camera","frame_count","fps","images_complete")
 BUSINESS_FIELDS = ("reason","stop_reason","failed_requirements","failed_requirements_scope",
                    "evidence_paths","scope","global_infeasibility_proven")
@@ -44,11 +43,7 @@ def brief_metrics(value):
 def summarize(tool, payload):
     result = pick(payload,FIELDS[tool])
     result.update(pick(payload,("mode","mock","status")))
-    if tool=="failure_analyzer":
-        analysis=payload.get("failure_analysis")
-        if isinstance(analysis,dict):
-            result["failure_analysis"]=pick(analysis,ANALYSIS_FIELDS)
-    elif tool=="video_retriever":
+    if tool=="video_retriever":
         scene=payload.get("scene_ref")
         if isinstance(scene,dict):
             result["scene_ref"]=pick(scene,SCENE_FIELDS)
@@ -60,7 +55,20 @@ def summarize(tool, payload):
     elif tool=="edit_planner":
         evidence=payload.get("evidence")
         if isinstance(evidence,dict):
-            result["evidence"]=pick(evidence,("missing_resources","road_geometry_available","added_vehicle_asset_available"))
+            result["evidence"]=pick(evidence,("map_available","map_checks","map_reasons",
+                "map_evidence_limits","target_region_frames","verification_source","precheck_conflicts"))
+            for key in ("map_reasons","map_evidence_limits"):
+                if isinstance(result["evidence"].get(key),list):
+                    result["evidence"][key]=bounded_rows(result["evidence"][key],6)
+            facts=evidence.get("map_facts")
+            if isinstance(facts,dict):
+                result["evidence"]["map_facts"]=pick(facts,("selection_policy","target_junction_fid",
+                    "target_entry_distance_m","target_entry_frame_index","target_junction",
+                    "approach_lane_count","lanes_with_direction","connectors_with_turn","connector_count"))
+            visual=evidence.get("visual_review")
+            if isinstance(visual,dict):
+                result["evidence"]["visual_review"]=pick(visual,("cameras","sheet_count","model_calls",
+                    "checks","reasons"))
             observation=evidence.get("visual_observation")
             if isinstance(observation,dict) and observation.get("record_dir"):
                 result["evidence"]["observation_record_dir"]=observation["record_dir"]
@@ -138,8 +146,6 @@ def compact_state(source):
             hint=HANDOFF_HINTS.get(tool)
             if hint:
                 entry["result"]["handoff_hint"]=hint
-            if tool=="edit_planner" and isinstance(entry["result"]["result"].get("attack_input"),dict):
-                replace_references("attack_vehicle_editor",entry["result"]["result"]["attack_input"],references)
             references.append((tool,original,reference))
         elif reference and envelope.get("status")=="error":
             error=envelope.get("error",{})
@@ -162,9 +168,7 @@ def compact_state(source):
                 original_args=previous["decision"].get("arguments",{})
                 kept,omitted={},[]
                 for key,value in original_args.items():
-                    if key=="failure_analysis" and isinstance(value,dict):
-                        kept[key]=pick(value,ANALYSIS_FIELDS)
-                    elif value is None or isinstance(value,(str,int,float,bool)) or len(json.dumps(value,ensure_ascii=False))<=2048:
+                    if value is None or isinstance(value,(str,int,float,bool)) or len(json.dumps(value,ensure_ascii=False))<=2048:
                         kept[key]=deepcopy(value)
                     else:
                         omitted.append(key)
@@ -177,6 +181,7 @@ def compact_state(source):
 
 HANDOFF_HINTS = {
     "video_retriever": "Handoff: pass result_ref verbatim as edit_planner.retrieval_result or attack_vehicle_editor.scene_ref; never retype this JSON.",
+    "edit_planner": "Handoff: ready results carry adapted_plan; do not read removed edit_plan or attack_input.",
     "attack_vehicle_editor": "Handoff: pass result_ref verbatim as ego_trajectory_editor.attack_result; never retype this JSON.",
 }
 

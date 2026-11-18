@@ -40,7 +40,8 @@ def attack_output(arguments, output_dir):
     constraints = dict(observation_end_s=acceptance['observation_end_s'],
         attack_prefix_lock_s=acceptance['attack_prefix_lock_s'],
         event_window_s=[acceptance['attack_window_start_s'], acceptance['attack_window_end_s']],
-        official_margin_m=acceptance['official_margin_m'], max_ego_clearance_m=2., min_travel_m=0.,
+        official_margin_m=acceptance['official_margin_m'],
+        max_ego_clearance_m=acceptance['attack_event_max_gap_m'], min_travel_m=0.,
         vehicle_motion_model='bicycle.v1', require_structured_objective=True,
         acceptance_policy=acceptance)
     if arguments.get('vadv2_self_test',False):

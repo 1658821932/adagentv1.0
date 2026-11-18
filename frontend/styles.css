@@ -732,3 +732,17 @@ strong,b{color:inherit}
 @keyframes panel-spin{to{transform:rotate(360deg)}}
 @keyframes panel-shimmer{to{background-position:-200% 0}}
 @media(prefers-reduced-motion:reduce){.panel-spinner,.panel-skeleton i{animation:none}}
+
+/* 工具①：字段详情与证据截图 */
+.detail-groups{display:grid;gap:10px;margin-top:14px}
+.detail-group{border-top:1px solid #efefef;padding-top:8px}
+.detail-group:first-child{border-top:0;padding-top:0}
+.detail-row{display:flex;gap:12px;font-size:12px;line-height:1.9}
+.detail-row span{flex:0 0 84px;color:#8a8a8a}
+.detail-row b{font-weight:400;color:#2e2e2e;overflow-wrap:anywhere}
+.evidence-summary{font-size:11px;color:#8a8a8a;line-height:1.8;margin-bottom:10px;overflow-wrap:anywhere}
+.evidence-images{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-top:8px}
+.evidence-image{margin:0;border:1px solid #eee;border-radius:6px;overflow:hidden;background:#fafafa}
+.evidence-image img{width:100%;display:block}
+.evidence-image figcaption{font-size:10px;color:#8a8a8a;padding:6px 8px;line-height:1.6}
+@media(max-width:600px){.detail-row span{flex-basis:70px}.evidence-images{grid-template-columns:1fr}}

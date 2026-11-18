@@ -1,42 +1,28 @@
-# Task
-Review the retrieved scene against scene_requirement and edit_strategy. Decide if this base is worth editing, and give a coarse attack-vehicle plan if needed. Keep target_effect unchanged for tool06.
+核对一个选中候选在真实场景中是否具备构建条件，再调整编辑方案。按“地图初筛结果 → 图像核对补充 → 编辑方案”的顺序判断，使用输入语言回答。
 
-# Visual evidence
-You receive up to 12 CAM_F0 keyframes as three chronological 2x2 contact sheets. Read camera/frame/time labels; blank cells are missing, not observations.
-If you need another view, return {"action":"request_views","cameras":["CAM_L0"],"purpose":"what to check"}. Up to 2 cameras per round, 2 extra rounds.
-When you have enough evidence, return the final decision object.
+核对范围：
+- road：道路形态及必要路口、支路是否满足 attack.map_context。
+- lanes：车道方向和连接是否支持 attack.ego_action、other_origin、other_action。
+- space：是否有目标动作及他车编辑、放置所需的可用空间。
 
-# Decision
-- ready: base scene is suitable. If edit_strategy is null and the scene already matches the failure mechanism, edit_plan can be null. If editing is needed, provide edit_plan with operation (edit_existing or add_vehicle), target_track (for edit_existing), maneuver (for add_vehicle), and a coarse instruction.
-- unsuitable: layout or actor mismatch. Provide retrieval_suggestion, no edit_plan.
-- needs_information: missing resources (e.g. no usable vehicle asset). Name what is needed. If the scene is otherwise suitable and only the vehicle asset is missing, still provide the coarse add_vehicle edit_plan and instruction so the plan can be reused after the asset is supplied; attack_input remains null until then.
+evidence.map_facts、map_checks、map_evidence_limits 提供地图事实、初筛结论及限制。结合实际相机画面核对，说明结论依据；可引用给定车道 ID、帧号和距离。缺字段、地图或画面证据不完整、未覆盖或被遮挡，不能证明结构不存在。证据不足保留 unknown；数据与画面矛盾时说明具体矛盾并补证，不默认通过。对 t_junction：只核对原轨迹经过的第一个真实路口；起点已在路口内就核对该路口。四臂十字路口可以兼容丁字目标，额外支路可空置，但所需来向、车道动作和空间仍须成立。对 cross_intersection：该路口至少需要四臂。对 straight_road、curve、merge：不选择路口，按道路连续性、车道和空间核对。目标路口不符合就重新检索，不跳到后续或其他道路的路口，也不额外检查高斯资产覆盖。
 
-# Rules
-- Current workflow: plan attack editing, then expert ego editing/video, then Main Agent invokes policy_runner with execution_mode=native for complete scoring. Do not enable internal PDM self-checks or invent a three-second edit/event delay; new runs permit edits from 0s while retaining physical/map checks and explicit task requirements.
-- edit_strategy from tool02 is a preliminary suggestion; you may adjust it based on what you actually see in the video.
-- Any edit_plan you provide must help construct a scene similar to the failure mechanism.
-- The danger window is t>2.0s and t<=7.0s. Say it numerically in the instruction, e.g. "the ego meets the
-  blockage between t=2s and t=7s". Before t=2s the ego is replaying recorded history, and a 12-second
-  source is only scored to about t=7.5s once the 8 reward-lookahead frames are set aside; a hazard placed
-  only at t=9s is never reached. Use another window only if the user requests it explicitly.
-- Do not script the failure itself. Whether the policy collides, brakes too late or leaves the drivable
-  area is its own decision; the scene only has to present that decision inside the window. Choose
-  placement from the observed geometry and speed rather than a fixed distance from a worked example.
-- Never place a hazard the ego only reaches after the rollout ends; that scene scores as a success.
-- The edit must reproduce the failure mechanism, so the operation follows from what the mechanism needs:
-  whatever actor or geometry the ego had to misread, misjudge or fail to yield to has to exist in the
-  edited scene and behave so that the same wrong decision is available again. Pick the operation that
-  expresses that, not the one that is easiest to construct.
-- Worked cases, used as illustrations of that rule and not as an exhaustive list:
-  * rear-end or late braking on a lead vehicle: edit_existing on the real lead vehicle in the ego lane
-    (slow it, hold it, or brake it); add_vehicle only when the lane has no real lead vehicle;
-  * cut-in, merge or squeeze: add_vehicle with left_cut_in when an adjacent lane exists, otherwise
-    edit_existing to move a real neighbour across the ego path;
-  * road departure or lane-keeping failure: edit_existing on a real neighbour that narrows the ego
-    corridor, since an isolated added vehicle rarely pushes the ego to the boundary.
-- Prefer actors already annotated in the scene over new ones; a participant that appears from nothing is
-  weaker evidence and a weaker demonstration. Add a vehicle only when the scene has no real actor that
-  can carry the mechanism.
-- Edit ONE actor: edit_existing (from eligible_vehicle_tracks) or add_vehicle (stationary or left_cut_in).
-- Give a coarse scene-specific instruction, not numeric trajectories. tool05 does the detailed search.
-- Do NOT estimate asset dimensions from images; use the supplied vehicle asset data.
+原车辆位置、速度、动作和到达时机可通过编辑调整；距离路口远不直接淘汰。区分固定道路边界、障碍与可编辑车辆占位。天气、时间不作为结构否决条件。地图支持某条连接，不等于编辑轨迹已经可执行。
+
+首轮最多 12 张真实前视帧组成时间拼图，按相机、帧号和时间标签阅读。侧向条件不清楚时，使用提供的 available_cameras 请求补看：
+{"action":"request_views","cameras":["CAM_L0"],"purpose":"需要核对的条件"}
+每轮最多 2 个相机，最多补看 2 轮；补图由程序优先选择目标区域附近帧，无法定位时回退时间采样。缺图和空白不作观察证据。
+
+checks 的 road、lanes、space 分别填写 pass、fail 或 unknown：
+- 三项 pass：ready，提供 adapted_plan。
+- 有证据确认必要结构不符：unsuitable，至少一项 fail，提供具体的 retrieval_suggestion。
+- 证据不足或矛盾未解决：needs_information，相关项 unknown，说明需要补充什么。
+非 ready 时 adapted_plan 为 null。
+
+ready 时按实际场景调整三项简洁方案，保持 target_scene 和 attack 不变：
+- attack_edit_strategy：攻击车编辑方案；无需编辑或 other_origin=none 时为 null。
+- ego_input_edit_strategy：调整自车接近速度和到达时机，使自车与攻击车在冲突点同步交汇；必须保留有意义的速度和任务难度，不能靠提前停车、爬行或绕开冲突来降低难度。无需编辑时为 null。
+- ego_correct_trajectory_strategy：自车在交汇后如何安全应对；不能用来补偿错误的 ego_input_edit_strategy。
+前两项共同构建危险场景，第三项负责正确应对。工具②的候选方案和检索描述是初稿，可以调整并简述原因。可用前 1.5 秒调整自车速度和到达时机，但不保证任意距离都能靠提速实现。正确应对需完成原驾驶任务，可合理等待，不能无条件提前停车来消除任务。
+
+每项方案只写一句话，不生成轨迹点、不编造参数、不保证策略必然失败。只返回当前阶段所需的 JSON，字段遵循附带 schema；程序负责绑定目标和场景标识，不要在模型响应中另加这些字段。

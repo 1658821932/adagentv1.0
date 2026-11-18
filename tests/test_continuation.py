@@ -56,8 +56,13 @@ def parent_run(root):
             manifest_path='/fixture/manifest.json',frames_path='/fixture/frames.json',cameras_path='/fixture/cameras.json',
             images_complete=True,cameras=dict(CAM_F0=dict(frame_count=24,available_images=24,images_complete=True))),
             evidence=dict(frames=['bulk']*1000))),
-        (1,'edit_planner',dict(suitability='ready',target_effect='安全减速并继续前进',
-            attack_input=dict(scene_ref='/fixture',operation='edit_existing',target_track='car',instruction='fixture'))),
+        (1,'edit_planner',dict(suitability='ready',reasons=['fixture'],scene_id='A',scene_token='A',
+            candidate_id='cand_1',target_scene='fixture scene',
+            attack=dict(map_context='curve',ego_action='straight',other_origin='none',other_action='none'),
+            checks=dict(road='pass',lanes='pass',space='pass'),
+            adapted_plan=dict(attack_edit_strategy=None,ego_input_edit_strategy=None,
+                ego_correct_trajectory_strategy='安全减速并继续前进'),
+            retrieval_suggestion=None,evidence=dict(frames=['bulk']*100))),
     ]:
         state.set_step(step)
         state.add_decision(step,dict(action='call_tool',tool_name=tool,arguments=dict(fixture=True),reason='fixture'))

@@ -4,15 +4,15 @@ from .schemas import Input, Output
 
 DESCRIPTION = make_description(
     name='video_retriever',
-    description='Retrieve a local camera video and its bound annotated multi-camera scene.',
-    when_to_use='Retrieve a source scene for editing or downstream use.',
+    description='Retrieve a locally indexed base video and its bound multi-camera scene.',
+    when_to_use='Find a source scene for the selected tool02 candidate.',
     input_model=Input,
     output_model=Output,
-    handoff={'input': 'Use the selected scene_instance_generator candidate.base_video_requirement as requirement.', 'output': 'Pass the successful history entry.result_ref, envelope or result to edit_planner.retrieval_result. source_file is the indexed original; video_path is the exported search clip.'},
+    handoff={'input': 'Pass the selected candidate.base_video_requirement unchanged as requirement, with the same candidate_id. Do not add conditions assigned to later editing.',
+             'output': 'Pass the successful result_ref (preferred), envelope or complete result to edit_planner.retrieval_result.'},
     rules=[
-        'For scenario editing, pass the complete retrieval result or result_ref to edit_planner.retrieval_result before expensive attack search.',
-        'No internet search. Real mode requires a valid scene binding.',
-        'scene_ref describes the full source scene. source_segment is the matched index range, not a synchronized multi-camera crop.',
-        'Check returned asset/image availability before requesting an operation that needs those files.',
+        'Match only the requested source-video conditions; do not require planned edits, conflict or policy failure.',
+        'Local index only. match_score measures relevance; tool04 checks structural suitability.',
+        'scene_ref is the full bound scene; source_segment is the index-match range; video_path is the exported clip, not a synchronized multi-camera crop.',
     ],
 )

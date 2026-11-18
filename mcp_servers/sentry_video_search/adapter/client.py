@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from mcp_servers.runtime import runtime_task, current_run
 import json
-import subprocess
 from mcp_servers.process import run_logged
-from pathlib import Path
 
 
-from .config import PROJECT_ROOT, VIDEO_RETRIEVER_PYTHON
+from .config import DEFAULT_RETRIEVAL_TIMEOUT_S, PROJECT_ROOT, VIDEO_RETRIEVER_PYTHON
 
 @runtime_task("sentry_video_search", "retrieval")
 def retrieve_video(input_data: dict) -> dict:
@@ -34,7 +32,7 @@ def retrieve_video(input_data: dict) -> dict:
         env=current_run("sentry_video_search").child_env(),
         log_path=current_run("sentry_video_search").logs / "retrieval.log",
         json_stdout=True,
-        timeout=int(input_data.get("timeout", 86400)),
+        timeout=int(input_data.get("timeout", DEFAULT_RETRIEVAL_TIMEOUT_S)),
     )
 
     try:

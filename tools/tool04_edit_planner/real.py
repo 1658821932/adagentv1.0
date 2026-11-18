@@ -1,6 +1,5 @@
 """Quick source-scene review with a direct, validated handoff to tool05."""
 from contextvars import ContextVar
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -8,60 +7,12 @@ from pathlib import Path
 # A vehicle is only worth editing if it is close to the ego path and ahead of it once.
 ELIGIBLE_MAX_DISTANCE_M = 30.0
 ELIGIBLE_BEHIND_TOLERANCE_M = 10.0
-from mcp_servers.scene_editing.adapter.schemas import AttackInput
 from tools.llm_runtime import LLMTool, validation_details
 from .schemas import Input, Decision, Output
 from .observations import settings, sample_indices, Observation, ViewClient, ACTIVE_OBSERVATION
 from . import observations
-from .initial_motion import initial_motion_precheck
 
 _INSPECTION=ContextVar('edit_planner_inspection',default=None)
-_CACHE_VERSION='asset_supplement.v1'
-
-
-def _plan_cache_path(data):
-    request=data.model_dump(mode='json');request.pop('vehicle',None)
-    evidence=dict(request=request,version=_CACHE_VERSION,
-        prompt=hashlib.sha256(Path(__file__).with_name('prompt.md').read_bytes()).hexdigest())
-    for name,path in [('frames',data.scene_ref.frames_path),('manifest',data.scene_ref.manifest_path),
-            ('cameras',data.scene_ref.cameras_path)]:
-        file=Path(path)
-        evidence[name]=hashlib.sha256(file.read_bytes()).hexdigest() if file.is_file() else None
-    key=hashlib.sha256(json.dumps(evidence,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
-    return observations.LOG_ROOT/'plan-cache'/f'{key}.json'
-
-
-def _cached_asset_supplement(data):
-    if data.vehicle is None:
-        return None
-    path=_plan_cache_path(data)
-    if not path.is_file():
-        return None
-    try:
-        cached=json.loads(path.read_text())
-        response=cached['response']
-        if (cached.get('version')!=_CACHE_VERSION or response.get('suitability')!='needs_information'
-                or response.get('attack_input') is not None
-                or (response.get('edit_plan') or {}).get('operation')!='add_vehicle'):
-            return None
-        result=enrich(data,dict(response,suitability='ready'))
-        Output.model_validate(result)
-        return dict(status='success',tool='edit_planner',result=result,
-            meta=dict(mode='real',model='asset_supplement_cache',attempts=0,reused=True,elapsed_seconds=0.0))
-    except (OSError,ValueError,TypeError,KeyError):
-        return None
-
-
-def _save_asset_supplement(data,result):
-    response=result.get('result') or {}
-    if (data.vehicle is not None or response.get('suitability')!='needs_information'
-            or response.get('attack_input') is not None
-            or (response.get('edit_plan') or {}).get('operation')!='add_vehicle'):
-        return
-    path=_plan_cache_path(data);path.parent.mkdir(parents=True,exist_ok=True)
-    temporary=path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(dict(version=_CACHE_VERSION,response=response),ensure_ascii=False,indent=2))
-    temporary.replace(path)
 
 
 def inspect_scene(data):
@@ -81,7 +32,6 @@ def inspect_scene(data):
         if any(b<=a for a,b in zip(times,times[1:])):raise ValueError('Frame timestamps must increase strictly')
     if not Path(ref.cameras_path).expanduser().is_file():missing.append('Missing scene camera calibration metadata')
     assets=list(dict.fromkeys(p for p in [ref.runtime_asset_path,ref.asset_path] if p and Path(p).expanduser().exists()))
-    if not assets:missing.append('No available Gaussian scene asset')
     visual_settings=settings()
     indices=sample_indices(len(frames),visual_settings['time_samples']) if frames else []
     catalog={};eligible=None;positions={}
@@ -147,18 +97,38 @@ def inspect_scene(data):
                 images.append(image);image_evidence.append(dict(frame_index=index,timestamp=frame['timestamp'],camera=camera_name,image_path=str(image)))
     if not images:missing.append('No source keyframes available for quick scene review')
     road=Path(ref.sample_root)/'metadata/map_drivable_official.json'
+    from .mapfacts import collect as collect_map_facts
+    precheck=collect_map_facts(frames,data.scenario.attack.model_dump(mode='json')) if frames else None
     # 地图缺失降级为提示，不再拦截 tool04；由 tool05 执行时检查
-    vehicle=data.vehicle
-    vehicle_available=bool(vehicle and Path(vehicle.asset_path).expanduser().is_file() and all(math.isfinite(v) for v in vehicle.size_m))
-    retrieval=dict(video_path=data.retrieval_result.video_path,source_file=data.retrieval_result.source_file,source_segment=data.retrieval_result.source_segment)
+    candidate=data.candidate
+    retrieval=dict(video_path=data.retrieval_result.video_path,source_file=data.retrieval_result.source_file,
+        source_segment=data.retrieval_result.source_segment,candidate_id=data.retrieval_result.candidate_id)
     evidence=dict(annotation_path=str(frames_path),gaussian_assets=assets,frame_indices=indices,source_images=[str(p) for p in images],
         keyframes=image_evidence,visual_settings=visual_settings,eligible_vehicle_tracks=sorted(eligible),road_geometry_available=road.is_file(),
-        missing_resources=missing,added_vehicle_asset_available=vehicle_available,retrieval=retrieval,
+        missing_resources=missing,retrieval=retrieval,
+        map_facts=(precheck or {}).get('facts'),
+        map_checks=(precheck or {}).get('checks'),
+        map_reasons=(precheck or {}).get('reasons'),
+        map_suggestion=(precheck or {}).get('retrieval_suggestion'),
+        map_evidence_limits=(precheck or {}).get('evidence_limits'),
+        map_available=bool((precheck or {}).get('available')),
+        target_region_frames=[row["frame_index"] for row in
+                              sorted(((precheck or {}).get('facts') or {}).get('frame_target_distance') or [],
+                                     key=lambda row: row.get('distance_to_target_m')
+                                     if row.get('distance_to_target_m') is not None else float('inf'))[:3]
+                              if row.get('distance_to_target_m') is not None],
         review_scope='Whole bound scene; source_segment is only the retrieval match, not a synchronized crop')
     summary=dict(scene_id=ref.scene_id,scene_token=ref.scene_token,matched_camera=ref.matched_camera,frame_count=len(frames),
         actors=list(catalog.values()),snapshots=snapshots,evidence=evidence,
         box_coordinates='Original source annotation coordinates; transforms are supplied where available.',
-        scene_requirement=data.scene_requirement,target_effect=data.target_effect,edit_strategy=data.edit_strategy)
+        target_scene=data.scenario.target_scene,
+        attack=data.scenario.attack.model_dump(mode='json'),
+        candidate_id=candidate.candidate_id,
+        candidate=dict(candidate_id=candidate.candidate_id,
+            base_video_requirement=candidate.base_video_requirement,
+            attack_edit_strategy=candidate.attack_edit_strategy,
+            ego_input_edit_strategy=candidate.ego_input_edit_strategy,
+            ego_correct_trajectory_strategy=candidate.ego_correct_trajectory_strategy))
     return summary,eligible,images
 
 
@@ -169,43 +139,75 @@ def payload(data):
     return observation.initial_content()
 
 
+def bound_result(data,summary,response):
+    """Copy the scenario identity and target scene into the result; never let the model rewrite them."""
+    return dict(response,
+        scene_id=data.scene_ref.scene_id,scene_token=data.scene_ref.scene_token,
+        candidate_id=data.candidate_id,
+        target_scene=data.scenario.target_scene,
+        attack=data.scenario.attack.model_dump(mode="json"),
+        evidence=summary["evidence"])
+
+
+def insufficient(data,summary,reasons):
+    """Missing scene prerequisites: report what is missing instead of planning on an empty scene."""
+    result=bound_result(data,summary,dict(
+        suitability="needs_information",reasons=list(reasons),
+        checks=dict(road="unknown",lanes="unknown",space="unknown"),
+        adapted_plan=None,retrieval_suggestion=None))
+    return dict(status="success",tool="edit_planner",result=Output.model_validate(result).model_dump(mode="json"),
+        meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=0.0))
+
+
+def unsuitable_from_precheck(data,summary,checks):
+    """Trusted data verdict rejects the structure before any observation or model call."""
+    reasons=list(summary["evidence"].get("map_reasons") or [])
+    reasons.append("Measured structure contradicts the target scene, so no visual review or plan is produced.")
+    suggestion=summary["evidence"].get("map_suggestion") or (
+        "Retrieve a scene whose measured road structure supports the target scene.")
+    result=bound_result(data,summary,dict(
+        suitability="unsuitable",reasons=[reason for reason in reasons if reason],checks=checks,
+        adapted_plan=None,retrieval_suggestion=suggestion))
+    result["evidence"]=dict(result["evidence"],verification_source="measured_map_precheck")
+    return dict(status="success",tool="edit_planner",
+        result=Output.model_validate(result).model_dump(mode="json"),
+        meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=0.0))
+
+
 def enrich(data,response):
-    summary,eligible,_=inspect_scene(data)
-    result=dict(response,scene_id=data.scene_ref.scene_id,scene_token=data.scene_ref.scene_token,
-        target_effect=data.target_effect,evidence=summary['evidence'],attack_input=None)
-    if result['suitability']=='ready' and result['edit_plan'] is not None:
-        plan=result['edit_plan']
-        if plan['operation']=='edit_existing' and plan['target_track'] not in eligible:
-            raise ValueError('Existing target must be a valid vehicle observed in every source frame, as required by tool05')
-        if plan['operation']=='edit_existing':
-            frames=json.loads(Path(data.scene_ref.frames_path).read_text())
-            precheck=initial_motion_precheck(frames,plan['target_track'])
-            result['evidence']=dict(result['evidence'],initial_motion_precheck=precheck)
-            if not precheck['passed']:
-                result.update(suitability='unsuitable',edit_plan=None,attack_input=None,
-                    retrieval_suggestion='Use add_vehicle with a verified asset or retrieve a different source scene; the selected existing track fails initial-motion checks.')
-                result['reasons']=[*result['reasons'],*precheck['errors']]
-        if result['suitability']!='ready':
-            pass
-        elif plan['operation']=='add_vehicle' and not summary['evidence']['added_vehicle_asset_available']:
-            result['suitability']='needs_information'
-            result['reasons']=[*result['reasons'],'Provide a real added-vehicle PLY and length/width/height before tool05.']
+    summary,_,_=inspect_scene(data)
+    result=bound_result(data,summary,response)
+    precheck=summary["evidence"].get("map_checks") or {}
+    conflicts={name:{"data":value,"review":result["checks"].get(name)}
+               for name,value in precheck.items()
+               if value in ("pass","fail") and result["checks"].get(name)!=value}
+    visual=summary["evidence"].get("visual_observation") or {}
+    result["evidence"]=dict(result["evidence"],
+        verification_source="visual_review" if result["checks"] else "measured_map_precheck",
+        visual_review=dict(cameras=sorted({sheet.get("camera") for sheet in visual.get("sheets", [])}),
+                           sheet_count=len(visual.get("sheets", [])),
+                           model_calls=visual.get("model_calls"),
+                           checks=result["checks"], reasons=result["reasons"]))
+    if conflicts:
+        # A reliable measured verdict must not be silently overridden by the image review.
+        result["evidence"]=dict(result["evidence"],precheck_conflicts=conflicts)
+        detail="; ".join(f"{name}: data={value['data']}, review={value['review']}"
+                         for name,value in conflicts.items())
+        result["reasons"]=[*result["reasons"],
+                           "Visual review disagrees with the measured pre-check (" + detail + "); "
+                           "the scene needs re-checking before it can be planned."]
+        result["adapted_plan"]=None
+        if "fail" in result["checks"].values():
+            result["suitability"]="unsuitable"
+            result["retrieval_suggestion"]=result.get("retrieval_suggestion") or (
+                "Retrieve a scene that matches the measured structure.")
         else:
-            arguments=dict(scene_ref=data.retrieval_result_ref or data.scene_ref.model_dump(mode='json'),operation=plan['operation'],instruction=plan['instruction'])
-            if plan['operation']=='edit_existing':arguments['target_track']=plan['target_track']
-            else:arguments.update(maneuver=plan['maneuver'],vehicle=data.vehicle.model_dump(mode='json'))
-            AttackInput.model_validate(arguments)
-            result['attack_input']=arguments
+            result["suitability"]="needs_information"
     return result
 
 
-def validate(data,result):
-    summary,eligible,_=inspect_scene(data)
-    if result.edit_plan is not None and result.edit_plan.operation=='edit_existing' and result.edit_plan.target_track not in eligible:
-        raise ValueError('Existing target must be a valid vehicle observed in every source frame, as required by tool05')
-
 TOOL=LLMTool(name='edit_planner',directory=Path(__file__).parent,input_model=Input,response_model=Decision,
-    output_model=Output,payload_builder=payload,enrich_result=enrich,validate_result=validate,
+    output_model=Output,payload_builder=payload,enrich_result=enrich,
     client_adapter=lambda client,data:ViewClient(client,ACTIVE_OBSERVATION.get()))
 
 
@@ -214,19 +216,19 @@ def run(input_data):
     except (AttributeError,ValueError,TypeError,KeyError) as error:
         return dict(status='error',tool='edit_planner',error=dict(type='input_validation_error',message='Tool input does not match its schema',validation_errors=validation_details(error)))
     try:
-        cached=_cached_asset_supplement(data)
-        if cached is not None:
-            return cached
         inspection=inspect_scene(data)
     except (OSError,ValueError,TypeError,KeyError) as error:
         return dict(status='error',tool='edit_planner',error=dict(type='scene_inspection_error',message='Cannot inspect the retrieved scene',validation_errors=validation_details(error)))
+    summary=inspection[0]
+    if summary['evidence']['missing_resources']:
+        return insufficient(data,summary,summary['evidence']['missing_resources'])
+    precheck_checks=summary['evidence'].get('map_checks') or {}
+    if 'fail' in precheck_checks.values():
+        return unsuitable_from_precheck(data,summary,precheck_checks)
     token=_INSPECTION.set((data.model_dump(mode='json'),inspection))
     observation_token=ACTIVE_OBSERVATION.set(None)
     try:
-        result=TOOL.execute(input_data)
-        if result.get('status')=='success':
-            _save_asset_supplement(data,result)
-        return result
+        return TOOL.execute(input_data)
     finally:
         ACTIVE_OBSERVATION.reset(observation_token)
         _INSPECTION.reset(token)

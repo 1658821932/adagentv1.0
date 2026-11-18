@@ -1,5 +1,6 @@
 """Scene provenance must survive import, reranking and clip export."""
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -30,7 +31,7 @@ def scene(tmp_path):
         frames.append({"token": str(i), "timestamp": 1_000_000 + i * 500_000, "cams": cameras})
     (sample / "metadata/frames.json").write_text(json.dumps(frames))
     (sample / "metadata/cameras.json").write_text(json.dumps({name: {"channel": name} for name in CAMERAS}))
-    videos = tmp_path / "videos"
+    videos = sample / "preview"
     videos.mkdir()
     for name in CAMERAS:
         video = videos / (name + ".mp4")
@@ -64,6 +65,21 @@ def test_missing_image_is_reported_without_inventing_availability(scene, tmp_pat
     assert result["cameras"]["CAM_L0"]["available_images"] == 2
 
 
+def test_external_library_video_is_only_a_fallback_for_the_matched_camera(scene, tmp_path):
+    sample, videos = scene
+    external = tmp_path / 'external'
+    external.mkdir()
+    for camera in CAMERAS:
+        path = external / f'{camera}.mp4'
+        path.write_bytes(b'video')
+        register_scene_video(path, sample, camera)
+        (videos / f'{camera}.mp4').unlink()
+    result = bind_scene(external / 'CAM_F0.mp4', tmp_path / 'output')
+    assert result['cameras']['CAM_F0']['video_path'] == str(external / 'CAM_F0.mp4')
+    assert all(result['cameras'][name]['video_path'] is None for name in CAMERAS if name != 'CAM_F0')
+    assert result['images_complete'] is True
+
+
 def test_unbound_video_and_missing_source_are_errors(tmp_path):
     with pytest.raises(ValueError, match="No scene binding"):
         bind_scene(tmp_path / "unknown.mp4", tmp_path)
@@ -87,7 +103,7 @@ def test_import_keeps_binding_with_relative_sample_root(scene, tmp_path):
     sample, videos = scene
     sidecar = videos / "CAM_R0.scene.json"
     record = json.loads(sidecar.read_text())
-    record["sample_root"] = "../dataset/samples/anchor"
+    record["sample_root"] = os.path.relpath(sample, sidecar.parent)
     sidecar.write_text(json.dumps(record))
     imported, _ = import_source_video(videos / "CAM_R0.mp4", library_dir=tmp_path / "library")
     result = bind_scene(imported, tmp_path / "output")

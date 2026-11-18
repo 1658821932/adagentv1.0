@@ -56,19 +56,22 @@ def validate_llm_profile(profile):
     validate_request_policy(profile)
 
 
-def get_profile(name="kimi", *, require_key=False, environ=None):
-    # "kimi" remains the common reasoning alias for existing clients. The
-    # retrieval profile is independent and never participates in this switch.
+def get_profile(name=None, *, require_key=False, environ=None):
+    """Return a saved profile. None (or "active_profile") follows the main agent.
+
+    There is deliberately no name alias: a tool pinned to a profile must be able to
+    ask for that exact profile, which a magic name would silently break.
+    """
     profiles = json.loads(API_CONFIG_PATH.read_text())
-    reasoning = name == "kimi"
-    if reasoning:
-        name = profiles.get("active_profile", "kimi")
-    if not isinstance(name, str) or name == "active_profile":
+    request_active = name in (None, "", "active_profile")
+    if request_active:
+        name = profiles.get("active_profile")
+    if not isinstance(name, str) or name in ("", "active_profile"):
         raise ValueError("active_profile must name a saved LLM profile")
     if name not in profiles:
         raise ValueError(f"Unknown API profile: {name}")
     result = deepcopy(profiles[name])
-    if reasoning:
+    if "model" in result:
         validate_llm_profile(result)
     if environ is None:
         load_credentials()
@@ -82,7 +85,7 @@ def get_profile(name="kimi", *, require_key=False, environ=None):
 
 
 def wfa_settings():
-    profile = get_profile("kimi", require_key=True)
+    profile = get_profile(None, require_key=True)
     return {"endpoint": profile["base_url"].rstrip("/") + "/chat/completions",
             "model": profile["model"], "api_key": profile["api_key"],
             "timeout": profile["timeout"], "max_tokens": profile["max_tokens"]}

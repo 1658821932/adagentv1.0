@@ -1,31 +1,20 @@
-"""Tool purpose, invocation context and workflow handoff; fields come from Schema."""
+"""Tool 01 purpose and invocation guidance; field contracts come from Schema."""
 from tools.llm_runtime import make_description
 from .schemas import Input, Output
 
 DESCRIPTION = make_description(
-    name='failure_analyzer',
-    description='Analyze one WorldEngine scene from official metrics, images and numeric evidence.',
-    when_to_use='Diagnose one closed-loop scene from its archived official metrics and recorded images.',
+    name="failure_analyzer",
+    description="分析一个闭环仿真失败场景，用数据和地图判定结构，再用八相机图核对并补充环境。",
+    when_to_use="分析已有WorldEngine仿真中的单个失败场景。",
     input_model=Input,
     output_model=Output,
     handoff={
-        'input': 'State BOTH the simulation record and the scene token: token alone does not say which closed-loop run produced the official metrics.',
-        'output': 'Pass result.failure_analysis to scene_instance_generator.failure_analysis; result.simulation records which run produced it.',
+        "input": "同时提供simulation和token：前者选择仿真批次，后者选择其中场景。",
+        "output": "返回failure、attack、environment、verification；simulation标明来源，evidence_dir保存本次证据。",
     },
     rules=[
-        'This tool analyzes one scene; it does not summarize a free-form list of failure cases.',
-        'A scene can be simulated more than once. simulation selects the closed-loop run '
-        '("<experiment>/<batch>", a unique batch name, or an archive directory); token selects '
-        'the scene inside it. Metrics and diagnosis differ between runs. Map user wording: '
-        '仿真号/simulation ID -> simulation, 场景号/scene ID -> token.',
-        'The token is a WorldEngine closed-loop scene identity obtained from policy_runner -> '
-        'failure_case_filter or supplied by the user. Short and full identifiers both work. '
-        'Do not pass a retrieval scene_ref token.',
-        'The token must belong to the chosen simulation archive; otherwise the call fails with '
-        'the archive scene count.',
-        'One scene takes tens of seconds to a few minutes and every call runs fresh, with no '
-        'cached reuse. Do not duplicate the call while it is running.',
-        'If the analysis reports missing archived data or an unusable archive, fix the input or '
-        'choose another evidenced token; never substitute a guessed failure type.',
+        "token使用用户提供或policy_runner→failure_case_filter获得的仿真场景ID，支持短ID或完整ID；不使用视频检索scene_ref。",
+        "同一场景可能有多次仿真，必须指定simulation；使用'<experiment>/<batch>'、唯一批次名或归档绝对路径。",
+        "调用期间不要重复启动；数据缺失或核对失败时检查输入或选择其他有证据的场景，不猜测结果。",
     ],
 )

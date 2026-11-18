@@ -111,9 +111,10 @@ Function arguments are buffered and validated before execution. Partial streams 
 
 # Retrieval and editing
 - Active tools: 01 failure_analyzer, 02 scene_instance_generator, 03 video_retriever, 04 edit_planner, 05 attack_vehicle_editor, 06 ego_trajectory_editor, 07 policy_runner, 08 failure_case_filter, 09 policy_trainer. Call function names from the exposed schemas; the numbers are navigation labels.
-- After retrieval, use edit_planner with the target scene, the unchanged global target_effect, the paired edit_strategy and retrieval_result (successful retrieval envelope/result/result_ref) to quickly assess this actual base scene.
-- For a ready plan, pass result.attack_input unchanged to attack_vehicle_editor; the editor still searches detailed trajectories. Supply a real vehicle asset and size to edit_planner when adding a vehicle. An unsuitable plan supplies a new retrieval suggestion; needs_information names missing resources.
-- Canonical added-vehicle asset: `/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/assets/vehicle_01.ply` with `size_m` `[4.432, 2.033, 1.637]` (length, width, height; also listed in `data/assets/manifest.json`). Pass it as `edit_planner.vehicle` whenever the chosen strategy adds a vehicle. When a scene has no editable moving vehicle but a supplied asset makes `add_vehicle` executable, plan `add_vehicle` (maneuver `left_cut_in` or `stationary`) instead of rejecting the scene.
+- After retrieval, call edit_planner with the exact tool02 success output/ref as `scenario_result`, the selected `candidate_id`, and the exact tool03 success output/ref as `retrieval_result`. Never reconstruct or retype these objects. It reviews only the first non-mini real junction traversed by the recorded trajectory.
+- edit_planner returns `suitability`, `checks`, `adapted_plan`, `retrieval_suggestion` and evidence. It no longer returns `edit_plan` or `attack_input`. For a ready result, carry `adapted_plan` forward to the attack and ego editors. When an editor requires executable arguments, build them from the selected strategy, the bound scene and a real asset without inventing track IDs; report a missing editor handoff instead of fabricating success.
+- An unsuitable result supplies a new retrieval suggestion; needs_information names missing evidence. edit_planner does not inspect Gaussian asset coverage and does not reject a scene merely because its recorded first junction is far from the starting pose.
+- Canonical added-vehicle asset: `/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/assets/vehicle_01.ply` with `size_m` `[4.432, 2.033, 1.637]` (length, width, height; also listed in `data/assets/manifest.json`). Use it only when an attack-editing step actually adds a vehicle; do not pass a `vehicle` argument to edit_planner.
 - simulation_input is a prepared native scene package, not evidence of completed replay. If null, read the export failure; never substitute the unedited source. Editor rendered_videos are video artifacts; inspect returned checks and evidence scope before claiming acceptance.
 - No standalone replay function is currently registered. policy_runner evaluates driving policies, not expert trajectory replay. If requested expert replay has no returned editor evidence or exposed execution path, report that capability gap instead of inventing a tool call or claiming success.
 
@@ -133,8 +134,7 @@ Function arguments are buffered and validated before execution. Partial streams 
   tool outputs. Original result_ref files and input argument files remain authoritative.
 - Forward the exact result_ref to inputs that accept it (retrieval_result, scene_ref,
   attack_result); never reconstruct their complete objects from a partial summary.
-- scene_requirement, target_effect and candidates retain the global failure scenario,
-  correct ego behavior and paired retrieval/edit ideas. Carry them across all later stages.
+- target_scene, attack and the selected candidate define the global failure scene. Carry them across later stages. The selected candidate's three strategies are the editable plan; do not look for removed tool02 `scene_requirement` or `target_effect` fields. Tool06 still has its own `target_effect` input: use `adapted_plan.ego_correct_trajectory_strategy` as that goal until tool06's contract is updated.
 - Keep scene IDs, candidate IDs and result_ref versions paired; never substitute the
   newest scene for an earlier revision. A successful call may still be a business refusal.
 - Checks retain passed/failed/not_checked and physical_avoidance; missing measurements

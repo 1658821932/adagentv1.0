@@ -19,14 +19,29 @@ def save(state,root,tool,payload,arguments=None,status="success"):
 
 BULK=["raw numerical evidence "+str(i) for i in range(2000)]
 PAYLOADS={
- "failure_analyzer":{"failure_analysis":{"failure_type":["curve"],"failure_reason":"late braking",
-     "supporting_case_ids":["case-A"],"forensics":{"observations":BULK,"candidate_assessment":BULK,"result_path":"/analysis.json"}}},
- "scene_instance_generator":{"scene_requirement":"Curve; ego leaves road.","target_effect":"Slow before curve.",
-     "candidates":[{"base_video_requirement":"left curve","edit_strategy":None}]*3},
+ "failure_analyzer":{"token":"4abb45d9ee1a5c5c","simulation":"experiment/batch","map_location":"map",
+     "evidence_dir":"/logs/tool01/run-1",
+     "failure":{"outcome":"collision","interaction":"crossing","ego_cause":"late braking into the curve"},
+     "attack":{"map_context":"t_junction","ego_action":"turn_right","other_origin":"right_arm","other_action":"turn_left"},
+     "environment":{"time":"2021-09-16T20:16:41+00:00","weather":"cloudy","extra":BULK[0]},
+     "verification":{"matched":True,"notes":[]}},
+ "scene_instance_generator":{"target_scene":"Curve; ego leaves road.","attack":{"map_context":"curve",
+     "ego_action":"straight","other_origin":"none","other_action":"none"},
+     "candidates":[{"candidate_id":"cand_1","base_video_requirement":"left curve","attack_edit_strategy":None,
+                    "ego_input_edit_strategy":None,"ego_correct_trajectory_strategy":"slow before curve"},
+                   {"candidate_id":"cand_2","base_video_requirement":"left curve","attack_edit_strategy":None,
+                    "ego_input_edit_strategy":"later arrival","ego_correct_trajectory_strategy":"slow before curve"},
+                   {"candidate_id":"cand_3","base_video_requirement":"wide left curve","attack_edit_strategy":None,
+                    "ego_input_edit_strategy":None,"ego_correct_trajectory_strategy":"slow before curve"}]},
  "video_retriever":{"scene_ref":{"scene_id":"source","scene_token":"A","cameras":{"CAM_F0":{"images":BULK}}},
      "match_score":.8,"video_path":"/front.mp4"},
- "edit_planner":{"suitability":"ready","scene_id":"source","scene_token":"A","target_effect":"slow",
-     "edit_plan":None,"attack_input":None,"reasons":["base suitable"],"evidence":{"keyframes":BULK}},
+ "edit_planner":{"suitability":"ready","reasons":["base suitable"],"scene_id":"source","scene_token":"A",
+     "candidate_id":"cand_1","target_scene":"Curve; ego leaves road.",
+     "attack":{"map_context":"curve","ego_action":"straight","other_origin":"none","other_action":"none"},
+     "checks":{"road":"pass","lanes":"pass","space":"pass"},
+     "adapted_plan":{"attack_edit_strategy":None,"ego_input_edit_strategy":None,
+                     "ego_correct_trajectory_strategy":"slow before curve"},
+     "retrieval_suggestion":None,"evidence":{"keyframes":BULK}},
  "attack_vehicle_editor":{"status":"completed","scene_id":"source","scene_token":"A","target_track":"car",
      "selected_candidate_id":"attack-1","source_scene_ref":{"frames":BULK},
      "checks":{"reference_screen":"passed","checks":{"road":"passed","render":"not_checked"},
@@ -60,11 +75,12 @@ def test_every_tool_has_an_explicit_view_without_mutating_artifacts(tmp_path,too
     assert "arguments_ref" not in context["history"][-2]  # Small scalar inputs need no extra pointer.
     view=result["result"]["result"]
     if tool=="failure_analyzer":
-        assert view["failure_analysis"]["supporting_case_ids"]==["case-A"]
+        assert view["failure"]["ego_cause"]=="late braking into the curve"
     if tool=="scene_instance_generator":
         assert view==payload
     if tool=="edit_planner":
-        assert view["attack_input"] is None and view["edit_plan"] is None
+        assert view["checks"]=={"road":"pass","lanes":"pass","space":"pass"}
+        assert view["adapted_plan"]["ego_correct_trajectory_strategy"]=="slow before curve"
     if tool=="attack_vehicle_editor":
         assert view["checks"]["checks"]["render"]=="not_checked"
         assert view["checks"]["physical_avoidance"]=="undetermined"
@@ -110,7 +126,7 @@ def test_mixed_pipeline_context_is_smaller_and_keeps_goal_and_checkpoint(tmp_pat
     full=json.dumps(state.to_dict(),ensure_ascii=False)
     compact=json.dumps(state.to_orchestrator_dict(),ensure_ascii=False)
     assert len(compact)<len(full)*.2
-    assert "Slow before curve." in compact and "/updated.pth" in compact
+    assert "left curve" in compact and "slow before curve" in compact and "/updated.pth" in compact
     assert "raw numerical evidence 1999" not in compact
 
 def test_reference_handoffs_are_accepted_by_existing_tool_schemas(tmp_path):
@@ -120,22 +136,33 @@ def test_reference_handoffs_are_accepted_by_existing_tool_schemas(tmp_path):
     from mcp_servers.scene_editing.adapter.mock import attack
     state=AgentState("test")
     save(state,tmp_path,"failure_analyzer",PAYLOADS["failure_analyzer"])
-    analysis=state.to_orchestrator_dict()["history"][-1]["result"]["result"]["failure_analysis"]
+    analysis=state.to_orchestrator_dict()["history"][-1]["result"]["result"]
     RequirementInput.model_validate({"failure_analysis":analysis})
     scene=dict(scene_id="source",scene_token="A",dataset="test",sample_root=str(tmp_path),
         matched_camera="CAM_F0",frame_count=12,fps=2.,manifest_path="/manifest.json",
         frames_path="/frames.json",cameras_path="/cameras.json",cameras={},images_complete=False)
-    retrieval={"scene_ref":scene,"video_path":"/front.mp4","mode":"real","match_score":.8}
+    retrieval={"scene_ref":scene,"video_path":"/front.mp4","mode":"real","match_score":.8,
+        "candidate_id":"cand_1"}
     retrieval_ref=save(state,tmp_path,"video_retriever",retrieval)
-    plan_args=dict(scene_ref=scene,operation="edit_existing",target_track="car",instruction="slow lead car")
-    save(state,tmp_path,"edit_planner",dict(suitability="ready",attack_input=plan_args,
-        edit_plan={"operation":"edit_existing","target_track":"car","instruction":"slow lead car"},target_effect="brake"))
+    from tools.tool02_scene_instance_generator.schemas import Output as ScenarioOutput
+    scenario=ScenarioOutput.model_validate(dict(
+        target_scene="Curve; ego leaves road.",
+        attack={"map_context":"curve","ego_action":"straight","other_origin":"none","other_action":"none"},
+        candidates=[dict(candidate_id=f"cand_{i}",base_video_requirement="left curve",
+                         attack_edit_strategy=None,ego_input_edit_strategy=None,
+                         ego_correct_trajectory_strategy="slow before curve") for i in (1,2,3)])).model_dump(mode="json")
+    save(state,tmp_path,"edit_planner",dict(suitability="ready",reasons=["base suitable"],
+        scene_id="A",scene_token="A",candidate_id="cand_1",target_scene=scenario["target_scene"],
+        attack=scenario["attack"],checks={"road":"pass","lanes":"pass","space":"pass"},
+        adapted_plan={"attack_edit_strategy":None,"ego_input_edit_strategy":None,
+                      "ego_correct_trajectory_strategy":"slow before curve"},
+        retrieval_suggestion=None,evidence={"keyframes":[]}))
     compact=state.to_orchestrator_dict()
-    args=compact["history"][-1]["result"]["result"]["attack_input"]
-    assert args["scene_ref"]==retrieval_ref
-    assert AttackInput.model_validate(args).scene_ref.scene_token=="A"
-    assert PlannerInput.model_validate(dict(retrieval_result=retrieval_ref,scene_requirement="lead slows",
-        target_effect="brake",edit_strategy="slow lead car")).scene_ref.scene_token=="A"
+    view=compact["history"][-1]["result"]["result"]
+    assert view["adapted_plan"]["ego_correct_trajectory_strategy"]=="slow before curve"
+    PlannerInput.model_validate(dict(scenario_result=scenario,candidate_id="cand_1",
+        retrieval_result=retrieval_ref)).scene_ref.scene_token=="A"
+    plan_args=dict(scene_ref=scene,operation="edit_existing",target_track="car",instruction="slow lead car")
     attack_result=attack(plan_args)
     attack_ref=save(state,tmp_path,"attack_vehicle_editor",attack_result)
     state.add_decision(6,dict(tool_name="ego_trajectory_editor",arguments={"attack_result":attack_result,"target_effect":"brake"}))

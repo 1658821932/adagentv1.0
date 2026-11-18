@@ -3,7 +3,7 @@
     "max_steps": 20
   },
   "orchestrator": {
-    "decision_correction_attempts": 1
+    "decision_correction_attempts": 5
   },
   "tools": {
     "modes": {

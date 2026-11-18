@@ -31,6 +31,7 @@ function eightcamSource(simulation, token, closedLoopRoot) {
 }
 
 function videoMedia(tool, result, options) {
+  if (tool === 'video_retriever') return retrievalMedia(result, options);
   const items = [];
   if (tool === 'failure_analyzer') {
     const src = eightcamSource(result.simulation, result.token, options.closedLoopRoot);
@@ -48,29 +49,32 @@ function videoMedia(tool, result, options) {
       video(items, path, '专家轨迹渲染回放', transcodedUrl(path, options), '实际渲染输出', true);
     }
   }
-  if (tool === 'video_retriever') {
-    if (result.video_path) {
-      let playable = result.video_path;
-      let compressed = false;
-      const tag = /(rank\d+_score[\d.]+)_lossless\.mp4$/i.exec(result.video_path);
-      if (tag) {
-        try {
-          const hit = readdirSync(dirname(result.video_path)).find(name =>
-            name.includes(tag[1]) && name.endsWith('_compressed.mp4'));
-          if (hit) {
-            playable = join(dirname(result.video_path), hit);
-            compressed = true;
-          }
-        } catch { /* 转码代理仍可处理原文件 */ }
-      }
-      video(items, playable, '前视检索视频',
-        compressed ? fileUrl(playable) : transcodedUrl(playable, options), '原始检索结果，非编辑后画面', true);
+  return items;
+}
+
+export function retrievalMedia(result, options) {
+  const items = [];
+  if (result.video_path) {
+    let playable = result.video_path;
+    let compressed = false;
+    const tag = /(rank\d+_score[\d.]+)_lossless\.mp4$/i.exec(result.video_path);
+    if (tag) {
+      try {
+        const hit = readdirSync(dirname(result.video_path)).find(name =>
+          name.includes(tag[1]) && name.endsWith('_compressed.mp4'));
+        if (hit) {
+          playable = join(dirname(result.video_path), hit);
+          compressed = true;
+        }
+      } catch { /* 转码代理仍可处理原文件 */ }
     }
-    const root = result.scene_ref?.sample_root;
-    if (root) {
-      const grid = join(root, 'preview', 'original_eightcam_2hz.mp4');
-      video(items, grid, '原始场景八宫格', transcodedUrl(grid, options), '八相机原始记录，非编辑后画面');
-    }
+    video(items, playable, `${result.mode === 'mock' ? '模拟检索预览' : '检索视频'}${result.scene_ref?.matched_camera ? ' · ' + result.scene_ref.matched_camera : ''}`,
+      compressed ? fileUrl(playable) : transcodedUrl(playable, options), '原始检索结果，非编辑后画面', true);
+  }
+  const root = result.scene_ref?.sample_root;
+  if (root) {
+    const grid = join(root, 'preview', 'original_eightcam_2hz.mp4');
+    video(items, grid, '原始场景八宫格', transcodedUrl(grid, options), '八相机原始记录，非编辑后画面');
   }
   return items;
 }

@@ -15,6 +15,8 @@ import { stat, readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, extname, sep, join, basename, dirname } from 'node:path';
 import { resolveRunStatus } from './run-status.mjs';
+import { failureAnalyzerEvidence } from './tool01-evidence.mjs';
+import { retrievalMedia } from './run-media.mjs';
 
 const ROOT = resolve(process.env.ADAGENT_PROJECT_ROOT || '/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent');
 const LOGS = join(ROOT, 'logs');
@@ -139,26 +141,7 @@ function evidenceVideos(tool, output) {
       list.push({ title: '专家轨迹回放', src: '/api/wevideo?path=' + encodeURIComponent(v) });
     }
   }
-  if (tool === 'video_retriever') {
-    if (r.video_path && existsSync(r.video_path)) {
-      // 无损导出可能是 4:4:4（浏览器解不了），优先用同 rank+score 的 compressed 版本
-      let playable = r.video_path;
-      const tag = /(rank\d+_score[\d.]+)_lossless\.mp4$/i.exec(r.video_path);
-      if (tag) {
-        try {
-          const dir = dirname(r.video_path);
-          const hit = readdirSync(dir).find((f) => f.includes(tag[1]) && f.endsWith('_compressed.mp4'));
-          if (hit) playable = join(dir, hit);
-        } catch { /* 目录不可读就用原文件 */ }
-      }
-      list.push({ title: '前视检索视频', src: '/api/file?path=' + encodeURIComponent(playable) });
-    }
-    const root = r.scene_ref?.sample_root;
-    if (root) {
-      const grid = join(root, 'preview', 'original_eightcam_2hz.mp4');
-      if (existsSync(grid)) list.push({ title: '溯源八宫格', src: '/api/file?path=' + encodeURIComponent(grid) });
-    }
-  }
+  if (tool === 'video_retriever') return retrievalMedia(r, { projectRoot: ROOT });
   return list;
 }
 
@@ -285,6 +268,8 @@ async function getRunDetail(runId) {
       }
 
       const decision = decisions.get(stepNum) || null;
+      const evidenceDetail = tool === 'failure_analyzer'
+        ? failureAnalyzerEvidence(output, { projectRoot: ROOT }) : null;
 
       steps.push({
         step: stepNum,
@@ -293,7 +278,8 @@ async function getRunDetail(runId) {
         decision,
         duration,
         elapsed_seconds: runState.active ? elapsedSeconds : null,
-        evidence: evidenceVideos(tool, output),
+        evidence: [...(evidenceDetail ? evidenceDetail.items : []), ...evidenceVideos(tool, output)],
+        evidence_summary: evidenceDetail ? evidenceDetail.summary : null,
         // 主 Agent 思考开销（来自 agent.jsonl 的 llm_request）
         llm: llmOf(decision),
         input,
@@ -550,7 +536,7 @@ function sendJson(res, code, obj) {
 // 前端构建号：由静态资源的最新 mtime 决定，改动后自动变化
 function frontendBuildId() {
   let newest = 0;
-  for (const f of ['app.js', 'styles.css', 'workbench.js', 'agent-ui.js', 'index.html', 'api-client.js', 'config-panel-controller.mjs', 'panel-loading.mjs']) {
+  for (const f of ['app.js', 'styles.css', 'workbench.js', 'agent-ui.js', 'index.html', 'api-client.js', 'config-panel-controller.mjs', 'panel-loading.mjs', 'scenario-results.mjs']) {
     try {
       const st = statSync(join(FRONTEND_DIR, f));
       newest = Math.max(newest, st.mtimeMs);

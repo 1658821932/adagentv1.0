@@ -17,3 +17,4 @@ class WfaSceneResult:
     raw: dict
     # Which closed-loop simulation record produced the official metrics.
     simulation: dict | None = None
+    failure_facts: dict | None = None

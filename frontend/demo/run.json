@@ -107,7 +107,7 @@
     "step": 1,
     "action": "call_tool",
     "tool_name": "scene_instance_generator",
-    "reason": "把失败机制转成可执行场景需求：同车道前方有近乎静止的车辆，自车保持巡航速度接近。"
+    "reason": "围绕相同目标场景，提供三套配套的检索条件和编辑方案。"
    },
    "duration": 7.8,
    "elapsed_seconds": null,
@@ -119,34 +119,60 @@
    },
    "input": {
     "failure_analysis": {
-     "failure_type": [
-      "跟车未减速/追尾"
-     ],
-     "failure_reason": "自车接近近乎静止车辆时持续加速，未减速避让。"
+     "failure": {
+      "outcome": "collision",
+      "interaction": "rear_end",
+      "ego_cause": "未及时对停止的前车减速。"
+     },
+     "attack": {
+      "map_context": "straight_road",
+      "ego_action": "straight",
+      "other_origin": "ahead_same_lane",
+      "other_action": "stop"
+     },
+     "environment": {
+      "time": "2021-09-16T15:47:30+00:00",
+      "weather": "unknown",
+      "extra": ""
+     },
+     "verification": {
+      "matched": true,
+      "notes": []
+     }
     }
    },
    "output": {
     "status": "success",
     "tool": "scene_instance_generator",
     "result": {
-     "scene_requirement": "自车在直行城市道路上跟车，前方车辆近乎静止，自车未及时减速并追尾。",
-     "target_effect": "自车提前识别前方的静止车辆，在进入制动距离前果断减速，保持安全跟车距离。",
-     "edit_strategy": "在同车道前方 22-28 米放置一辆静止车辆，让自车在 7 秒内必须做出制动决策。",
+     "target_scene": "白天的城市直路，自车直行，同车道前方一辆车停止。",
+     "attack": {
+      "map_context": "straight_road",
+      "ego_action": "straight",
+      "other_origin": "ahead_same_lane",
+      "other_action": "stop"
+     },
      "candidates": [
       {
-       "id": "cand_01",
-       "focus": "same_lane_stationary",
-       "note": "同车道静止车，最贴近原失败机制"
+       "candidate_id": "cand_1",
+       "base_video_requirement": "白天的城市直路，自车前方有一辆可编辑车辆。",
+       "attack_edit_strategy": "调整前车运动，使其停止在自车接近的车道上。",
+       "ego_input_edit_strategy": null,
+       "ego_correct_trajectory_strategy": "自车合理接近，在制动范围内减速并保持安全间距。"
       },
       {
-       "id": "cand_02",
-       "focus": "lead_vehicle_brake",
-       "note": "真实前车急刹，需要场景里存在前车"
+       "candidate_id": "cand_2",
+       "base_video_requirement": "白天的城市直路，自车前方有可放置车辆的道路空间。",
+       "attack_edit_strategy": "在前方车道增加一辆停止车辆。",
+       "ego_input_edit_strategy": null,
+       "ego_correct_trajectory_strategy": "自车识别停止车辆并及时减速避让。"
       },
       {
-       "id": "cand_03",
-       "focus": "adjacent_cut_in",
-       "note": "相邻车道切入，需要多车道场景"
+       "candidate_id": "cand_3",
+       "base_video_requirement": "白天的城市直路，同车道前方有一辆低速车辆。",
+       "attack_edit_strategy": "调整低速前车的停止时机。",
+       "ego_input_edit_strategy": "调整自车接近速度以构建危险场景。",
+       "ego_correct_trajectory_strategy": "自车观察前车状态，在安全距离内制动。"
       }
      ]
     }
@@ -164,13 +190,13 @@
     "step": 2,
     "action": "call_tool",
     "tool_name": "video_retriever",
-    "reason": "在本地视频库里检索与'同车道前方有低速或静止车辆'最接近的真实场景，作为攻击编辑的底图。"
+    "reason": "示例：展示候选 cand_1 的检索结果与预览，未运行真实检索。"
    },
    "duration": 18.2,
    "elapsed_seconds": null,
    "evidence": [
     {
-     "title": "前视检索视频",
+     "title": "模拟检索预览",
      "src": "/api/video?path=%2Finspire%2Fhdd3%2Fproject%2Fintelligent-driving-agent%2Fpublic%2Fworkspace%2Fghc%2Fadagent%2Fdata%2Fnavtrain_ep_per1%2Fsamples%2F54c166c4ad5c5ad9%2Fpreview%2Foriginal_front_2hz.mp4"
     }
    ],
@@ -180,27 +206,20 @@
     "completion_tokens": 280
    },
    "input": {
-    "requirement": "城市道路直行，同车道前方有低速或静止车辆，自车保持接近速度",
+    "requirement": "白天的城市直路，自车前方有一辆可编辑车辆。",
+    "candidate_id": "cand_1",
     "library": "default"
    },
    "output": {
     "status": "success",
     "tool": "video_retriever",
     "result": {
-     "video_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/sentry_video_search/runtime/run_20261112_081520_9c3f7a21d5be/output/clip_rank01_score0.809787_lossless.mp4",
-     "source_file": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/mcp_servers/sentry_video_search/data/navtrain_ep_per1_multicam/2a217a228376536e/CAM_F0.mp4",
-     "source_segment": {
-      "start_time": 0.0,
-      "end_time": 11.5
-     },
-     "match_score": 0.809787,
-     "scene_id": "2021.10.05.04.03.05_veh-50_01003_01426-54c166c4ad5c5ad9",
-     "scene_token": "54c166c4ad5c5ad9",
-     "library": "default",
-     "mode": "local_hit_reranked",
-     "local_search_seconds": 6.2,
-     "rerank_seconds": 5.4,
-     "export_seconds": 6.5
+     "video_path": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/navtrain_ep_per1/samples/54c166c4ad5c5ad9/preview/original_front_2hz.mp4",
+     "source_file": "/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/navtrain_ep_per1/samples/54c166c4ad5c5ad9/preview/original_front_2hz.mp4",
+     "scene_ref": null,
+     "candidate_id": "cand_1",
+     "mode": "mock",
+     "match_score": 0.809787
     }
    },
    "artifacts": [],
