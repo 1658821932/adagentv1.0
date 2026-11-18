@@ -127,6 +127,7 @@ def inspect_scene(data):
         candidate_id=candidate.candidate_id,
         candidate=dict(candidate_id=candidate.candidate_id,
             base_video_requirement=candidate.base_video_requirement,
+            retrieval_query=candidate.retrieval_query,
             attack_edit_strategy=candidate.attack_edit_strategy,
             ego_input_edit_strategy=candidate.ego_input_edit_strategy,
             ego_correct_trajectory_strategy=candidate.ego_correct_trajectory_strategy))
@@ -212,11 +213,7 @@ TOOL=LLMTool(name='edit_planner',directory=Path(__file__).parent,input_model=Inp
     client_adapter=lambda client,data:ViewClient(client,ACTIVE_OBSERVATION.get()))
 
 
-def run(input_data):
-    started=perf_counter()
-    try:data=Input.model_validate({k:v for k,v in input_data.items() if k!='_llm_client'})
-    except (AttributeError,ValueError,TypeError,KeyError) as error:
-        return dict(status='error',tool='edit_planner',error=dict(type='input_validation_error',message='Tool input does not match its schema',validation_errors=validation_details(error)))
+def _run_scene(data,client,started):
     try:
         inspection=inspect_scene(data)
     except (OSError,ValueError,TypeError,KeyError) as error:
@@ -232,7 +229,59 @@ def run(input_data):
     token=_INSPECTION.set((data.model_dump(mode='json'),inspection))
     observation_token=ACTIVE_OBSERVATION.set(None)
     try:
-        return TOOL.execute(input_data)
+        arguments=data.model_dump(mode='json')
+        if client is not None:
+            arguments['_llm_client']=client
+        return TOOL.execute(arguments)
     finally:
         ACTIVE_OBSERVATION.reset(observation_token)
         _INSPECTION.reset(token)
+
+
+def _alternative_input(data,alternative):
+    """Build the same review against one already-bound fallback scene."""
+    payload=data.model_dump(mode='json')
+    retrieval=dict(payload['retrieval_result'])
+    retrieval.update(scene_ref=alternative.scene_ref.model_dump(mode='json'),
+                     video_path=alternative.video_path,source_file=alternative.source_file,
+                     source_segment=alternative.source_segment,alternatives=[])
+    payload['retrieval_result']=retrieval
+    return Input.model_validate(payload)
+
+
+def _attempt_note(rank,outcome,data):
+    if outcome.get('status')=='success':
+        result=outcome['result']
+        return dict(rank=rank,scene_id=result['scene_id'],scene_token=result['scene_token'],
+                    suitability=result['suitability'],checks=result['checks'],reasons=result['reasons'])
+    return dict(rank=rank,scene_id=data.scene_ref.scene_id,scene_token=data.scene_ref.scene_token,
+                error=outcome.get('error'))
+
+
+def _with_attempts(outcome,attempts,selected_rank=None):
+    if outcome.get('status')=='success':
+        evidence=outcome['result'].setdefault('evidence',{})
+        evidence['retrieval_attempts']=attempts
+        evidence['selected_rank']=selected_rank
+    return outcome
+
+
+def run(input_data):
+    started=perf_counter()
+    try:data=Input.model_validate({k:v for k,v in input_data.items() if k!='_llm_client'})
+    except (AttributeError,ValueError,TypeError,KeyError) as error:
+        return dict(status='error',tool='edit_planner',error=dict(type='input_validation_error',message='Tool input does not match its schema',validation_errors=validation_details(error)))
+    client=input_data.get('_llm_client')
+    queue=[(1,data)]
+    queue.extend((item.rank,_alternative_input(data,item))
+                 for item in sorted(data.retrieval_result.alternatives,key=lambda item:item.rank))
+    attempts=[];first_failure=None
+    for rank,current in queue:
+        attempt_started=started if rank==1 else perf_counter()
+        outcome=_run_scene(current,client,attempt_started)
+        attempts.append(_attempt_note(rank,outcome,current))
+        if outcome.get('status')=='success' and outcome['result']['suitability']=='ready':
+            return _with_attempts(outcome,attempts,rank)
+        if first_failure is None:
+            first_failure=outcome
+    return _with_attempts(first_failure,attempts,None)

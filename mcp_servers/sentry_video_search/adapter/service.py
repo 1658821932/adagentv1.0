@@ -15,7 +15,19 @@ def search_local(requirement, config=None):
     with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile):
         result = search(requirement, config or SearchConfig())
         from .scene_binding import bind_scene
-        result.scene_ref = bind_scene(result.source_file, current_run("sentry_video_search").output)
+        output = current_run("sentry_video_search").output
+        result.scene_ref = bind_scene(result.source_file, output, manifest_name="scene_binding_rank01.json")
+        bound = []
+        for item in result.alternatives:
+            try:
+                rank = int(item["rank"])
+                scene_ref = bind_scene(item["source_file"], output,
+                                       manifest_name=f"scene_binding_rank{rank:02d}.json")
+            except (KeyError, TypeError, ValueError):
+                # A malformed or unbound lower-ranked hit must not discard a valid winner.
+                continue
+            bound.append({**item, "scene_ref": scene_ref})
+        result.alternatives = bound
         return result
 
 @runtime_task("sentry_video_search", "index_local")

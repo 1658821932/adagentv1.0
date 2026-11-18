@@ -29,7 +29,7 @@ TOOL01_NONE["attack"] = {"map_context": "curve", "ego_action": "straight", "ego_
 FORWARDED = {"violation_step", "failure", "attack", "environment", "verification"}
 FIELDS = {"target_scene", "attack", "candidates"}
 CANDIDATE_FIELDS = {"candidate_id", "base_video_requirement", "attack_edit_strategy",
-                    "ego_input_edit_strategy", "ego_correct_trajectory_strategy"}
+                    "retrieval_query", "ego_input_edit_strategy", "ego_correct_trajectory_strategy"}
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +127,25 @@ def test_mock_is_a_fixed_valid_example_without_failure_wording():
 def test_candidates_carry_only_the_five_fields():
     for candidate in response()["candidates"]:
         assert set(candidate) == CANDIDATE_FIELDS
+        assert len(candidate["retrieval_query"]) <= 48
         assert candidate["ego_correct_trajectory_strategy"].strip()
+
+
+def test_retrieval_query_is_separate_from_the_source_video_requirement():
+    for candidate in response()["candidates"]:
+        assert candidate["retrieval_query"] != candidate["base_video_requirement"]
+        for editing_term in ("速度", "时机", "同步", "冲突", "编辑", "左偏", "右偏"):
+            assert editing_term not in candidate["retrieval_query"]
+
+
+def test_verbose_retrieval_query_is_rejected_after_retry():
+    item = response()
+    item["candidates"][0]["retrieval_query"] = "白天丁字路口，自车右转，右侧支路车辆保持本车道直行并调整到达时机"
+    client = Client(item, item)
+    out = call(client)
+    assert out["status"] == "error", out
+    assert out["error"]["type"] == "output_validation_error"
+    assert client.calls == 2
 
 
 def test_mock_through_the_public_registry_entry():

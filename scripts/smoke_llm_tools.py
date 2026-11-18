@@ -22,10 +22,11 @@ ANALYSIS={
     "simulation": "experiment/batch",
     "map_location": "us-pa-pittsburgh-hazelwood",
     "evidence_dir": "",
+    "violation_step": 8,
     "failure": {"outcome": "collision", "interaction": "crossing",
                 "ego_cause": "在丁字路口右转时，没有对从右侧支路左转过来的车辆让行"},
-    "attack": {"map_context": "t_junction", "ego_action": "turn_right",
-               "other_origin": "right_arm", "other_action": "turn_left"},
+    "attack": {"map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
+               "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep"},
     "environment": {"time": "2021-09-16T20:16:41+00:00", "weather": "cloudy", "extra": "路面干燥"},
     "verification": {"matched": True, "notes": []},
 }
@@ -44,10 +45,10 @@ def run_smoke(mode: str) -> dict:
         for index,candidate in enumerate(requirement["result"]["candidates"]):
             # Validate the exact string against tool04 without a real index/API call.
             from tools.tool03_video_retriever.schemas import Input
-            Input.model_validate({"requirement":candidate["base_video_requirement"]})
+            Input.model_validate({"requirement":candidate["retrieval_query"]})
             if mode=="mock":
                 check(f"retrieval_candidate_{index+1}","video_retriever",{
-                    "requirement":candidate["base_video_requirement"],
+                    "requirement":candidate["retrieval_query"],
                     "candidate_id":candidate["candidate_id"]})
     passed=all(item["output"].get("status")=="success" for item in checks)
     return {

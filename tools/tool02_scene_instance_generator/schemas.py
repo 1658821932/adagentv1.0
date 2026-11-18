@@ -99,9 +99,21 @@ class Input(ToolModel):
 class Candidate(ToolModel):
     candidate_id: NonEmptyStr = Field(description="Stable short id for this variant, e.g. cand_1. Unique within the response.")
     base_video_requirement: NonEmptyStr = Field(description="What the base video must contain once the later edits are subtracted, in one sentence.")
+    retrieval_query: NonEmptyStr = Field(min_length=6, max_length=48, description="Compact local-index query containing only weather/time when material, road form, ego direction and required clear space. Maximum 48 characters; omit other-vehicle action, lane offset, speed, timing, conflict and editing terms.")
     attack_edit_strategy: Optional[NonEmptyStr] = Field(description="How the other vehicle is edited, or null when no other-vehicle edit is needed. The field is always present.")
     ego_input_edit_strategy: Optional[NonEmptyStr] = Field(description="How ego approach speed and timing are adjusted so ego and the edited attack vehicle meet at the conflict, preserving meaningful speed and difficulty; null only when the recorded input already produces that synchronized conflict. The field is always present.")
     ego_correct_trajectory_strategy: NonEmptyStr = Field(description="How the ego should drive afterwards to avoid the failure.")
+
+    @field_validator("retrieval_query")
+    @classmethod
+    def retrieval_query_is_not_an_edit_description(cls, value):
+        banned = ("速度", "时机", "同步", "同时", "交汇", "冲突", "碰撞", "危险",
+                  "编辑", "调整", "可改", "轨迹", "左偏", "右偏", "偏移",
+                  "保持车道", "他车", "其他车辆", "一辆车")
+        found = [term for term in banned if term in value]
+        if found:
+            raise ValueError("retrieval_query must omit downstream editing terms: " + ", ".join(found))
+        return value
 
 
 class Response(ToolModel):

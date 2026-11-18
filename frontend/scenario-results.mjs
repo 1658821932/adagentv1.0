@@ -44,6 +44,7 @@ export function scenarioDetailGroups(result, error) {
   for (const candidate of result.candidates || []) {
     groups.push({ title: `候选 ${text(candidate.candidate_id)}`, rows: [
       ['检索条件', text(candidate.base_video_requirement)],
+      ['检索词', text(candidate.retrieval_query)],
       ['攻击车编辑', edit(candidate.attack_edit_strategy)],
       ['自车输入编辑', edit(candidate.ego_input_edit_strategy)],
       ['自车正确轨迹', text(candidate.ego_correct_trajectory_strategy)],

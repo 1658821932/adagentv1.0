@@ -58,6 +58,7 @@ def scenario(attack=None):
     no_other = current.get('other_origin') == 'none'
     candidates = [dict(candidate_id=f'cand_{index}',
                        base_video_requirement=f'目标道路条件 {index}',
+                       retrieval_query=f'白天路口，自车通过，右侧支路清晰 {index}',
                        attack_edit_strategy=None if no_other else '调整右侧支路车辆通过时机',
                        ego_input_edit_strategy=None,
                        ego_correct_trajectory_strategy='自车减速后安全通过')
@@ -351,6 +352,57 @@ def test_visual_review_agreeing_with_map_checks_can_be_ready(scene, monkeypatch)
     assert result['result']['adapted_plan'] is not None
     assert result['result']['evidence']['verification_source'] == 'visual_review'
     assert 'precheck_conflicts' not in result['result']['evidence']
+
+
+def test_unsuitable_rank_one_falls_back_to_rank_two_without_another_agent_call(scene, monkeypatch):
+    from tools.tool04_edit_planner import mapfacts
+    answers = iter([
+        dict(available=True, checks={'road': 'fail', 'lanes': 'unknown', 'space': 'unknown'},
+             facts={'rank': 1}, reasons=['first scene lacks the right arm'],
+             evidence_limits=[], retrieval_suggestion='use another ranked scene'),
+        dict(available=True, checks={'road': 'pass', 'lanes': 'pass', 'space': 'pass'},
+             facts={'rank': 2}, reasons=['second scene supports the target'],
+             evidence_limits=[], retrieval_suggestion=None),
+    ])
+    monkeypatch.setattr(mapfacts, 'collect', lambda frames, attack: next(answers))
+    value = arguments(scene)
+    fallback = deepcopy(scene)
+    fallback.update(scene_id='source-2', scene_token='token-2')
+    value['retrieval_result']['alternatives'] = [dict(
+        rank=2, scene_ref=fallback, video_path='/retrieved/second.mp4',
+        source_file='/indexed/second.mp4', match_score=.7,
+        source_segment={'start': 1., 'end': 3.})]
+    value['_llm_client'] = client(review())
+    result = run(value)
+    assert result['status'] == 'success', result
+    output = result['result']
+    assert output['suitability'] == 'ready'
+    assert output['scene_token'] == 'token-2'
+    assert output['evidence']['selected_rank'] == 2
+    assert [item['rank'] for item in output['evidence']['retrieval_attempts']] == [1, 2]
+    assert output['evidence']['retrieval_attempts'][0]['suitability'] == 'unsuitable'
+
+
+def test_all_unsuitable_returns_rank_one_verdict_with_attempt_history(scene, monkeypatch):
+    from tools.tool04_edit_planner import mapfacts
+    monkeypatch.setattr(mapfacts, 'collect', lambda frames, attack: dict(
+        available=True, checks={'road': 'fail', 'lanes': 'unknown', 'space': 'unknown'},
+        facts={}, reasons=['missing right arm'], evidence_limits=[],
+        retrieval_suggestion='retrieve a clearer right arm'))
+    value = arguments(scene)
+    fallback = deepcopy(scene)
+    fallback.update(scene_id='source-2', scene_token='token-2')
+    value['retrieval_result']['alternatives'] = [dict(
+        rank=2, scene_ref=fallback, video_path='/retrieved/second.mp4',
+        source_file='/indexed/second.mp4', match_score=.7,
+        source_segment={'start': 1., 'end': 3.})]
+    result = run(value)
+    assert result['status'] == 'success', result
+    output = result['result']
+    assert output['suitability'] == 'unsuitable'
+    assert output['scene_token'] == 'token'
+    assert output['evidence']['selected_rank'] is None
+    assert [item['rank'] for item in output['evidence']['retrieval_attempts']] == [1, 2]
 
 
 def test_raw_map_reader_returns_measured_facts_for_a_real_sample():

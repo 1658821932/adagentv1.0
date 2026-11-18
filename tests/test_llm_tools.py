@@ -126,13 +126,13 @@ def test_source_context_is_attached_by_code_and_upstream_errors_are_not_evidence
         "status":"success","tool":"failure_analyzer","result":ANALYSIS
     }},mode="mock")
     saved=json.loads((Path(requirement["meta"]["record_dir"])/"input.json").read_text())["failure_analysis"]
-    assert set(saved)=={"failure","attack","environment","verification","source"}
+    assert set(saved)=={"violation_step","failure","attack","environment","verification","source"}
     assert saved["source"]["token"]==ANALYSIS["token"]
     assert saved["attack"]==ANALYSIS["attack"]
     assert set(requirement["result"])=={"target_scene","attack","candidates"}
     from tools.tool03_video_retriever.schemas import Input
     for candidate in requirement["result"]["candidates"]:
-        Input.model_validate({"requirement":candidate["base_video_requirement"]})
+        Input.model_validate({"requirement":candidate["retrieval_query"]})
     bad={"status":"error","tool":"failure_analyzer","error":{"message":"failed"}}
     result=call_tool("scene_instance_generator",{"failure_analysis":bad},mode="mock")
     assert result["error"]["type"]=="input_validation_error"
@@ -173,7 +173,7 @@ def test_tools_use_shared_client_without_parameter_overrides():
     with patch("agent.llm_client.LLMClient",return_value=client) as factory:
         result=run({"failure_analysis":ANALYSIS})
     assert result["status"]=="success"
-    factory.assert_called_once_with()
+    factory.assert_called_once_with(component='scene_instance_generator')
 
 
 def test_llm_client_inherits_root_limits(monkeypatch):
@@ -181,12 +181,15 @@ def test_llm_client_inherits_root_limits(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY","test-only")
     profile={"model":"root-model","base_url":"https://example.invalid/v1",
              "timeout":77,"max_tokens":3456}
-    sdk=Mock()
+    sdk=Mock(); timeout_calls=[]
+    def timeout(value,**kwargs):
+        timeout_calls.append((value,kwargs)); return "timeout-object"
     with patch.object(LLMClient,"_load_llm_config",return_value=profile), patch.dict(
-            "sys.modules",{"openai":SimpleNamespace(OpenAI=sdk)}):
+        "sys.modules",{"openai":SimpleNamespace(OpenAI=sdk,Timeout=timeout)}):
         client=LLMClient()
     assert (client.model,client.timeout,client.max_tokens)==("root-model",77,3456)
-    assert sdk.call_args.kwargs["timeout"]==77
+    assert sdk.call_args.kwargs["timeout"]=="timeout-object"
+    assert timeout_calls==[(77.0,{"connect":15.0,"read":60.0})]
     assert sdk.call_args.kwargs["max_retries"]==0
 
 

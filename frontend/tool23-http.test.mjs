@@ -48,7 +48,7 @@ test('production run API preserves both contracts and serves the matching previe
   await writeFile(join(sample, 'preview/original_eightcam_2hz.mp4'), 'grid fixture');
   const scenario = demo.steps.find(step => step.tool === 'scene_instance_generator');
   const retrieval = {
-    tool: 'video_retriever', input: { requirement: scenario.output.result.candidates[1].base_video_requirement, candidate_id: 'cand_2' },
+    tool: 'video_retriever', input: { requirement: scenario.output.result.candidates[1].retrieval_query, candidate_id: 'cand_2' },
     output: { status: 'success', tool: 'video_retriever', result: {
       candidate_id: 'cand_2', mode: 'local_hit_reranked', match_score: .9,
       video_path: lossless, source_file: join(root, 'source.mp4'),

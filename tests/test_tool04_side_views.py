@@ -29,6 +29,7 @@ def scenario():
             attack=dict(map_context='cross_intersection', ego_action='turn_right', ego_lane_keeping='keep',
                         other_origin='none', other_action='none', other_lane_keeping='none'),
         candidates=[dict(candidate_id=f'cand_{index}', base_video_requirement=f'路口条件 {index}',
+                         retrieval_query=f'白天路口，自车通过，右侧支路清晰 {index}',
                          attack_edit_strategy=None, ego_input_edit_strategy=None,
                          ego_correct_trajectory_strategy='自车减速通过') for index in (1, 2, 3)])
                 ).model_dump(mode='json')

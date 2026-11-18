@@ -41,3 +41,23 @@ def test_long_chinese_retrieval_description_exports_valid_filename(tmp_path):
         output = _trim_hit({"source_file":"/source.mp4", "start_time":0}, requirement, SearchConfig(output_dir=tmp_path), label="rank01_score0.900000_compressed")
     assert output.is_file()
     assert len(output.name.encode("utf-8")) <= 255
+
+
+def test_ranked_alternative_hits_skip_repeated_sources_and_follow_order():
+    from mcp_servers.sentry_video_search.core.service import _alternative_hits
+    details = dict(
+        candidates=[
+            dict(candidate_index=0, source_file="/scene-a.mp4", start_time=0, end_time=5),
+            dict(candidate_index=1, source_file="/scene-a.mp4", start_time=5, end_time=10),
+            dict(candidate_index=2, source_file="/scene-b.mp4", start_time=0, end_time=5),
+            dict(candidate_index=3, source_file="/scene-c.mp4", start_time=0, end_time=5),
+        ],
+        ranked_results=[
+            dict(candidate_index=0, relevance_score=.9, video_path="/a.mp4"),
+            dict(candidate_index=1, relevance_score=.8, video_path="/a2.mp4"),
+            dict(candidate_index=3, relevance_score=.7, video_path="/c.mp4"),
+            dict(candidate_index=2, relevance_score=.6, video_path="/b.mp4"),
+        ])
+    alternatives = _alternative_hits(details)
+    assert [item["rank"] for item in alternatives] == [2, 3]
+    assert [item["source_file"] for item in alternatives] == ["/scene-c.mp4", "/scene-b.mp4"]

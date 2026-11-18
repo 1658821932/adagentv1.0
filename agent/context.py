@@ -52,11 +52,24 @@ def summarize(tool, payload):
                 result["available_cameras"]=list(cameras)
         else:
             result["scene_ref"]=deepcopy(scene)
+        alternatives=payload.get("alternatives")
+        if isinstance(alternatives,list):
+            result["alternative_count"]=len(alternatives)
+            result["alternative_scenes"]=[dict(
+                rank=item.get("rank"),scene_id=(item.get("scene_ref") or {}).get("scene_id"),
+                scene_token=(item.get("scene_ref") or {}).get("scene_token"),
+                match_score=item.get("match_score")) for item in alternatives[:2] if isinstance(item,dict)]
     elif tool=="edit_planner":
         evidence=payload.get("evidence")
         if isinstance(evidence,dict):
             result["evidence"]=pick(evidence,("map_available","map_checks","map_reasons",
-                "map_evidence_limits","target_region_frames","verification_source","precheck_conflicts"))
+                "map_evidence_limits","target_region_frames","verification_source","precheck_conflicts",
+                "selected_rank"))
+            attempts=evidence.get("retrieval_attempts")
+            if isinstance(attempts,list):
+                result["evidence"]["retrieval_attempts"]=[
+                    pick(item,("rank","scene_id","scene_token","suitability"))
+                    for item in attempts[:3] if isinstance(item,dict)]
             for key in ("map_reasons","map_evidence_limits"):
                 if isinstance(result["evidence"].get(key),list):
                     result["evidence"][key]=bounded_rows(result["evidence"][key],6)
@@ -180,7 +193,7 @@ def compact_state(source):
     return state
 
 HANDOFF_HINTS = {
-    "video_retriever": "Handoff: pass result_ref verbatim as edit_planner.retrieval_result or attack_vehicle_editor.scene_ref; never retype this JSON.",
+    "video_retriever": "Handoff: pass result_ref verbatim as edit_planner.retrieval_result or attack_vehicle_editor.scene_ref; never retype this JSON. Tool04 tries alternatives ranks 2 and 3 itself.",
     "edit_planner": "Handoff: ready results carry adapted_plan; do not read removed edit_plan or attack_input.",
     "attack_vehicle_editor": "Handoff: pass result_ref verbatim as ego_trajectory_editor.attack_result; never retype this JSON.",
 }

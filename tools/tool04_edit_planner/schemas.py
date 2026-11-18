@@ -12,6 +12,15 @@ RETRIEVAL_TOOL = "video_retriever"
 CheckResult = Literal["pass", "fail", "unknown"]
 
 
+class RetrievalAlternative(OutputModel):
+    rank: int = Field(ge=2, le=3, description="Distinct rerank fallback position.")
+    scene_ref: SceneReference
+    video_path: NonEmptyStr | None = None
+    source_file: NonEmptyStr | None = None
+    source_segment: dict[str, float] | None = None
+    match_score: float | None = None
+
+
 class RetrievalContext(OutputModel):
     scene_ref: SceneReference
     candidate_id: NonEmptyStr = Field(description="tool02 candidate this retrieval was launched for; must match the selected candidate.")
@@ -19,6 +28,9 @@ class RetrievalContext(OutputModel):
     source_file: NonEmptyStr | None = None
     source_segment: dict[str, float] | None = None
     mode: str | None = None
+    alternatives: list[RetrievalAlternative] = Field(
+        default_factory=list, max_length=2,
+        description="Distinct ranked scenes 2 and 3 from tool03, tried when the winner is unsuitable.")
 
 
 def _unwrap(value, tool):
@@ -45,8 +57,12 @@ def normalize_retrieval(value):
             raise ValueError("Expected a successful " + RETRIEVAL_TOOL + " envelope")
         return value.get("result")
     if isinstance(value, dict):
-        scene = value.get("scene_ref")
-        if isinstance(scene, dict):
+        scenes = [value.get("scene_ref")]
+        scenes.extend(item.get("scene_ref") for item in value.get("alternatives") or []
+                      if isinstance(item, dict))
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
             missing = [k for k in ("frames_path", "cameras_path", "scenario_pkl")
                        if isinstance(scene.get(k), str) and not Path(scene[k]).exists()]
             if missing:
@@ -88,6 +104,9 @@ class Input(ToolModel):
         if retrieved != self.candidate_id:
             raise ValueError(
                 f"retrieval_result.candidate_id {retrieved!r} does not match the selected candidate {self.candidate_id!r}")
+        ranks = [item.rank for item in self.retrieval_result.alternatives]
+        if len(set(ranks)) != len(ranks) or ranks != sorted(ranks):
+            raise ValueError("retrieval_result.alternatives must have unique ascending ranks")
         return self
 
     @property

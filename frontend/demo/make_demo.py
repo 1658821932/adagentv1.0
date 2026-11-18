@@ -104,16 +104,19 @@ DEMO_SCENARIO = dict(
     candidates=[
         dict(candidate_id="cand_1",
              base_video_requirement="白天的城市直路，自车前方有一辆可编辑车辆。",
+             retrieval_query="白天城市直路，自车直行，同车道前方清晰",
              attack_edit_strategy="调整前车运动，使其停止在自车接近的车道上。",
              ego_input_edit_strategy=None,
              ego_correct_trajectory_strategy="自车合理接近，在制动范围内减速并保持安全间距。"),
         dict(candidate_id="cand_2",
              base_video_requirement="白天的城市直路，自车前方有可放置车辆的道路空间。",
+             retrieval_query="白天城市直路，自车直行，同车道前方清晰",
              attack_edit_strategy="在前方车道增加一辆停止车辆。",
              ego_input_edit_strategy=None,
              ego_correct_trajectory_strategy="自车识别停止车辆并及时减速避让。"),
         dict(candidate_id="cand_3",
              base_video_requirement="白天的城市直路，同车道前方有一辆低速车辆。",
+             retrieval_query="白天城市直路，自车直行，同车道前方清晰",
              attack_edit_strategy="调整低速前车的停止时机。",
              ego_input_edit_strategy="调整自车接近速度以构建危险场景。",
              ego_correct_trajectory_strategy="自车观察前车状态，在安全距离内制动。")])
@@ -132,7 +135,7 @@ steps.append(step(
 steps.append(step(
     2, "video_retriever",
     "示例：展示候选 cand_1 的检索结果与预览，未运行真实检索。",
-    dict(requirement=DEMO_SCENARIO["candidates"][0]["base_video_requirement"],
+    dict(requirement=DEMO_SCENARIO["candidates"][0]["retrieval_query"],
          candidate_id="cand_1", library="default"),
     dict(video_path=CLIP_SRC, source_file=CLIP_SRC, scene_ref=None,
          candidate_id="cand_1", mode="mock", match_score=0.809787),

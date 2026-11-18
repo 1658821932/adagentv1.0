@@ -24,9 +24,19 @@ test('tool02 exposes the whole target, all mechanism fields and every candidate 
   scenario.candidates.forEach((candidate, index) => {
     assert.equal(groups[index + 2].title, `候选 ${candidate.candidate_id}`);
     assert.deepEqual(groups[index + 2].rows.map(([key]) => key),
-      ['检索条件', '攻击车编辑', '自车输入编辑', '自车正确轨迹']);
-    assert.equal(groups[index + 2].rows[2][1], candidate.ego_input_edit_strategy ?? '无需编辑');
+      ['检索条件', '检索词', '攻击车编辑', '自车输入编辑', '自车正确轨迹']);
+    assert.equal(groups[index + 2].rows[3][1], candidate.ego_input_edit_strategy ?? '无需编辑');
   });
+});
+
+
+test('tool02 displays the compact retrieval query separately from source-video conditions', () => {
+  const result = structuredClone(scenario);
+  result.candidates[0].retrieval_query = '白天丁字路口，自车右转，右侧支路清晰';
+  const candidate = scenarioDetailGroups(result)[2];
+  assert.deepEqual(candidate.rows.map(([key]) => key),
+    ['检索条件', '检索词', '攻击车编辑', '自车输入编辑', '自车正确轨迹']);
+  assert.equal(candidate.rows[1][1], result.candidates[0].retrieval_query);
 });
 
 test('tool02 does not read the removed output fields or candidate aliases', () => {

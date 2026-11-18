@@ -22,11 +22,22 @@ These two edits together build the dangerous scene: the other vehicle's timing a
 - ego_correct_trajectory_strategy: how the ego drives to handle that danger safely. It must not remove the task by stopping unconditionally or avoiding the drive.
 
 # base_video_requirement: what the source video must already contain
-Subtract whatever the two edits will create, then write one sentence with the remaining conditions: road layout, weather, and the vehicles or space the edits rely on. If a vehicle is edited, the video must contain a vehicle that can be edited; if a vehicle is added, the video must not be required to have it. Retrieval text and the two edit strategies must fit each other.
+Subtract whatever the two edits will create, then write one sentence with the remaining conditions: road layout, weather, and the vehicle or clear space the edits rely on. Prefer a clear editable area where a vehicle can be added. If a vehicle is edited, the video must contain an editable vehicle; if a vehicle is added, the video must not be required to have it.
+
+# retrieval_query: compact query for video search
+Write a separate, compressed query for the local video index, not a copy of target_scene.
+- Keep only visible source-video conditions: weather/time if material, road form, ego direction, and the required road arm or space being clear.
+- Prefer constructing the conflict by adding a vehicle into clear space. Describe the clear space rather than the future attack vehicle's action.
+- Target 12-30 Chinese characters and never exceed 48.
+- Omit other-vehicle direction, lane offset, speed, timing, synchronization, conflict, editing and trajectory.
+- Example for a right-arm failure: `白天丁字路口，自车右转，右侧支路清晰`.
+- Example for a straight-road failure: `白天城市直路，自车直行，同车道前方清晰`.
+- When `attack.other_origin` is `none`, omit any other-vehicle or insertion-space clause.
 
 # Rules
 - The three candidates share target_scene and attack and differ only in implementation path. Do not design three different roads, and do not fake variety by rewording the correct-behaviour sentence.
 - Vehicles are generic: no brand, colour, city, street or landmark. Keep the background sparse, with no unrelated participants.
 - One short sentence per field; no parameters, timestamps or trajectory points.
+- `retrieval_query` is a short phrase, not a sentence, and the schema enforces its size and banned downstream-editing terms.
 - No editing needed means null; keep ego_correct_trajectory_strategy for post-conflict safe behavior, not for compensating for a mistimed ego_input_edit_strategy.
 - The ego input edit must preserve a meaningful approach speed and the intended task difficulty.

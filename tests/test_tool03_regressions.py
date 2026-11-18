@@ -72,6 +72,22 @@ def test_mock_preserves_candidate_id_and_remains_unbound():
     Output.model_validate(result['result'])
 
 
+def test_verbose_scenario_text_is_rejected_as_a_retrieval_query():
+    with pytest.raises(ValidationError):
+        Input.model_validate(dict(requirement='视频需包含白天多云的丁字路口、自车右转且向左偏离本车道的接近过程，以及右侧支路一辆保持本车道直行且可调整速度与到达时机的车辆。'))
+
+
+def test_output_accepts_bound_rank_two_and_three_alternatives(real_result, tmp_path):
+    alternative = dict(
+        rank=2, video_path=str(tmp_path / 'second.mp4'), match_score=.7,
+        source_file=str(tmp_path / 'second-source.mp4'),
+        source_segment={'start_time': 1., 'end_time': 2.},
+        scene_ref=dict(real_result['scene_ref'], scene_id='scene-2', scene_token='token-2'))
+    output = Output.model_validate(dict(real_result, alternatives=[alternative]))
+    assert output.alternatives[0].rank == 2
+    assert output.alternatives[0].scene_ref.scene_token == 'token-2'
+
+
 def test_compact_history_preserves_candidate_id(real_result, tmp_path):
     from agent.context import compact_state
 

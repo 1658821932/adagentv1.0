@@ -65,6 +65,15 @@ def test_missing_image_is_reported_without_inventing_availability(scene, tmp_pat
     assert result["cameras"]["CAM_L0"]["available_images"] == 2
 
 
+def test_ranked_bindings_use_separate_manifest_files(scene, tmp_path):
+    sample, videos = scene
+    first = bind_scene(videos / "CAM_F0.mp4", tmp_path / "output", manifest_name="scene_binding_rank01.json")
+    second = bind_scene(videos / "CAM_R0.mp4", tmp_path / "output", manifest_name="scene_binding_rank02.json")
+    assert Path(first["manifest_path"]).name == "scene_binding_rank01.json"
+    assert Path(second["manifest_path"]).name == "scene_binding_rank02.json"
+    assert Path(first["manifest_path"]).is_file() and Path(second["manifest_path"]).is_file()
+
+
 def test_external_library_video_is_only_a_fallback_for_the_matched_camera(scene, tmp_path):
     sample, videos = scene
     external = tmp_path / 'external'

@@ -153,7 +153,7 @@ def test_main_agent_passes_merged_candidate_directly_to_tool03(tmp_path, monkeyp
             if len(self.messages)==2:
                 previous=payload['current_state']['history'][-1]['result']
                 candidate=previous['result']['candidates'][0]
-                return json.dumps(call('video_retriever', {'requirement':candidate['base_video_requirement'],
+                return json.dumps(call('video_retriever', {'requirement':candidate['retrieval_query'],
                     'candidate_id':candidate['candidate_id']}))
             return json.dumps({'action':'finish','reason':'The requested scenario requirement and conception are available.'})
     client=RequirementFlowClient([])
@@ -167,7 +167,7 @@ def test_main_agent_passes_merged_candidate_directly_to_tool03(tmp_path, monkeyp
     assert [entry['tool'] for entry in results]==['scene_instance_generator','video_retriever']
     first=results[0]['result']['result']
     assert set(first)=={'target_scene','attack','candidates'}
-    assert results[1]['result']['result']['requirement']==first['candidates'][0]['base_video_requirement']
+    assert results[1]['result']['result']['requirement']==first['candidates'][0]['retrieval_query']
     assert results[1]['result']['result']['candidate_id']==first['candidates'][0]['candidate_id']
     next_context=json.loads(client.messages[1][1]['content'])
     assert next_context['current_state']['current_stage']=='requirement_generation'
