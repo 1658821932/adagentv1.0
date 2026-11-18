@@ -5,12 +5,14 @@ generation mechanism.
 """
 
 RESULT = {
-    "target_scene": "多云白天，丁字路口，自车右转进入主路，右侧支路一辆车左转驶入。",
+    "target_scene": "多云白天，丁字路口，自车右转并保持在本车道，右侧支路一辆车左转并保持在本车道。",
     "attack": {
         "map_context": "t_junction",
         "ego_action": "turn_right",
+        "ego_lane_keeping": "keep",
         "other_origin": "right_arm",
         "other_action": "turn_left",
+        "other_lane_keeping": "keep",
     },
     "candidates": [
         {

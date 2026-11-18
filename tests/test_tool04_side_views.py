@@ -26,8 +26,8 @@ def scene():
 def scenario():
     return ScenarioOutput.model_validate(dict(
         target_scene='多云白天，十字路口，自车右转，本次场景没有其他车辆。',
-        attack=dict(map_context='cross_intersection', ego_action='turn_right',
-                    other_origin='none', other_action='none'),
+            attack=dict(map_context='cross_intersection', ego_action='turn_right', ego_lane_keeping='keep',
+                        other_origin='none', other_action='none', other_lane_keeping='none'),
         candidates=[dict(candidate_id=f'cand_{index}', base_video_requirement=f'路口条件 {index}',
                          attack_edit_strategy=None, ego_input_edit_strategy=None,
                          ego_correct_trajectory_strategy='自车减速通过') for index in (1, 2, 3)])

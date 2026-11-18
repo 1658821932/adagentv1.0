@@ -11,10 +11,10 @@ from tools.registry import call_tool
 from tools.tool04_edit_planner.real import run
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jMZkAAAAASUVORK5CYII=')
-ATTACK = dict(map_context='t_junction', ego_action='turn_right',
-              other_origin='right_arm', other_action='turn_left')
-ATTACK_NONE = dict(map_context='curve', ego_action='straight',
-                   other_origin='none', other_action='none')
+ATTACK = dict(map_context='t_junction', ego_action='turn_right', ego_lane_keeping='keep',
+              other_origin='right_arm', other_action='turn_left', other_lane_keeping='keep')
+ATTACK_NONE = dict(map_context='curve', ego_action='straight', ego_lane_keeping='keep',
+                   other_origin='none', other_action='none', other_lane_keeping='none')
 
 
 @pytest.fixture(autouse=True)
@@ -362,8 +362,8 @@ def test_raw_map_reader_returns_measured_facts_for_a_real_sample():
     if not frames_path.is_file():
         pytest.skip('sample scene is not available')
     result = mapfacts.collect(json.loads(frames_path.read_text()),
-                              dict(map_context='t_junction', ego_action='turn_right',
-                                   other_origin='right_arm', other_action='turn_left'))
+                              dict(map_context='t_junction', ego_action='turn_right', ego_lane_keeping='keep',
+                                   other_origin='right_arm', other_action='turn_left', other_lane_keeping='keep'))
     assert result['available'] is True, result
     facts = result['facts']
     assert set(result['checks']) == {'road', 'lanes', 'space'}

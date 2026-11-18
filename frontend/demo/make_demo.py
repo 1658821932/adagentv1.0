@@ -96,10 +96,10 @@ steps.append(step(
              dict(key="failure_analysis.official_metrics.first_violation_step", value=7)]))
 
 # ② 场景生成 -------------------------------------------------------------
-DEMO_ATTACK = dict(map_context="straight_road", ego_action="straight",
-                   other_origin="ahead_same_lane", other_action="stop")
+DEMO_ATTACK = dict(map_context="straight_road", ego_action="straight", ego_lane_keeping="keep",
+                   other_origin="ahead_same_lane", other_action="straight", other_lane_keeping="keep")
 DEMO_SCENARIO = dict(
-    target_scene="白天的城市直路，自车直行，同车道前方一辆车停止。",
+    target_scene="白天的城市直路，自车直行并保持在本车道，同车道前方一辆车保持在本车道。",
     attack=DEMO_ATTACK,
     candidates=[
         dict(candidate_id="cand_1",
@@ -121,10 +121,11 @@ steps.append(step(
     1, "scene_instance_generator",
     "围绕相同目标场景，提供三套配套的检索条件和编辑方案。",
     dict(failure_analysis=dict(
+        violation_step=7,
         failure=dict(outcome="collision", interaction="rear_end", ego_cause="未及时对停止的前车减速。"),
         attack=DEMO_ATTACK,
         environment=dict(time="2021-09-16T15:47:30+00:00", weather="unknown", extra=""),
-        verification=dict(matched=True, notes=[]))),
+        verification=dict(sample_frames=[5, 7, 9], corrections=[], notes=[]))),
     DEMO_SCENARIO, llm=3.0, duration=7.8))
 
 # ③ 视频检索：演示预览，不声称运行了真实检索 ------------------------------

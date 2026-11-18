@@ -36,14 +36,21 @@ def facts_for(archive="archive", simulation="run/sim", images=None, root=None):
     return {"archive": archive, "token": "2021.09.16.19.49.00_veh-42_00990_01609-4abb45d9ee1a5c5c",
             "simulation_record": simulation, "map_location": "map", "violation_step": VIOLATION,
             "failure": {"outcome": "collision", "interaction": "crossing", "ego_cause": "x"},
-            "attack": {"map_context": "t_junction", "ego_action": "turn_right",
-                       "other_origin": "right_arm", "other_action": "turn_left"},
+            "attack": {"map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
+                       "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep"},
             "environment": {"time": "2021-09-16T20:16:41+00:00", "weather": None, "extra": None},
             "frame_images": camera_frames(root=root) if images is None else images}
 
 
+FINAL = {
+    "map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
+    "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep",
+    "interaction": "crossing", "notes": [], "weather": "cloudy", "extra": "白天",
+}
+
+
 class StubClient:
-    answer = json.dumps({"matched": True, "notes": [], "weather": "cloudy", "extra": "白天"})
+    answer = json.dumps(FINAL, ensure_ascii=False)
     calls = []
     inspect = None
 
@@ -111,37 +118,40 @@ class ManifestTests(unittest.TestCase):
         try:
             result = analyze(self.run_dir)
         finally:
-            StubClient.answer = json.dumps({"matched": True, "notes": [], "weather": "cloudy",
-                                            "extra": ""})
+            StubClient.answer = json.dumps(FINAL, ensure_ascii=False)
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["error"]["type"], "timeout")
         self.assertEqual(result["error"]["stage"], "vlm")
         manifest = evidence.read_manifest(self.run_dir)
         self.assertEqual((manifest["status"], manifest["stage"]), ("failed", "vlm"))
-        self.assertEqual(len(manifest["frames"]), 4)
-        self.assertEqual(len(manifest["sent_images"]), 4)
+        self.assertEqual(len(manifest["frames"]), 3)
+        self.assertEqual(len(manifest["sent_images"]), 3)
 
     def test_empty_reply_is_reported_separately(self):
         StubClient.answer = RuntimeError("LLM returned empty response")
         try:
             result = analyze(self.run_dir)
         finally:
-            StubClient.answer = json.dumps({"matched": True, "notes": [], "weather": "cloudy",
-                                            "extra": ""})
+            StubClient.answer = json.dumps(FINAL, ensure_ascii=False)
         self.assertEqual((result["error"]["type"], result["error"]["stage"]),
                          ("visual_check_error", "vlm_empty"))
 
-    def test_disagreement_is_not_reported_as_success(self):
-        StubClient.answer = json.dumps({"matched": False, "notes": ["画面不符"], "weather": "clear",
-                                        "extra": ""})
+    def test_visual_model_can_correct_and_returns_success(self):
+        corrected = dict(FINAL, map_context="straight_road", ego_action="straight",
+                         ego_lane_keeping="left_offset", other_origin="oncoming",
+                         other_action="straight", interaction="opposite_direction",
+                         notes=["画面显示直路、自车向左偏移并对向车辆直行"])
+        StubClient.answer = json.dumps(corrected, ensure_ascii=False)
         try:
             result = analyze(self.run_dir)
         finally:
-            StubClient.answer = json.dumps({"matched": True, "notes": [], "weather": "cloudy",
-                                            "extra": ""})
-        self.assertEqual(result["error"]["type"], "facts_disagree_with_images")
-        self.assertEqual(result["error"]["notes"], ["画面不符"])
-        self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "failed")
+            StubClient.answer = json.dumps(FINAL, ensure_ascii=False)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result"]["attack"]["ego_action"], "straight")
+        self.assertEqual(result["result"]["attack"]["ego_lane_keeping"], "left_offset")
+        self.assertEqual(result["result"]["failure"]["interaction"], "opposite_direction")
+        self.assertTrue(result["result"]["verification"]["corrections"])
+        self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "success")
 
     def test_data_failure_is_reported_with_its_stage(self):
         with mock.patch.object(real, "failure_facts",
@@ -156,8 +166,7 @@ class AnalysisStageTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.run_dir = Path(self.tmp.name) / "run"
         StubClient.inspect = None
-        StubClient.answer = json.dumps({"matched": True, "notes": [], "weather": "cloudy",
-                                       "extra": ""})
+        StubClient.answer = json.dumps(FINAL, ensure_ascii=False)
 
     def tearDown(self):
         StubClient.inspect = None
@@ -176,7 +185,7 @@ class AnalysisStageTests(unittest.TestCase):
                          ("visual_check_error", "images"))
         manifest = evidence.read_manifest(self.run_dir)
         self.assertEqual((manifest["status"], manifest["stage"]), ("failed", "images"))
-        self.assertEqual(len(manifest["selected"]), 4)
+        self.assertEqual(len(manifest["selected"]), 3)
         self.assertEqual([entry["index"] for entry in manifest["selected"]],
                          visual_check.sheet_indices(COUNT, VIOLATION))
 
@@ -217,7 +226,7 @@ class AnalysisStageTests(unittest.TestCase):
             self.assertEqual(len(created), 1)
             manifest = json.loads(created[0].read_text())
             self.assertEqual((manifest["status"], manifest["stage"]), ("success", "done"))
-            self.assertEqual(len(manifest["frames"]), 4)
+            self.assertEqual(len(manifest["frames"]), 3)
 
     def test_data_stage_uses_its_own_limit_not_a_worker_deadline(self):
         with mock.patch.object(real, "failure_facts",

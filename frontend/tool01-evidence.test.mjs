@@ -35,12 +35,17 @@ frames = [{"index": index, "time_s": index * 0.5,
           for index in range(12)]
 facts = dict(archive="archive", token="scene-abc", simulation_record="experiment/batch",
              map_location="map", violation_step=7,
-             failure={"outcome": "collision"}, attack={"map_context": "t_junction"},
+             failure={"outcome": "collision", "interaction": "crossing"},
+             attack={"map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
+                     "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep"},
              environment={"time": "t"}, frame_images=frames)
 class Client:
     def __init__(self, component=None): pass
     def chat(self, messages):
-        return json.dumps({"matched": True, "notes": [], "weather": "clear", "extra": ""})
+        return json.dumps({"map_context": "t_junction", "ego_action": "turn_right",
+            "ego_lane_keeping": "keep", "other_origin": "right_arm", "other_action": "turn_left",
+            "other_lane_keeping": "keep", "interaction": "crossing", "notes": [],
+            "weather": "clear", "extra": ""})
 run_dir = root / "logs" / "tool01" / "experiment_batch-fixture" / "4abb45d9ee1a5c5c" / "run-fixture"
 with mock.patch.object(real, "failure_facts", return_value=facts), \\
      mock.patch("agent.llm_client.LLMClient", Client):
@@ -61,19 +66,19 @@ test('manifest sheets become reachable image evidence', async t => {
 
   const manifest = JSON.parse(await readFile(join(evidenceDir, 'manifest.json'), 'utf8'));
   assert.deepEqual(Object.keys(manifest.frames[0]).sort(), ['index', 'sheet', 'sheet_sha256']);
-  assert.equal(manifest.selected[0].time_s, 0);
-  assert.equal(manifest.frames.length, 4);
-  assert.equal(manifest.selected.length, 4);
+  assert.equal(manifest.selected[0].time_s, 2.5);
+  assert.equal(manifest.frames.length, 3);
+  assert.equal(manifest.selected.length, 3);
 
   const { summary, items } = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
-  assert.equal(items.length, 4);
-  assert.deepEqual(items.map(item => item.kind), ['image', 'image', 'image', 'image']);
+  assert.equal(items.length, 3);
+  assert.deepEqual(items.map(item => item.kind), ['image', 'image', 'image']);
   assert.equal(items[0].src, '/api/file?path=' + encodeURIComponent(manifest.frames[0].sheet));
-  assert.deepEqual(items.map(item => item.note), ['帧 0 · 0.0s', '帧 6 · 3.0s', '帧 8 · 4.0s', '帧 11 · 5.5s']);
+  assert.deepEqual(items.map(item => item.note), ['帧 5 · 2.5s', '帧 7 · 3.5s', '帧 9 · 4.5s']);
   assert.equal(items[0].primary, true);
-  assert.equal(summary.images, 4);
-  assert.equal(summary.manifest.frames, 4);
+  assert.equal(summary.images, 3);
+  assert.equal(summary.manifest.frames, 3);
   assert.equal(summary.manifest.stage, 'done');
   assert.equal(summary.stage, 'done');
 });
@@ -89,7 +94,7 @@ test('time comes from selected, even when frames carries none', async t => {
   await writeFile(path, JSON.stringify(manifest));
   const { items } = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
-  assert.equal(items[1].note, '帧 6 · 3.0s');
+  assert.equal(items[1].note, '帧 7 · 3.5s');
 });
 
 test('sheets still show when the manifest is missing or damaged', async t => {
@@ -102,14 +107,14 @@ test('sheets still show when the manifest is missing or damaged', async t => {
   await rm(path);
   let result = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
-  assert.equal(result.items.length, 4);
+  assert.equal(result.items.length, 3);
   assert.equal(result.items[0].note, '本次分析的八相机总览');
   assert.equal(result.summary.manifest, null);
 
   await writeFile(path, '{ not json');
   result = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
-  assert.equal(result.items.length, 4);
+  assert.equal(result.items.length, 3);
 });
 
 test('an unreadable sheets directory never fails the run view', async t => {
@@ -122,7 +127,7 @@ test('an unreadable sheets directory never fails the run view', async t => {
   const { items, summary } = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
   assert.deepEqual(items, []);
-  assert.equal(summary.manifest.frames, 4);
+  assert.equal(summary.manifest.frames, 3);
 });
 
 test('failed runs keep their stage and images', async t => {
@@ -133,7 +138,7 @@ test('failed runs keep their stage and images', async t => {
   const { summary, items } = failureAnalyzerEvidence(
     { status: 'error', error: { type: 'timeout', stage: 'vlm', evidence_dir: evidenceDir } },
     { projectRoot: root });
-  assert.equal(items.length, 4);
+  assert.equal(items.length, 3);
   assert.equal(summary.error_type, 'timeout');
   assert.equal(summary.stage, 'vlm');
 });

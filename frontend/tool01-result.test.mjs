@@ -8,12 +8,13 @@ const CURRENT = {
   simulation: 'e2e_vadv2_50pct_fullR_bev/navtest_failures_R_complete',
   map_location: 'us-pa-pittsburgh-hazelwood',
   evidence_dir: '/project/logs/tool01/sim-a/scene/run-1',
+  violation_step: 8,
   failure: { outcome: 'collision', interaction: 'crossing',
     ego_cause: '在丁字路口右转时，没有对从右侧支路左转过来的车辆让行' },
-  attack: { map_context: 't_junction', ego_action: 'turn_right',
-    other_origin: 'right_arm', other_action: 'turn_left' },
+  attack: { map_context: 't_junction', ego_action: 'turn_right', ego_lane_keeping: 'keep',
+    other_origin: 'right_arm', other_action: 'turn_left', other_lane_keeping: 'keep' },
   environment: { time: '2021-09-16T20:16:41+00:00', weather: 'cloudy', extra: '傍晚，路面干燥' },
-  verification: { matched: true, notes: [] },
+  verification: { sample_frames: [6, 8, 10], corrections: [], notes: [] },
 };
 
 function rowsOf(groups, title) {
@@ -40,25 +41,30 @@ test('summary ignores malformed results', () => {
 test('detail rows expose the measured fields with readable labels', () => {
   const groups = failureDetailGroups(CURRENT, null);
   assert.deepEqual(rowsOf(groups, '失败判定'), {
-    判定: '碰撞', 交互类型: '交叉冲突', 自车原因: CURRENT.failure.ego_cause,
+    判定: '碰撞', 首次违规帧: '8', 交互类型: '交叉冲突', 自车原因: CURRENT.failure.ego_cause,
   });
   assert.deepEqual(rowsOf(groups, '复刻结构'), {
-    地图: '丁字路口', 自车动作: '右转', 目标车辆来向: '右侧支路', 目标车辆动作: '左转',
+    地图: '丁字路口', 自车动作: '右转', 自车车道保持: '保持',
+    目标车辆来向: '右侧支路', 目标车辆动作: '左转', 目标车辆车道保持: '保持',
   });
   assert.deepEqual(rowsOf(groups, '环境'), {
     时间: '2021-09-16T20:16:41+00:00', 天气: '多云', 描述: '傍晚，路面干燥',
   });
-  assert.deepEqual(rowsOf(groups, '视觉核对'), { 核对结果: '画面与测量一致' });
+  assert.deepEqual(rowsOf(groups, '视觉核对'), { 核对帧: '6、8、10', 修正项: '无' });
   assert.deepEqual(rowsOf(groups, '溯源'), {
     token: CURRENT.token, simulation: CURRENT.simulation,
     地图: 'us-pa-pittsburgh-hazelwood', 证据目录: CURRENT.evidence_dir,
   });
 });
 
-test('mismatched verification keeps its notes', () => {
-  const result = { ...CURRENT, verification: { matched: false, notes: ['画面里自车没有右转'] } };
+test('corrected verification keeps its count and notes', () => {
+  const result = { ...CURRENT, verification: {
+    sample_frames: [6, 8, 10],
+    corrections: [{ field: 'ego_action', measured: 'turn_right', final: 'straight' }],
+    notes: ['画面里自车在直行'],
+  } };
   assert.deepEqual(rowsOf(failureDetailGroups(result, null), '视觉核对'), {
-    核对结果: '画面与测量不一致', 备注: '画面里自车没有右转',
+    核对帧: '6、8、10', 修正项: '1 项', 备注: '画面里自车在直行',
   });
 });
 

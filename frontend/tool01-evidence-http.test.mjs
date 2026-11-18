@@ -33,12 +33,17 @@ frames = [{"index": index, "time_s": index * 0.5,
           for index in range(12)]
 facts = dict(archive="archive", token="scene-abc", simulation_record="experiment/batch",
              map_location="map", violation_step=7,
-             failure={"outcome": "collision"}, attack={"map_context": "t_junction"},
+             failure={"outcome": "collision", "interaction": "crossing"},
+             attack={"map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
+                     "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep"},
              environment={"time": "t"}, frame_images=frames)
 class Client:
     def __init__(self, component=None): pass
     def chat(self, messages):
-        return json.dumps({"matched": True, "notes": [], "weather": "clear", "extra": ""})
+        return json.dumps({"map_context": "t_junction", "ego_action": "turn_right",
+            "ego_lane_keeping": "keep", "other_origin": "right_arm", "other_action": "turn_left",
+            "other_lane_keeping": "keep", "interaction": "crossing", "notes": [],
+            "weather": "clear", "extra": ""})
 run_dir = root / "logs" / "tool01" / "experiment_batch-fixture" / "4abb45d9ee1a5c5c" / "run-fixture"
 with mock.patch.object(real, "failure_facts", return_value=facts), \\
      mock.patch("agent.llm_client.LLMClient", Client):
@@ -56,11 +61,12 @@ const RESULT = {
   simulation: 'experiment/batch',
   map_location: 'us-pa-pittsburgh-hazelwood',
   evidence_dir: '',
+  violation_step: 8,
   failure: { outcome: 'collision', interaction: 'crossing', ego_cause: '在丁字路口右转时没有让行' },
-  attack: { map_context: 't_junction', ego_action: 'turn_right',
-    other_origin: 'right_arm', other_action: 'turn_left' },
+  attack: { map_context: 't_junction', ego_action: 'turn_right', ego_lane_keeping: 'keep',
+    other_origin: 'right_arm', other_action: 'turn_left', other_lane_keeping: 'keep' },
   environment: { time: '2021-09-16T20:16:41+00:00', weather: 'cloudy', extra: '傍晚，路面干燥' },
-  verification: { matched: true, notes: [] },
+  verification: { sample_frames: [6, 8, 10], corrections: [], notes: [] },
 };
 
 test('run API serves the evidence sheets of a tool 01 step', { timeout: 40000 }, async t => {

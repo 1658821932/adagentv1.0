@@ -6,11 +6,12 @@ from tools.llm_runtime import NonEmptyStr, ToolModel
 
 # Same semantics as the tool01 attack block, declared locally and strictly.
 MapContext = Literal["straight_road", "curve", "t_junction", "cross_intersection", "merge"]
-EgoAction = Literal["straight", "turn_left", "turn_right", "lane_change_left", "lane_change_right"]
+EgoAction = Literal["straight", "turn_left", "turn_right"]
+EgoLaneKeeping = Literal["left_offset", "keep", "right_offset", "unknown"]
 OtherOrigin = Literal["ahead_same_lane", "behind_same_lane", "oncoming", "left_adjacent",
                       "right_adjacent", "left_arm", "right_arm", "none"]
-OtherAction = Literal["straight", "turn_left", "turn_right", "brake", "stop",
-                      "cut_in_left", "cut_in_right", "squeeze_left", "squeeze_right", "none"]
+OtherAction = Literal["straight", "turn_left", "turn_right", "none"]
+OtherLaneKeeping = Literal["left_offset", "keep", "right_offset", "unknown", "none"]
 
 
 SOURCE_FIELDS = ("token", "simulation", "map_location", "evidence_dir")
@@ -23,14 +24,18 @@ def normalized(text):
 class Attack(ToolModel):
     """Two-vehicle structure to reproduce, with tool01's exact value set."""
     map_context: MapContext = Field(description="Road layout: straight_road / curve / t_junction / cross_intersection / merge.")
-    ego_action: EgoAction = Field(description="Ego maneuver: straight / turn_left / turn_right / lane_change_left / lane_change_right.")
+    ego_action: EgoAction = Field(description="Ego direction: straight / turn_left / turn_right.")
+    ego_lane_keeping: EgoLaneKeeping = Field(description="Ego lateral position in its own lane: left_offset / keep / right_offset / unknown.")
     other_origin: OtherOrigin = Field(description="Where the other vehicle comes from, or none when no target vehicle exists.")
-    other_action: OtherAction = Field(description="What the other vehicle does, or none when no target vehicle exists.")
+    other_action: OtherAction = Field(description="Other vehicle direction: straight / turn_left / turn_right, or none.")
+    other_lane_keeping: OtherLaneKeeping = Field(description="Other vehicle lateral position in its own lane: left_offset / keep / right_offset / unknown, or none.")
 
     @model_validator(mode="after")
     def none_is_paired(self):
         if (self.other_origin == "none") != (self.other_action == "none"):
             raise ValueError("other_origin and other_action must both be none, or both describe a real vehicle")
+        if (self.other_origin == "none") != (self.other_lane_keeping == "none"):
+            raise ValueError("other_origin and other_lane_keeping must both be none, or both describe a real vehicle")
         return self
 
 
@@ -52,12 +57,15 @@ class Input(ToolModel):
         if not isinstance(failure, dict) or not isinstance(failure.get("ego_cause"), str) or not failure["ego_cause"].strip():
             raise ValueError("failure_analysis requires the measured failure.ego_cause sentence")
         verification = value.get("verification")
-        if not isinstance(verification, dict) or verification.get("matched") is not True:
-            raise ValueError("failure_analysis requires a verified analysis (verification.matched is true)")
+        if not isinstance(verification, dict):
+            raise ValueError("failure_analysis requires the final visual verification record")
+        violation_step = value.get("violation_step")
+        if isinstance(violation_step, bool) or not isinstance(violation_step, int):
+            raise ValueError("failure_analysis requires the measured violation_step integer")
         try:
             attack = Attack.model_validate(value.get("attack"))
         except (TypeError, ValueError):
-            raise ValueError("failure_analysis requires the tool01 attack with map_context, ego_action, other_origin and other_action") from None
+            raise ValueError("failure_analysis requires the final tool01 attack with road, action and lane-keeping fields") from None
         environment = value.get("environment")
         if not isinstance(environment, dict) or not isinstance(environment.get("time"), str) or not environment["time"].strip():
             raise ValueError("failure_analysis requires the measured environment.time")
@@ -81,7 +89,8 @@ class Input(ToolModel):
                 raise ValueError(f"failure_analyzer {name} must be text when provided")
             if value[name].strip():
                 source[name] = value[name]
-        normalized_analysis = {"failure": dict(failure), "attack": attack.model_dump(mode="json"),
+        normalized_analysis = {"violation_step": violation_step,
+                               "failure": dict(failure), "attack": attack.model_dump(mode="json"),
                                "environment": dict(environment), "verification": dict(verification)}
         if source:
             normalized_analysis["source"] = source

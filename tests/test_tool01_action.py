@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from tools.tool01_failure_analyzer import structure_facts as facts  # noqa: E402
+from tools.tool01_failure_analyzer.lane_behavior import direction_action  # noqa: E402
 
 N, DT, SPEED = 12, 0.5, 8.0
 
@@ -114,7 +115,7 @@ def net_world_turn(sequence):
 
 def measure(frames):
     sequence = facts.actor_sequences(frames)["track"]
-    return facts.classify_action(sequence, facts.classify_origin(sequence[0]))
+    return direction_action(sequence)
 
 
 class ActionTests(unittest.TestCase):
@@ -147,7 +148,7 @@ class ActionTests(unittest.TestCase):
         jump = math.degrees(sequence[6]["yaw"] - sequence[5]["yaw"])
         self.assertAlmostEqual(jump, -358.0, places=6)
         self.assertAlmostEqual(net_world_turn(sequence), 2.0, places=6)
-        self.assertEqual(facts.classify_action(sequence, facts.classify_origin(sequence[0])), "straight")
+        self.assertEqual(direction_action(sequence), "straight")
 
     def test_actor_local_yaw_jumping_minus_179_to_179(self):
         # actor -179° -> -181°: the stored local yaw really jumps +358°, true change -2°
@@ -158,7 +159,7 @@ class ActionTests(unittest.TestCase):
         jump = math.degrees(sequence[6]["yaw"] - sequence[5]["yaw"])
         self.assertAlmostEqual(jump, 358.0, places=6)
         self.assertAlmostEqual(net_world_turn(sequence), -2.0, places=6)
-        self.assertEqual(facts.classify_action(sequence, facts.classify_origin(sequence[0])), "straight")
+        self.assertEqual(direction_action(sequence), "straight")
 
     def test_ego_crossing_pi_while_the_actor_keeps_its_world_heading(self):
         # actor world heading 0° throughout; the ego goes 179° -> 181°, so the local yaw
@@ -170,7 +171,7 @@ class ActionTests(unittest.TestCase):
         jump = math.degrees(sequence[6]["yaw"] - sequence[5]["yaw"])
         self.assertAlmostEqual(jump, 358.0, places=6)
         self.assertAlmostEqual(net_world_turn(sequence), 0.0, places=6)
-        self.assertEqual(facts.classify_action(sequence, facts.classify_origin(sequence[0])), "straight")
+        self.assertEqual(direction_action(sequence), "straight")
 
     def test_gapped_observations_use_their_own_frame_pose(self):
         present = {3, 7, 11}
@@ -219,7 +220,7 @@ class EntryPointTests(unittest.TestCase):
     """Drive the real facts() entry with file and map dependencies replaced."""
 
     def test_facts_entry_reports_the_actor_turn(self):
-        frames = scene(0.0, math.radians(-30.0), 0.0, math.radians(-30.0), start=(4.0, 0.0, 0.0))
+        frames = scene(0.0, math.radians(-30.0), 0.0, math.radians(-360.0), start=(4.0, 0.0, 0.0))
         with mock.patch.object(facts, "scene_pickle", return_value=(frames, "synthetic-token")), \
              mock.patch.object(facts, "outcome", return_value=("collision", None, 1)), \
              mock.patch.object(facts, "map_context", return_value="t_junction"), \

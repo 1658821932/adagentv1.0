@@ -4,12 +4,11 @@ const LABELS = {
   straight_road: '直路', curve: '弯道', t_junction: '丁字路口',
   cross_intersection: '十字路口', merge: '汇流',
   straight: '直行', turn_left: '左转', turn_right: '右转',
-  lane_change_left: '向左变道', lane_change_right: '向右变道',
+  left_offset: '左偏移', keep: '保持', right_offset: '右偏移', unknown: '未知',
   ahead_same_lane: '同车道前方', behind_same_lane: '同车道后方',
   left_adjacent: '左相邻车道', right_adjacent: '右相邻车道',
   oncoming: '对向车道', left_arm: '左侧支路', right_arm: '右侧支路',
-  brake: '刹车', stop: '停止', cut_in_left: '从左侧切入', cut_in_right: '从右侧切入',
-  squeeze_left: '从左侧贴近', squeeze_right: '从右侧贴近', none: '无',
+  none: '无',
 };
 const label = value => LABELS[value] || text(value);
 const edit = value => value === null ? '无需编辑' : text(value);
@@ -37,7 +36,9 @@ export function scenarioDetailGroups(result, error) {
     { title: '整体目标场景', rows: [['目标场景', text(result.target_scene)]] },
     { title: '共同交互机制', rows: [
       ['道路形态', label(attack.map_context)], ['自车动作', label(attack.ego_action)],
+      ['自车车道保持', label(attack.ego_lane_keeping)],
       ['他车来向', label(attack.other_origin)], ['他车动作', label(attack.other_action)],
+      ['他车车道保持', label(attack.other_lane_keeping)],
     ] },
   ];
   for (const candidate of result.candidates || []) {

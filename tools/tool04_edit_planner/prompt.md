@@ -2,7 +2,7 @@
 
 核对范围：
 - road：道路形态及必要路口、支路是否满足 attack.map_context。
-- lanes：车道方向和连接是否支持 attack.ego_action、other_origin、other_action。
+- lanes：车道方向、宽度和连接是否支持 attack.ego_action / ego_lane_keeping、other_origin / other_action / other_lane_keeping。动作只看方向；左偏移、保持、右偏移看车辆相对自己车道的位置，不能把速度变化当作动作。
 - space：是否有目标动作及他车编辑、放置所需的可用空间。
 
 evidence.map_facts、map_checks、map_evidence_limits 提供地图事实、初筛结论及限制。结合实际相机画面核对，说明结论依据；可引用给定车道 ID、帧号和距离。缺字段、地图或画面证据不完整、未覆盖或被遮挡，不能证明结构不存在。证据不足保留 unknown；数据与画面矛盾时说明具体矛盾并补证，不默认通过。对 t_junction：只核对原轨迹经过的第一个真实路口；起点已在路口内就核对该路口。四臂十字路口可以兼容丁字目标，额外支路可空置，但所需来向、车道动作和空间仍须成立。对 cross_intersection：该路口至少需要四臂。对 straight_road、curve、merge：不选择路口，按道路连续性、车道和空间核对。目标路口不符合就重新检索，不跳到后续或其他道路的路口，也不额外检查高斯资产覆盖。

@@ -15,17 +15,18 @@ TOOL01 = {
     "simulation": "experiment/batch",
     "map_location": "us-pa-pittsburgh-hazelwood",
     "evidence_dir": "/logs/tool01/experiment/4abb45d9ee1a5c5c/run-1",
+    "violation_step": 8,
     "failure": {"outcome": "collision", "interaction": "crossing",
                 "ego_cause": "在丁字路口右转时，没有对从右侧支路左转过来的车辆让行"},
-    "attack": {"map_context": "t_junction", "ego_action": "turn_right",
-               "other_origin": "right_arm", "other_action": "turn_left"},
+    "attack": {"map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
+               "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep"},
     "environment": {"time": "2021-09-16T20:16:41+00:00", "weather": "cloudy", "extra": "路面干燥"},
-    "verification": {"matched": True, "notes": []},
+    "verification": {"sample_frames": [6, 8, 10], "corrections": [], "notes": []},
 }
 TOOL01_NONE = deepcopy(TOOL01)
-TOOL01_NONE["attack"] = {"map_context": "curve", "ego_action": "straight",
-                         "other_origin": "none", "other_action": "none"}
-FORWARDED = {"failure", "attack", "environment", "verification"}
+TOOL01_NONE["attack"] = {"map_context": "curve", "ego_action": "straight", "ego_lane_keeping": "keep",
+                         "other_origin": "none", "other_action": "none", "other_lane_keeping": "none"}
+FORWARDED = {"violation_step", "failure", "attack", "environment", "verification"}
 FIELDS = {"target_scene", "attack", "candidates"}
 CANDIDATE_FIELDS = {"candidate_id", "base_video_requirement", "attack_edit_strategy",
                     "ego_input_edit_strategy", "ego_correct_trajectory_strategy"}
@@ -195,9 +196,9 @@ def test_upstream_needs_every_forwarded_field(field):
     assert client.calls == 0
 
 
-def test_unverified_or_failed_upstream_is_rejected_before_the_model():
-    unverified = upstream(verification={"matched": False, "notes": ["画面不符"]})
-    for value in (unverified, {"status": "error", "error": {"message": "failed"}}, {"failure_reason": "old"}):
+def test_malformed_or_failed_upstream_is_rejected_before_the_model():
+    malformed = upstream(verification="not a record")
+    for value in (malformed, {"status": "error", "error": {"message": "failed"}}, {"failure_reason": "old"}):
         client = Client()
         out = real.run({"failure_analysis": value, "_llm_client": client})
         assert out["error"]["type"] == "input_validation_error", out
@@ -232,7 +233,8 @@ def test_upstream_envelope_tool_identity_is_required():
 
 def test_invalid_attack_in_upstream_is_rejected():
     for attack in (dict(TOOL01["attack"], map_context="roundabout"),
-                   {"map_context": "curve", "ego_action": "straight", "other_origin": "none"},
+                   {"map_context": "curve", "ego_action": "straight", "ego_lane_keeping": "keep",
+                    "other_origin": "none"},
                    dict(TOOL01["attack"], extra="nope")):
         client = Client()
         out = real.run({"failure_analysis": upstream(attack=attack), "_llm_client": client})
@@ -339,8 +341,8 @@ def test_output_schema_rejections():
     with pytest.raises(ValidationError):
         Response.model_validate(item)
     item = deepcopy(base)
-    item["attack"] = {"map_context": "curve", "ego_action": "straight",
-                      "other_origin": "none", "other_action": "turn_left"}
+    item["attack"] = {"map_context": "curve", "ego_action": "straight", "ego_lane_keeping": "keep",
+                      "other_origin": "none", "other_action": "turn_left", "other_lane_keeping": "none"}
     with pytest.raises(ValidationError):
         Response.model_validate(item)
     item = deepcopy(none_response())

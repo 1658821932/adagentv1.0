@@ -43,9 +43,11 @@ class MockBackendTests(unittest.TestCase):
         result = self.call(token="scene-token")
         self.assertEqual(set(result["failure"]), {"outcome", "interaction", "ego_cause"})
         self.assertEqual(set(result["attack"]),
-                         {"map_context", "ego_action", "other_origin", "other_action"})
+                         {"map_context", "ego_action", "ego_lane_keeping",
+                          "other_origin", "other_action", "other_lane_keeping"})
         self.assertEqual(set(result["environment"]), {"time", "weather", "extra"})
-        self.assertEqual(set(result["verification"]), {"matched", "notes"})
+        self.assertEqual(set(result["verification"]), {"sample_frames", "corrections", "notes"})
+        self.assertEqual(result["violation_step"], 7)
 
     def test_mock_reads_no_file_and_calls_no_backend(self):
         with mock.patch("builtins.open", side_effect=AssertionError("mock opened a file")), \

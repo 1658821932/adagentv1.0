@@ -25,10 +25,11 @@ request = json.load(sys.stdin)
 facts = dict(archive="archive", token="scene-4abb45d9ee1a5c5c", simulation_record="experiment/batch",
              map_location="map", violation_step=7,
              failure={{"outcome": "collision", "interaction": "crossing", "ego_cause": "x"}},
-             attack={{"map_context": "t_junction", "ego_action": "turn_right",
-                      "other_origin": "right_arm", "other_action": "turn_left"}},
+             attack={{"map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
+                      "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep"}},
              environment={{"time": "2021-09-16T20:16:41+00:00", "weather": None, "extra": None}})
-visual = dict(matched=True, notes=[], weather="clear", extra="")
+visual = dict(decision={{**facts["attack"], "interaction": "crossing"}}, sample_frames=[5, 7, 9],
+              corrections=[], notes=[], weather="clear", extra="")
 with mock.patch.object(real, "failure_facts", return_value=facts), \\
      mock.patch.object(real, "visual_check", return_value=visual):
     result = real.analyze(request["input_data"], request["run_dir"])

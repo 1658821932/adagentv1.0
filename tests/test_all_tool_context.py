@@ -20,13 +20,15 @@ def save(state,root,tool,payload,arguments=None,status="success"):
 BULK=["raw numerical evidence "+str(i) for i in range(2000)]
 PAYLOADS={
  "failure_analyzer":{"token":"4abb45d9ee1a5c5c","simulation":"experiment/batch","map_location":"map",
-     "evidence_dir":"/logs/tool01/run-1",
+     "evidence_dir":"/logs/tool01/run-1","violation_step":8,
      "failure":{"outcome":"collision","interaction":"crossing","ego_cause":"late braking into the curve"},
-     "attack":{"map_context":"t_junction","ego_action":"turn_right","other_origin":"right_arm","other_action":"turn_left"},
+     "attack":{"map_context":"t_junction","ego_action":"turn_right","ego_lane_keeping":"keep",
+               "other_origin":"right_arm","other_action":"turn_left","other_lane_keeping":"keep"},
      "environment":{"time":"2021-09-16T20:16:41+00:00","weather":"cloudy","extra":BULK[0]},
-     "verification":{"matched":True,"notes":[]}},
+     "verification":{"sample_frames":[6,8,10],"corrections":[],"notes":[]}},
  "scene_instance_generator":{"target_scene":"Curve; ego leaves road.","attack":{"map_context":"curve",
-     "ego_action":"straight","other_origin":"none","other_action":"none"},
+     "ego_action":"straight","ego_lane_keeping":"keep","other_origin":"none",
+     "other_action":"none","other_lane_keeping":"none"},
      "candidates":[{"candidate_id":"cand_1","base_video_requirement":"left curve","attack_edit_strategy":None,
                     "ego_input_edit_strategy":None,"ego_correct_trajectory_strategy":"slow before curve"},
                    {"candidate_id":"cand_2","base_video_requirement":"left curve","attack_edit_strategy":None,
@@ -37,7 +39,8 @@ PAYLOADS={
      "match_score":.8,"video_path":"/front.mp4"},
  "edit_planner":{"suitability":"ready","reasons":["base suitable"],"scene_id":"source","scene_token":"A",
      "candidate_id":"cand_1","target_scene":"Curve; ego leaves road.",
-     "attack":{"map_context":"curve","ego_action":"straight","other_origin":"none","other_action":"none"},
+     "attack":{"map_context":"curve","ego_action":"straight","ego_lane_keeping":"keep",
+               "other_origin":"none","other_action":"none","other_lane_keeping":"none"},
      "checks":{"road":"pass","lanes":"pass","space":"pass"},
      "adapted_plan":{"attack_edit_strategy":None,"ego_input_edit_strategy":None,
                      "ego_correct_trajectory_strategy":"slow before curve"},
@@ -147,7 +150,8 @@ def test_reference_handoffs_are_accepted_by_existing_tool_schemas(tmp_path):
     from tools.tool02_scene_instance_generator.schemas import Output as ScenarioOutput
     scenario=ScenarioOutput.model_validate(dict(
         target_scene="Curve; ego leaves road.",
-        attack={"map_context":"curve","ego_action":"straight","other_origin":"none","other_action":"none"},
+        attack={"map_context":"curve","ego_action":"straight","ego_lane_keeping":"keep",
+                "other_origin":"none","other_action":"none","other_lane_keeping":"none"},
         candidates=[dict(candidate_id=f"cand_{i}",base_video_requirement="left curve",
                          attack_edit_strategy=None,ego_input_edit_strategy=None,
                          ego_correct_trajectory_strategy="slow before curve") for i in (1,2,3)])).model_dump(mode="json")

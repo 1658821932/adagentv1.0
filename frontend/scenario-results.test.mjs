@@ -15,11 +15,11 @@ const retrieval = {
     frame_count: 18, images_complete: true },
 };
 
-test('tool02 exposes the whole target, four mechanism fields and every candidate strategy', () => {
+test('tool02 exposes the whole target, all mechanism fields and every candidate strategy', () => {
   assert.equal(scenarioSummary(scenario), scenario.target_scene);
   const groups = scenarioDetailGroups(scenario);
   assert.equal(groups[0].rows[0][1], scenario.target_scene);
-  assert.equal(groups[1].rows.length, 4);
+  assert.equal(groups[1].rows.length, 6);
   assert.equal(groups.length, 5);
   scenario.candidates.forEach((candidate, index) => {
     assert.equal(groups[index + 2].title, `候选 ${candidate.candidate_id}`);

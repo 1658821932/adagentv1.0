@@ -5,7 +5,7 @@ import json
 
 # Fields needed for orchestration, completion, recovery and the next tool.
 FIELDS = {
-    "failure_analyzer": ("token","simulation","map_location","evidence_dir","failure","attack",
+    "failure_analyzer": ("token","violation_step","simulation","map_location","evidence_dir","failure","attack",
                          "environment","verification"),
     "scene_instance_generator": ("target_scene","attack","candidates"),
     "video_retriever": ("video_path","source_file","source_segment","match_score","mode","candidate_id"),

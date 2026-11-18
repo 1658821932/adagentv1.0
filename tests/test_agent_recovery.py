@@ -139,10 +139,11 @@ def test_main_agent_passes_merged_candidate_directly_to_tool03(tmp_path, monkeyp
     monkeypatch.setattr(tool02, 'RECORDS_ROOT', tmp_path / 'tool02_records')
     analysis={'failure':{'outcome':'collision','interaction':'crossing',
                          'ego_cause':'Late yielding to cross traffic.'},
-              'attack':{'map_context':'t_junction','ego_action':'turn_right',
-                        'other_origin':'right_arm','other_action':'turn_left'},
+              'violation_step':8,
+              'attack':{'map_context':'t_junction','ego_action':'turn_right','ego_lane_keeping':'keep',
+                        'other_origin':'right_arm','other_action':'turn_left','other_lane_keeping':'keep'},
               'environment':{'time':'2021-09-16T20:16:41+00:00','weather':'cloudy','extra':'dry'},
-              'verification':{'matched':True,'notes':[]}}
+              'verification':{'sample_frames':[6,8,10],'corrections':[],'notes':[]}}
     class RequirementFlowClient(DecisionClient):
         def chat(self, messages):
             self.messages.append(deepcopy(messages))
@@ -189,10 +190,11 @@ def test_new_tool02_default_real_dispatch_and_old_name_is_unavailable(tmp_path, 
     monkeypatch.setattr(tool02,'RECORDS_ROOT',tmp_path/'tool02_records')
     from tools.tool02_scene_instance_generator.mock import run as mock_scene
     sample={'failure':{'outcome':'collision','interaction':'crossing','ego_cause':'Delayed yielding too late.'},
-            'attack':{'map_context':'t_junction','ego_action':'turn_right',
-                      'other_origin':'right_arm','other_action':'turn_left'},
+            'violation_step':8,
+            'attack':{'map_context':'t_junction','ego_action':'turn_right','ego_lane_keeping':'keep',
+                      'other_origin':'right_arm','other_action':'turn_left','other_lane_keeping':'keep'},
             'environment':{'time':'2021-09-16T20:16:41+00:00','weather':'cloudy','extra':'dry'},
-            'verification':{'matched':True,'notes':[]}}
+            'verification':{'sample_frames':[6,8,10],'corrections':[],'notes':[]}}
     response=mock_scene({'failure_analysis':sample})['result']
     client=SimpleNamespace(model='offline-injected',chat=lambda messages:json.dumps(response))
     out=call_tool('scene_instance_generator',{'failure_analysis':sample,'_llm_client':client})

@@ -1,8 +1,8 @@
 """Failure analyzer: measure the failure from the archive, then verify it against images.
 
-The archive supplies the authoritative facts (official PDM outcome, ego and actor
-motion, nuPlan map layout). The model is used once, only to verify those facts
-against the camera images and to fill the environment fields the archive lacks.
+The archive and map supply the initial facts. Three eight-camera sheets let the
+model correct the final road, direction, lane-keeping and conflict classification
+while the official PDM outcome and violation frame stay fixed.
 
 The whole analysis runs in a dedicated worker process started through
 ``mcp_servers.process.run_logged``, so ``timeout`` is a hard budget for data reading,
@@ -23,6 +23,7 @@ from mcp_servers.process import run_logged
 from mcp_servers.worldengine_failure_analysis.adapter.service import WfaError, failure_facts
 
 from . import evidence
+from .language import ego_cause
 from .schemas import Output
 from .visual_check import VisualCheckError, check as visual_check
 
@@ -92,11 +93,26 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
         return _failure("timeout" if _timeout_of(error) else "visual_check_error",
                         run_dir, stage, str(error))
 
-    if not visual["matched"]:
-        evidence.write_manifest(run_dir, status="failed", stage="verification",
-                                error="facts_disagree_with_images")
-        return _failure("facts_disagree_with_images", run_dir, "verification",
-                        "画面与测量结论不一致", notes=visual["notes"])
+    decision = visual["decision"]
+    facts["attack"].update({
+        "map_context": decision["map_context"],
+        "ego_action": decision["ego_action"],
+        "ego_lane_keeping": decision["ego_lane_keeping"],
+        "other_origin": decision["other_origin"],
+        "other_action": decision["other_action"],
+        "other_lane_keeping": decision["other_lane_keeping"],
+    })
+    facts["failure"]["interaction"] = decision["interaction"]
+    facts["failure"]["ego_cause"] = ego_cause(
+        decision["interaction"], facts["attack"], decision["ego_action"],
+        decision["ego_lane_keeping"], facts["failure"].get("outcome")
+    )
+    evidence.write_manifest(
+        run_dir,
+        stage="verification",
+        final=facts["attack"],
+        corrections=visual["corrections"],
+    )
 
     evidence.write_manifest(run_dir, status="success", stage="done", finished_at=evidence.stamp())
     return {
@@ -104,6 +120,7 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
         "tool": TOOL,
         "result": {
             "token": facts["token"],
+            "violation_step": facts["violation_step"],
             "simulation": facts["simulation_record"],
             "map_location": facts["map_location"],
             "evidence_dir": str(run_dir),
@@ -112,7 +129,11 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
             "environment": {"time": facts["environment"]["time"],
                             "weather": visual["weather"],
                             "extra": visual["extra"]},
-            "verification": {"matched": True, "notes": visual["notes"]},
+            "verification": {
+                "sample_frames": visual["sample_frames"],
+                "corrections": visual["corrections"],
+                "notes": visual["notes"],
+            },
         },
     }
 

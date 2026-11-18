@@ -204,7 +204,8 @@ class TargetEntryPointTests(unittest.TestCase):
         result = self.call(frames_with({7: [ahead(30.0)]}))
         self.assertEqual(result["attack"]["other_origin"], "none")
         self.assertEqual(result["attack"]["other_action"], "none")
-        self.assertEqual(result["failure"]["ego_cause"], "首次违规时刻5米内无目标车辆")
+        self.assertEqual(result["failure"]["ego_cause"],
+                         "在丁字路口直行时发生单车碰撞，首次违规时刻5米内无目标车辆")
 
     def test_facts_reports_the_selected_target(self):
         result = self.call(frames_with({7: [ahead(6.0)]}))

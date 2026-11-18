@@ -3,7 +3,7 @@
 const OUTCOME = { collision: '碰撞', road_departure: '出界', collision_and_departure: '碰撞且出界' };
 const INTERACTION = {
   rear_end: '追尾', crossing: '交叉冲突', side_swipe: '侧向刮擦',
-  lane_change: '变道冲突', single_vehicle: '单方事故',
+  opposite_direction: '对向碰撞', cut_in: '切入冲突', single_vehicle: '单方事故',
 };
 const MAP = {
   straight_road: '直路', curve: '弯道', t_junction: '丁字路口',
@@ -11,8 +11,8 @@ const MAP = {
 };
 const EGO_ACTION = {
   straight: '直行', turn_left: '左转', turn_right: '右转',
-  lane_change_left: '向左变道', lane_change_right: '向右变道',
 };
+const LANE_KEEPING = { left_offset: '左偏移', keep: '保持', right_offset: '右偏移', unknown: '未知', none: '无' };
 const OTHER_ORIGIN = {
   ahead_same_lane: '同车道前方', behind_same_lane: '同车道后方',
   left_adjacent: '左相邻车道', right_adjacent: '右相邻车道',
@@ -21,8 +21,7 @@ const OTHER_ORIGIN = {
 };
 const OTHER_ACTION = {
   straight: '直行', turn_left: '左转', turn_right: '右转',
-  cut_in_left: '从左侧切入', cut_in_right: '从右侧切入',
-  brake: '急刹', stop: '停止', squeeze_left: '从左侧贴近', squeeze_right: '从右侧贴近',
+  none: '无',
 };
 const WEATHER = { clear: '晴', cloudy: '多云', rainy: '雨', foggy: '雾', snowy: '雪', unknown: '未知' };
 const STAGE = {
@@ -52,6 +51,7 @@ function failureGroup(result) {
       title: '失败判定',
       rows: [
         ['判定', named(OUTCOME, failure.outcome)],
+        ['首次违规帧', Number.isInteger(result.violation_step) ? String(result.violation_step) : ''],
         ['交互类型', named(INTERACTION, failure.interaction)],
         ['自车原因', text(failure.ego_cause)],
       ],
@@ -97,8 +97,10 @@ export function failureDetailGroups(result, error) {
       rows: [
         ['地图', named(MAP, attack.map_context)],
         ['自车动作', named(EGO_ACTION, attack.ego_action)],
+        ['自车车道保持', named(LANE_KEEPING, attack.ego_lane_keeping)],
         ['目标车辆来向', named(OTHER_ORIGIN, attack.other_origin)],
         ['目标车辆动作', named(OTHER_ACTION, attack.other_action)],
+        ['目标车辆车道保持', named(LANE_KEEPING, attack.other_lane_keeping)],
       ],
     });
   }
@@ -117,11 +119,14 @@ export function failureDetailGroups(result, error) {
 
   const verification = data.verification;
   if (verification && typeof verification === 'object') {
-    const matched = verification.matched === true ? '画面与测量一致'
-      : verification.matched === false ? '画面与测量不一致' : '';
+    const frames = Array.isArray(verification.sample_frames)
+      ? verification.sample_frames.join('、') : '';
+    const corrections = Array.isArray(verification.corrections) ? verification.corrections.length : 0;
     const notes = Array.isArray(verification.notes)
       ? verification.notes.filter(note => text(note)).join('；') : '';
-    groups.push({ title: '视觉核对', rows: [['核对结果', matched], ['备注', notes]] });
+    groups.push({ title: '视觉核对', rows: [
+      ['核对帧', frames], ['修正项', corrections ? `${corrections} 项` : '无'], ['备注', notes],
+    ] });
   }
 
   const evidence = text(data.evidence_dir) || text(error?.evidence_dir);

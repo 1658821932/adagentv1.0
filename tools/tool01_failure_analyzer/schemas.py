@@ -20,10 +20,11 @@ class Input(InputModel):
 
 class Output(OutputModel):
     token: str = Field(description='Full WorldEngine scene token that was analyzed.')
+    violation_step: int = Field(description='Official first violation frame used for behavior analysis.')
     simulation: str | None = Field(default=None, description='Closed-loop simulation record that produced the official metrics.')
     map_location: str | None = Field(default=None, description='nuPlan map name for this scene; used when a map lookup is needed.')
     evidence_dir: str = Field(default="", description='Directory holding the evidence used for the analysis, for optional inspection.')
-    failure: dict[str, Any] = Field(description='Measured failure facts: outcome (collision / road_departure / collision_and_departure), interaction (rear_end / crossing / side_swipe / lane_change / single_vehicle) and ego_cause (one sentence naming what the ego failed to react to).')
-    attack: dict[str, Any] = Field(description='Two-vehicle structure to reproduce: map_context (straight_road / t_junction / cross_intersection / curve / merge), ego_action, other_origin and other_action.')
+    failure: dict[str, Any] = Field(description='Final failure facts: outcome, interaction (rear_end / opposite_direction / cut_in / crossing / side_swipe / single_vehicle) and ego_cause.')
+    attack: dict[str, Any] = Field(description='Final two-vehicle structure: map_context, ego_action, ego_lane_keeping, other_origin, other_action and other_lane_keeping.')
     environment: dict[str, Any] = Field(description='Environment: time (from the scene timestamp), weather (clear / cloudy / rainy / foggy / snowy / unknown) and extra (one sentence of visual context).')
-    verification: dict[str, Any] = Field(description='Visual verification of the measured facts: matched (camera images agree with the measurements) and notes explaining any disagreement.')
+    verification: dict[str, Any] = Field(description='Three-frame eight-camera verification: sample_frames, corrections from measured to final values, and notes.')

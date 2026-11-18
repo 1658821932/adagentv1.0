@@ -14,15 +14,17 @@ MOCK_FAILURE = {
 MOCK_ATTACK = {
     "map_context": "t_junction",
     "ego_action": "turn_right",
+    "ego_lane_keeping": "keep",
     "other_origin": "right_arm",
     "other_action": "turn_left",
+    "other_lane_keeping": "keep",
 }
 MOCK_ENVIRONMENT = {
     "time": "2021-09-16T20:16:41+00:00",
     "weather": "clear",
     "extra": "mock scene: dry road at a t-junction with a right arm",
 }
-MOCK_VERIFICATION = {"matched": True, "notes": []}
+MOCK_VERIFICATION = {"sample_frames": [5, 7, 9], "corrections": [], "notes": []}
 
 
 def run(input_data: dict) -> dict:
@@ -33,6 +35,7 @@ def run(input_data: dict) -> dict:
         "tool": "failure_analyzer",
         "result": {
             "token": token,
+            "violation_step": 7,
             "simulation": input_data.get("simulation"),
             "map_location": MOCK_MAP_LOCATION,
             "evidence_dir": MOCK_EVIDENCE_DIR,

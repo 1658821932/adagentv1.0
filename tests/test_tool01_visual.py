@@ -18,8 +18,10 @@ from tools.tool01_failure_analyzer import evidence, real, visual_check  # noqa: 
 CAMERA_TMP = tempfile.TemporaryDirectory(prefix="t01cam-")
 RUN_TMP = tempfile.TemporaryDirectory(prefix="t01run-")
 
-FACTS = {"failure": {"outcome": "collision", "interaction": "crossing"},
-         "attack": {"map_context": "t_junction", "ego_action": "turn_right"}}
+FACTS = {"failure": {"outcome": "collision", "interaction": "opposite_direction"},
+         "attack": {"map_context": "straight_road", "ego_action": "straight",
+                    "ego_lane_keeping": "left_offset", "other_origin": "oncoming",
+                    "other_action": "straight", "other_lane_keeping": "keep"}}
 
 
 class StubClient:
@@ -39,7 +41,11 @@ class StubClient:
 
 
 def answer(**overrides):
-    payload = {"matched": True, "notes": [], "weather": "cloudy", "extra": "白天，路面干燥"}
+    payload = {"map_context": "straight_road", "ego_action": "straight",
+               "ego_lane_keeping": "left_offset", "other_origin": "oncoming",
+               "other_action": "straight", "other_lane_keeping": "keep",
+               "interaction": "opposite_direction", "notes": [],
+               "weather": "cloudy", "extra": "白天，路面干燥"}
     payload.update(overrides)
     for name in [key for key, value in overrides.items() if value is _MISSING]:
         payload.pop(name)
@@ -75,11 +81,12 @@ def camera_frames(count):
             for index in range(count)]
 
 
-def run_check(payload, count=12, violation=_DEFAULT, run_dir=None):
+def run_check(payload, count=12, violation=_DEFAULT, run_dir=None, facts_override=None):
     StubClient.answer = payload
     StubClient.calls = []
     frames = camera_frames(count)
     facts = dict(FACTS, violation_step=7 if violation is _DEFAULT else violation, frame_images=frames)
+    facts.update(facts_override or {})
     directory = Path(run_dir) if run_dir else Path(RUN_TMP.name) / f"run-{uuid4().hex[:8]}"
     directory.mkdir(parents=True, exist_ok=True)
     with mock.patch("agent.llm_client.LLMClient", StubClient):
@@ -97,21 +104,23 @@ def listed_frames(text):
 
 
 class SampledFrameTests(unittest.TestCase):
-    def test_four_images_inside_the_scene(self):
+    def test_three_images_around_violation(self):
         _, directory = run_check(answer())
         text, images = last_prompt()
-        self.assertEqual(listed_frames(text), [0, 6, 8, 11])
-        self.assertEqual(len(images), 4)
+        self.assertEqual(listed_frames(text), [5, 7, 9])
+        self.assertEqual(len(images), 3)
         self.assertIn("首次违规帧为第 7 帧", text)
-        self.assertIn("你会收到 4 张", text)
-        self.assertIn("- 第 2 张：帧 6，3.0s", text)
-        self.assertIn("首次违规前一帧", text)
+        self.assertIn("你会收到 3 张", text)
+        self.assertIn("- 第 1 张：帧 5，2.5s", text)
+        self.assertIn("首次违规前二帧", text)
+        self.assertIn("首次违规帧", text)
+        self.assertIn("首次违规后二帧", text)
         self.assertNotIn("事故前", text)
         self.assertNotIn("事故后", text)
 
     def test_boundary_violations_keep_the_real_frames(self):
-        cases = {(0, 12): [0, 1, 11], (1, 12): [0, 2, 11], (10, 12): [0, 9, 11],
-                 (11, 12): [0, 10, 11], (0, 1): [0], (1, 2): [0, 1]}
+        cases = {(0, 12): [0, 2], (1, 12): [0, 1, 3], (10, 12): [8, 10, 11],
+                 (11, 12): [9, 11], (0, 1): [0], (1, 2): [0, 1]}
         for (violation, count), expected in cases.items():
             with self.subTest(violation=violation, count=count):
                 run_check(answer(), count=count, violation=violation)
@@ -144,8 +153,12 @@ class SampledFrameTests(unittest.TestCase):
 class AcceptedAnswers(unittest.TestCase):
     def test_complete_answer_passes(self):
         result, _ = run_check(answer())
-        self.assertEqual(result, {"matched": True, "notes": [], "weather": "cloudy",
-                                  "extra": "白天，路面干燥"})
+        self.assertEqual(result["sample_frames"], [5, 7, 9])
+        self.assertEqual(result["corrections"], [])
+        self.assertEqual(result["notes"], [])
+        self.assertEqual(result["weather"], "cloudy")
+        self.assertEqual(result["extra"], "白天，路面干燥")
+        self.assertEqual(result["decision"]["ego_lane_keeping"], "left_offset")
 
     def test_explicit_unknown_and_empties_pass(self):
         result, _ = run_check(answer(weather="unknown", extra="", notes=[]))
@@ -154,11 +167,20 @@ class AcceptedAnswers(unittest.TestCase):
     def test_weather_is_normalized(self):
         self.assertEqual(run_check(answer(weather=" Cloudy "))[0]["weather"], "cloudy")
 
-    def test_matched_false_reaches_the_mismatch_path(self):
-        result, directory = run_check(answer(matched=False, notes=["画面里自车没有右转"]))
-        self.assertFalse(result["matched"])
-        self.assertEqual(result["notes"], ["画面里自车没有右转"])
-        self.assertEqual(evidence.read_manifest(directory)["verification"]["matched"], False)
+    def test_visual_model_can_correct_the_initial_analysis(self):
+        initial = {
+            "failure": {"outcome": "collision", "interaction": "crossing"},
+            "attack": {"map_context": "curve", "ego_action": "turn_right",
+                       "ego_lane_keeping": "keep", "other_origin": "right_arm",
+                       "other_action": "turn_left", "other_lane_keeping": "keep"},
+        }
+        result, directory = run_check(answer(
+            notes=["画面为直路，自车直行并向左偏离，来车在对向车道"]), facts_override=initial)
+        self.assertEqual(result["decision"]["ego_action"], "straight")
+        self.assertEqual({item["field"] for item in result["corrections"]},
+                         {"map_context", "ego_action", "ego_lane_keeping",
+                          "other_origin", "other_action", "interaction"})
+        self.assertEqual(evidence.read_manifest(directory)["verification"]["sample_frames"], [5, 7, 9])
 
 
 class RejectedAnswers(unittest.TestCase):
@@ -170,23 +192,16 @@ class RejectedAnswers(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "vlm")
 
     def test_missing_fields_are_reported(self):
-        for name in ("matched", "notes", "weather", "extra"):
+        for name in ("map_context", "ego_action", "ego_lane_keeping", "other_origin",
+                     "other_action", "other_lane_keeping", "interaction", "notes",
+                     "weather", "extra"):
             with self.subTest(name):
                 self.assert_rejected(answer(**{name: _MISSING}), name)
-
-    def test_non_boolean_matched_is_rejected(self):
-        for value in (1, 0, "true", None):
-            with self.subTest(value=value):
-                self.assert_rejected(answer(matched=value), "matched")
 
     def test_bad_notes_are_rejected(self):
         for value in (False, None, "no notes", [1, None], [""], ["  "]):
             with self.subTest(value=value):
                 self.assert_rejected(answer(notes=value), "notes")
-
-    def test_notes_must_match_the_verification_verdict(self):
-        self.assert_rejected(answer(matched=True, notes=["画面有差异"]), "empty", "true")
-        self.assert_rejected(answer(matched=False, notes=[]), "explain", "false")
 
     def test_unexpected_fields_are_rejected(self):
         payload = json.loads(answer())

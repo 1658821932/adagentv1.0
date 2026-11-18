@@ -24,14 +24,15 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from common.pdm_scores import score_file
+from tools.tool01_failure_analyzer.lane_behavior import analyze as analyze_lanes
+from tools.tool01_failure_analyzer.lane_behavior import direction_action
+from tools.tool01_failure_analyzer.language import ego_cause
 
-STOPPED_MPS = 0.3
 LANE_HALF_WIDTH_M = 3.5
 ADJACENT_MAX_M = 9.0
 BODY_DISTANCE_LIMIT_M = 5.0
 BODY_DISTANCE_TOLERANCE_M = 1e-6
 TURN_DEG = 25.0
-LANE_CHANGE_LATERAL_M = 2.0
 INTERSECTION_RANGE_M = 40.0
 CURVE_DEG = 8.0
 DEFAULT_MAPS_ROOT = "data/navtrain_ep_per1/maps"
@@ -57,7 +58,11 @@ def scene_pickle(archive, token):
     return frames, os.path.basename(candidates[0])[:-4]
 
 
-def ego_facts(frames):
+def ego_facts(frames, through=None):
+    if through is not None:
+        if isinstance(through, bool) or not isinstance(through, int) or not 0 <= through < len(frames):
+            raise FactsError(f"ego analysis frame must be an integer inside 0..{len(frames) - 1}, got {through!r}")
+        frames = frames[:through + 1]
     times, positions, yaw = [], [], []
     for frame in frames:
         matrix = frame.get("ego2global")
@@ -68,11 +73,6 @@ def ego_facts(frames):
         yaw.append(math.atan2(matrix[1][0], matrix[0][0]))
     if len(times) < 2:
         raise FactsError("scene has fewer than two ego poses")
-    origin_x, origin_y, yaw0 = positions[0][0], positions[0][1], yaw[0]
-    lateral = []
-    for x, y in positions:
-        dx, dy = x - origin_x, y - origin_y
-        lateral.append(-math.sin(yaw0) * dx + math.cos(yaw0) * dy)
     unwrapped = [yaw[0]]
     for value in yaw[1:]:
         delta = value - unwrapped[-1]
@@ -82,13 +82,7 @@ def ego_facts(frames):
             delta += 2 * math.pi
         unwrapped.append(unwrapped[-1] + delta)
     turn_deg = math.degrees(unwrapped[-1] - unwrapped[0])
-    if abs(turn_deg) >= TURN_DEG:
-        action = "turn_right" if turn_deg < 0 else "turn_left"
-    elif abs(lateral[-1]) >= LANE_CHANGE_LATERAL_M:
-        action = "lane_change_right" if lateral[-1] < 0 else "lane_change_left"
-    else:
-        action = "straight"
-    return dict(times=times, positions=positions, yaw=yaw, action=action, turn_deg=turn_deg)
+    return dict(times=times, positions=positions, yaw=yaw, turn_deg=turn_deg)
 
 
 # ------------------------------------------------------------------ actors
@@ -133,16 +127,9 @@ def actor_sequences(frames):
                 raise FactsError(f"frame {index} box for {track} has non-finite planar geometry")
             if box[3] <= 0.0 or box[4] <= 0.0:
                 raise FactsError(f"frame {index} box for {track} has unusable size {box[3]}x{box[4]}")
-            if velocities.ndim != 2 or velocities.shape[0] <= position or velocities.shape[1] < 2:
-                raise FactsError(f"frame {index} has no usable velocity for {track}")
-            planar_x, planar_y = velocities[position][0], velocities[position][1]
-            if not (math.isfinite(planar_x) and math.isfinite(planar_y)):
-                raise FactsError(f"frame {index} velocity for {track} has non-finite planar components")
-            speed = float(math.hypot(planar_x, planar_y))
             tracks.setdefault(track, []).append(dict(index=index, x=float(box[0]), y=float(box[1]),
                                                      length=float(box[3]), width=float(box[4]),
-                                                     yaw=float(box[6]), world_yaw=float(box[6]) + heading,
-                                                     speed=speed))
+                                                     yaw=float(box[6]), world_yaw=float(box[6]) + heading))
     return tracks
 
 
@@ -319,41 +306,6 @@ def classify_origin(first):
     if abs(y) <= ADJACENT_MAX_M and aligned:
         return side + "_adjacent"
     return side + "_arm"
-
-
-def classify_action(sequence, origin):
-    speeds = []
-    for item in sequence:
-        speed = item.get("speed")
-        if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed):
-            raise FactsError(f"observation at frame {item.get('index')} has no usable speed: {speed!r}")
-        speeds.append(float(speed))
-    if not speeds:
-        raise FactsError("actor sequence holds no observation")
-    if max(speeds) <= STOPPED_MPS:
-        return "stop"
-    unwrapped = [sequence[0]["world_yaw"]]
-    for item in sequence[1:]:
-        delta = item["world_yaw"] - unwrapped[-1]
-        while delta > math.pi:
-            delta -= 2 * math.pi
-        while delta < -math.pi:
-            delta += 2 * math.pi
-        unwrapped.append(unwrapped[-1] + delta)
-    heading = math.degrees(unwrapped[-1] - unwrapped[0])
-    if heading <= -TURN_DEG:
-        return "turn_right"
-    if heading >= TURN_DEG:
-        return "turn_left"
-    if speeds[0] - min(speeds) >= 2.0:
-        return "brake"
-    if origin.endswith("_adjacent"):
-        lateral = [abs(i["y"]) for i in sequence]
-        if lateral[0] - min(lateral) >= 1.0:
-            if min(lateral) <= LANE_HALF_WIDTH_M:
-                return "cut_in_left" if origin.startswith("left") else "cut_in_right"
-            return "squeeze_left" if origin.startswith("left") else "squeeze_right"
-    return "straight"
 
 
 # ------------------------------------------------------------------ outcome
@@ -568,34 +520,13 @@ def interaction(attack, ego_action):
     origin = attack["other_origin"]
     if origin == "none":
         return "single_vehicle"
-    if ego_action in ("lane_change_left", "lane_change_right"):
-        return "lane_change"
     if origin in ("ahead_same_lane", "behind_same_lane"):
         return "rear_end"
-    if origin in ("left_arm", "right_arm", "oncoming"):
+    if origin == "oncoming":
+        return "opposite_direction"
+    if origin in ("left_arm", "right_arm"):
         return "crossing"
     return "side_swipe"
-
-
-def ego_cause(interaction_kind, attack, ego_action):
-    place = {"straight_road": "直路上", "t_junction": "丁字路口", "cross_intersection": "十字路口",
-             "curve": "弯道上", "merge": "汇流处"}[attack["map_context"]]
-    motion = {"straight": "直行", "turn_left": "左转", "turn_right": "右转",
-              "lane_change_left": "向左变道", "lane_change_right": "向右变道"}[ego_action]
-    if attack["other_origin"] == "none":
-        return f"首次违规时刻{BODY_DISTANCE_LIMIT_M:g}米内无目标车辆"
-    origin = {"ahead_same_lane": "同车道前方", "behind_same_lane": "同车道后方",
-              "left_adjacent": "左相邻车道", "right_adjacent": "右相邻车道",
-              "oncoming": "对向车道", "left_arm": "左侧支路", "right_arm": "右侧支路"}[attack["other_origin"]]
-    action = {"straight": "直行", "turn_left": "左转", "turn_right": "右转",
-              "cut_in_left": "从左侧切入", "cut_in_right": "从右侧切入",
-              "brake": "急刹", "stop": "停止", "squeeze_left": "从左侧贴近挤压",
-              "squeeze_right": "从右侧贴近挤压"}[attack["other_action"]]
-    if interaction_kind == "rear_end":
-        return f"在{place}{motion}时，没有对{origin}{action}的车辆及时减速"
-    if interaction_kind == "lane_change":
-        return f"在{place}{motion}时，没有发现{origin}{action}的车辆"
-    return f"在{place}{motion}时，没有对从{origin}{action}过来的车辆让行"
 
 
 def frame_images(archive, frames):
@@ -626,26 +557,35 @@ def scene_time(frames):
 # ------------------------------------------------------------------ entry
 def facts(archive, token):
     frames, full_token = scene_pickle(archive, token)
-    ego = ego_facts(frames)
     outcome_kind, _, violation_step = outcome(archive, full_token)
+    ego = ego_facts(frames, through=violation_step)
     tracks = actor_sequences(frames)
-    _, sequence = conflicting_track(tracks, violation_step, frames)
+    selected, sequence = conflicting_track(tracks, violation_step, frames)
     conflict_xy = ego["positions"][violation_step]
     if sequence is None:
         attack = {"other_origin": "none", "other_action": "none"}
     else:
         first = sequence[0]
         origin = classify_origin(first)
-        action = classify_action(sequence, origin)
+        action = direction_action(sequence, through=violation_step)
         attack = {"other_origin": origin, "other_action": action}
-    attack["map_context"] = map_context(frames[0]["map_location"], conflict_xy, ego["turn_deg"])
+    lanes = analyze_lanes(frames[0]["map_location"], frames, ego, tracks,
+                          None if sequence is None else selected, violation_step)
+    attack["map_context"] = lanes["map_context"] or map_context(
+        frames[0]["map_location"], conflict_xy, ego["turn_deg"])
     map_action = map_ego_action(frames[0]["map_location"], frames, ego)
-    ego_action = map_action or ego["action"]
-    kind = interaction(attack, ego_action)
+    ego_action = map_action or "straight"
+    ego_lane_keeping = lanes["ego_lane_keeping"]
+    if not lanes["available"]:
+        ego_lane_keeping = "unknown"
+    if sequence is not None and lanes["other_origin"]:
+        attack["other_origin"] = lanes["other_origin"]
+        attack["other_action"] = lanes["other_action"]
+    attack["ego_lane_keeping"] = ego_lane_keeping
+    attack["other_lane_keeping"] = lanes["other_lane_keeping"] if sequence is not None else "none"
+    kind = lanes["interaction"] or interaction(attack, ego_action)
     failure = {"outcome": outcome_kind, "interaction": kind,
-               "ego_cause": ego_cause(kind, attack, ego_action)}
-    if map_action and map_action != ego["action"]:
-        failure["recorded_ego_action"] = ego["action"]
+               "ego_cause": ego_cause(kind, attack, ego_action, ego_lane_keeping, outcome_kind)}
     return {
         "status": "ok",
         "token": full_token,
@@ -653,7 +593,9 @@ def facts(archive, token):
         "map_location": frames[0]["map_location"],
         "failure": failure,
         "attack": {"map_context": attack["map_context"], "ego_action": ego_action,
-                   "other_origin": attack["other_origin"], "other_action": attack["other_action"]},
+                   "ego_lane_keeping": attack["ego_lane_keeping"],
+                   "other_origin": attack["other_origin"], "other_action": attack["other_action"],
+                   "other_lane_keeping": attack["other_lane_keeping"]},
         "environment": {"time": scene_time(frames), "weather": None, "extra": None},
         "frame_images": frame_images(archive, frames),
     }
