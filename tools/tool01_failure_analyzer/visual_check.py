@@ -45,6 +45,14 @@ PROMPT = """结合地图初始分析和八相机画面，给出可修正的最�
 同向相邻车辆进入自车车道为切入；方向相反的车辆进入自车路径为对向碰撞。前视看不到侧碰时必须检查左右相机，不能据此断言未碰撞。
 你可以修改初始分析中的道路形态、自车动作、自车车道保持、他车来向、他车动作、他车车道保持和冲突方式。不要修改 token、违规帧或官方指标。
 notes 必须逐条说明每次修改的理由；没有修改时为空数组。
+字段只能使用以下固定值：
+- map_context: straight_road, curve, t_junction, cross_intersection, merge
+- ego_action: straight, turn_left, turn_right
+- ego_lane_keeping: left_offset, keep, right_offset
+- other_origin: ahead_same_lane, behind_same_lane, oncoming, left_adjacent, right_adjacent, left_arm, right_arm, none
+- other_action: straight, turn_left, turn_right, none
+- other_lane_keeping: left_offset, keep, right_offset, none
+- interaction: rear_end, opposite_direction, cut_in, crossing, side_swipe, single_vehicle
 补充 weather（clear/cloudy/rainy/foggy/snowy/unknown）和一句环境描述 extra；无法判断时分别填 unknown、空字符串，不猜测。
 必须返回 JSON：
 {{"map_context":"straight_road","ego_action":"straight","ego_lane_keeping":"keep","other_origin":"none","other_action":"none","other_lane_keeping":"none","interaction":"single_vehicle","notes":[],"weather":"unknown","extra":""}}
