@@ -746,3 +746,25 @@ strong,b{color:inherit}
 .evidence-image img{width:100%;display:block}
 .evidence-image figcaption{font-size:10px;color:#8a8a8a;padding:6px 8px;line-height:1.6}
 @media(max-width:600px){.detail-row span{flex-basis:70px}.evidence-images{grid-template-columns:1fr}}
+
+/* 子 Agent 活动：保留工具内部的真实阶段和失败/降级状态 */
+.subagent-activity{display:grid;gap:4px;margin:0 0 12px;padding:0 2px}
+.subagent-activity:empty{display:none}
+.activity-row{display:grid;grid-template-columns:16px minmax(100px,auto) auto minmax(0,1fr) auto;align-items:center;gap:7px;padding:6px 8px;border:1px solid #e8eee9;border-radius:6px;background:#fbfcfb;font-size:9px;color:#7f9386}
+.activity-marker{width:14px;height:14px;display:grid;place-items:center;border-radius:50%;background:#f0f5f1;color:#6c977d;font-size:8px}
+.activity-name{font-weight:600;color:#5d7968;white-space:nowrap}
+.activity-state{padding:1px 5px;border-radius:3px;background:#f1f5f2;color:#84978a;white-space:nowrap}
+.activity-summary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity-time{font-family:ui-monospace,monospace;color:#9baa9f;white-space:nowrap}
+.activity-row.failed{border-color:#efd8d4;background:#fffafa}
+.activity-row.failed .activity-marker,.activity-row.failed .activity-state{color:#a75349;background:#fbecea}
+.activity-row.warning{border-color:#eee1c8;background:#fffdf7}
+.activity-row.warning .activity-marker,.activity-row.warning .activity-state{color:#9a742d;background:#fbf4e4}
+.activity-row.preview .activity-marker,.activity-row.preview .activity-state{color:#6f7f9d;background:#eef2f8}
+@media(max-width:600px){.activity-row{grid-template-columns:16px minmax(0,1fr) auto}.activity-summary{grid-column:2/4}.activity-time{display:none}}
+
+/* 历史续聊中的前序轮次只保留任务、结局和步数，避免把全部工具证据重复铺开 */
+.archived-run{border:1px solid #ecefeb;border-radius:8px;background:#fafbfa;padding:11px 13px}
+.archived-run b{font-size:11px;font-weight:500;color:#587362}
+.archived-run p{font-size:11px;line-height:1.8;color:#72867a;margin:5px 0}
+.archived-run small{font:9px/1.6 ui-monospace,monospace;color:#9dab9f}

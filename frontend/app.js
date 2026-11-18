@@ -5,6 +5,7 @@ import { createConfigPanelController } from './config-panel-controller.mjs';
 import { panelLoadingHtml, panelErrorHtml, readPanelData } from './panel-loading.mjs';
 import { failureDetailGroups, failureSummary, stageLabel } from './tool01-result.mjs';
 import { scenarioSummary, scenarioDetailGroups, retrievalSummary, retrievalDetailGroups, editPlannerSummary, editPlannerDetailGroups } from './scenario-results.mjs';
+import { submitConversation } from './conversation.js';
 window.addEventListener('error', (e) => {
   const box = document.createElement('div');
   box.className = 'js-error';
@@ -24,6 +25,7 @@ const historyPanel = document.querySelector('#history-panel');
 const historyCount = document.querySelector('#history-count');
 const historyFeedback = document.querySelector('#history-feedback');
 const historyItems = document.querySelector('#history-items');
+const modelLabel = document.querySelector('#conversation-model');
 const userMark = `<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.6" r="3.3"/><path d="M5.6 19.4c0-3.3 2.9-5.6 6.4-5.6s6.4 2.3 6.4 5.6"/></svg>`;
 const agentMark = `<svg aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 8a8.4 8.4 0 0 0-14.7-1.2M4.5 16a8.4 8.4 0 0 0 14.7 1.2"/><path d="m16.3 7.2 3.5 1.1.7-3.6M7.7 16.8l-3.5-1.1-.7 3.6"/><path d="m8 10 1.5-3h5L16 10M7.5 10h9v5h-9zM9 15v1M15 15v1M10 12.5h4"/></svg>`;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -35,7 +37,7 @@ const fileUrl = path => serviceUrl('/api/file?path=' + encodeURIComponent(path))
 let viewingRun = null;        // 当前查看的 run_id
 let pollTimer = null;
 let rendered = new Map();     // step -> {decisionEl, cardEl, state}
-let streamEl = null, progressEl = null, phaseEl = null, activityEl = null, answerEl = null;
+let streamEl = null, progressEl = null, phaseEl = null, activityEl = null, answerEl = null, subagentEl = null;
 let replayToken = 0;         // 每次重放自增，用于中止旧任务
 let replayPaused = false;
 let replaySpeed = 4;         // 4x 默认，录屏节奏比较合适
@@ -107,9 +109,11 @@ function stepTimes(s){
   if (s.llm && typeof s.llm.elapsed_seconds === 'number') bits.push('思考 ' + s.llm.elapsed_seconds.toFixed(1) + 's');
   if (typeof s.duration === 'number') {
     bits.push('执行 ' + fmtDuration(s.duration));
-  } else if (s.status === 'running' || typeof s.elapsed_seconds === 'number') {
+  } else if (s.status === 'running') {
     const base = typeof s.elapsed_seconds === 'number' ? s.elapsed_seconds : 0;
     bits.push(`执行 <span class="step-time-live" data-base="${base}" data-stamp="${Date.now()}">${fmtDuration(base)}</span>`);
+  } else if (s.status === 'error') {
+    bits.push('执行实际耗时未知');
   }
   return bits.join(' · ');
 }
@@ -336,15 +340,27 @@ function setProgressMeta(d, running){
 
 function beginRunView(d){
   messages.replaceChildren();
-  rendered = new Map();
   resetWorkbench();
   message('user', `<p>${escape(d.task || '(无任务描述)').replace(/\n/g, '<br>')}</p>`);
-  const response = message('assistant', `<div class="agent-progress"><span class="thinking-spinner"></span><b class="agent-phase">任务理解</b><span class="agent-activity">准备决策</span><span class="agent-count"></span></div><div class="answer-slot"></div><div class="tool-stream"></div>`);
+  rendered = new Map();
+  mountAgentResponse();
+}
+
+function mountAgentResponse(continued = false){
+  const note = continued ? '保留以上执行记录' : '准备决策';
+  const response = message('assistant', `<div class="agent-progress"><span class="thinking-spinner"></span><b class="agent-phase">任务理解</b><span class="agent-activity">${note}</span><span class="agent-count"></span></div><div class="answer-slot"></div><div class="subagent-activity"></div><div class="tool-stream"></div>`);
   streamEl = response.querySelector('.tool-stream');
   progressEl = response.querySelector('.agent-progress');
   phaseEl = response.querySelector('.agent-phase');
   activityEl = response.querySelector('.agent-activity');
   answerEl = response.querySelector('.answer-slot');
+  subagentEl = response.querySelector('.subagent-activity');
+}
+
+// 续聊沿用当前对话，只新增一份回答，不清空用户消息和此前的工具记录。
+function continueRunView(d){
+  rendered = new Map();
+  mountAgentResponse(true);
 }
 
 
@@ -519,6 +535,8 @@ async function renderRun(runId){
   const d = await api(`/api/runs/${runId}`);
   if (viewingRun !== runId) return d;
   if (!streamEl) beginRunView(d);
+  showRunModel(d);
+  fillToolActivities(subagentEl, d.activities);
 
   setWorkbenchState(
     d.status === 'running' ? phaseNarrative(d) : statusLabel(d),
@@ -594,18 +612,93 @@ function fmtDuration(sec){
   return sec >= 60 ? `${Math.floor(sec / 60)}m${Math.round(sec % 60)}s` : `${Math.round(sec)}s`;
 }
 
+function errorPresentation(d, detail){
+  const message = String(d?.error || detail || '');
+  if (/Native execution requires/i.test(message)) {
+    return {
+      title: '07 策略评测未启动',
+      explanation: 'WorldEngine 尚未执行：本机缺少原生评测所需的配置、检查点、模型或数据类型。',
+      retryNote: '',
+    };
+  }
+  if (/APIConnectionError|Connection error/i.test(message)) {
+    const retry = (d?.summary?.stages || [])
+      .reduce((total, stage) => total + (Number(stage.retry_requests) || 0), 0);
+    return {
+      title: '模型服务连接失败',
+      explanation: firstSentence(message, 140),
+      retryNote: retry > 0 ? `已自动重试 ${retry} 次` : '',
+    };
+  }
+  return { title: statusLabel(d), explanation: firstSentence(message, 160), retryNote: '' };
+}
+
 // 收尾卡片：标题为“任务总结”，右上角为该次总结的思考耗时
 function answerCard(d, text, dec){
   const ok = d.status === 'success' || d.status === 'finished';
   const mark = ok ? '✓' : '✕';
-  const title = ok ? '任务总结' : statusLabel(d);
+  const presentation = ok ? null : errorPresentation(d, text);
+  const title = ok ? '任务总结' : presentation.title;
   const think = dec && dec.llm && typeof dec.llm.elapsed_seconds === 'number'
     ? `思考 ${dec.llm.elapsed_seconds.toFixed(1)}s` : '';
   return `<div class="step-card answer-card">`
     + `<div class="step-head"><span class="step-state">${mark}</span>`
     + `<b class="step-name">${escape(title)}</b>`
     + (think ? `<span class="step-times">${escape(think)}</span>` : '')
-    + `</div><p class="answer-text">${escape(text)}</p></div>`;
+    + `</div><p class="answer-text">${escape(presentation ? presentation.explanation : text)}</p>`
+    + (presentation?.retryNote ? `<p class="answer-retry">${escape(presentation.retryNote)}</p>` : '')
+    + (!ok ? '<details class="answer-error"><summary>查看详细错误</summary><pre>'
+      + escape(String(d.error || text || '')) + '</pre></details>' : '')
+    + '</div>';
+}
+
+const ACTIVITY_LABELS = {
+  'ego.foci': 'FOCI 优化',
+  'ego.understanding': '理解轨迹',
+  'ego.constructor': '构造候选',
+  'ego.visual_agent': '视觉核对',
+  'ego.edit': '编辑轨迹',
+  'ego.submit': '提交候选',
+  'attack.object_selection': '选择目标',
+  'attack.inspect': '检查候选',
+  'attack.submit': '提交攻击',
+};
+
+function activityRow(record){
+  const tone = record.status === 'invalid' || record.status === 'error' || record.status === 'failed'
+    ? 'failed' : record.status === 'fallback' ? 'warning' : record.status === 'preview' ? 'preview' : 'normal';
+  const marker = tone === 'failed' ? '✕' : tone === 'warning' ? '!' : tone === 'preview' ? '○' : '·';
+  const state = tone === 'failed' ? '参数无效' : tone === 'warning' ? '未完全达标'
+    : tone === 'preview' ? '预览' : (record.status || '已返回');
+  const elapsed = typeof record.elapsed_seconds === 'number' ? fmtDuration(record.elapsed_seconds) : '';
+  return `<div class="activity-row ${tone}" data-kind="${escape(record.kind)}">`
+    + `<span class="activity-marker">${marker}</span>`
+    + `<span class="activity-name">${escape(ACTIVITY_LABELS[record.name] || record.name)}</span>`
+    + `<span class="activity-state">${escape(state)}</span>`
+    + (record.summary ? `<span class="activity-summary">${escape(record.summary)}</span>` : '')
+    + (elapsed ? `<span class="activity-time">${escape(elapsed)}</span>` : '')
+    + `</div>`;
+}
+
+function fillToolActivities(container, activities){
+  if (!container || !Array.isArray(activities) || !activities.length) return;
+  container.innerHTML = activities.map(activityRow).join('');
+}
+
+function showRunModel(d){
+  if (!modelLabel) return;
+  const model = d?.llm_model || '未记录';
+  const effort = d?.llm_reasoning_effort || '未记录';
+  modelLabel.textContent = `主 Agent · ${model} · 思考 ${effort}`;
+  modelLabel.title = `本次运行实际使用：${model}；实际思考强度：${effort}`;
+}
+
+async function loadSelectedModel(){
+  try {
+    const cfg = await api('/api/config');
+    const active = (cfg.profiles || []).find(profile => profile.active);
+    if (active) showRunModel({ llm_model: active.model, llm_reasoning_effort: cfg.reasoning_effort || '跟随 profile' });
+  } catch { /* 配置不可读时保留运行详情里的真实模型标签 */ }
 }
 
 
@@ -640,27 +733,32 @@ async function poll(){
 async function run(text){
   if (running || !text.trim()) return;
   if (demoArmed) return playDemo(text.trim());
+  const task = text.trim();
+  const parentRun = viewingRun;
   document.querySelector('#welcome')?.remove();
   prompt.value = '';
   setRunning(true);
   replayBtn.classList.add('hidden');
   // 先把骨架画出来：服务器要等 Python 启动并打印日志才返回 run_id，
   // 不能让它决定首屏什么时候出现。
-  beginRunView({ task: text.trim(), steps: [], status: 'running' });
+  if (parentRun) {
+    message('user', `<p>${escape(task).replace(/\n/g, '<br>')}</p>`);
+    continueRunView({ task, steps: [], status: 'running', parent_run_id: parentRun });
+  } else {
+    beginRunView({ task, steps: [], status: 'running' });
+  }
   try {
-    const { run_id } = await api('/api/runs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task: text.trim() })
-    });
+    const { run_id } = await submitConversation(api, text, parentRun);
     viewingRun = run_id;
     closeHistory();
     loadHistory({ force:true });
     poll();
   } catch (e) {
-    phaseEl.textContent = '提交失败';
-    activityEl.textContent = '';
-    setWorkbenchState('提交失败', String(e.message || e), 'error');
+    if (typeof phaseEl !== 'undefined' && phaseEl) phaseEl.textContent = '提交失败';
+    if (typeof activityEl !== 'undefined' && activityEl) activityEl.textContent = '';
+    if (typeof setWorkbenchState === 'function') setWorkbenchState('提交失败', String(e.message || e), 'error');
     message('assistant', `<p>提交失败：${escape(e.message)}</p>`);
+    prompt.value = task;
     setRunning(false);
   }
 }
@@ -728,15 +826,52 @@ async function loadHistory({ force = false } = {}){
   return historyRequest;
 }
 
+async function loadConversationChain(id){
+  const chain = [];
+  const seen = new Set();
+  let current = id;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const detail = await api(`/api/runs/${current}`);
+    chain.unshift(detail);
+    current = detail.parent_run_id || null;
+  }
+  return chain;
+}
+
+function archivedRunHtml(d){
+  const finalDecision = (d.extra_decisions || []).filter(item => item.action === 'finish' || item.action === 'stop').pop();
+  const text = finalDecision?.reason || d.error || (d.status === 'success' || d.status === 'finished'
+    ? '任务完成。' : `运行结束（${statusLabel(d)}）`);
+  return `<div class="archived-run"><b>${escape(statusLabel(d))}</b>`
+    + `<p>${escape(firstSentence(text, 220))}</p>`
+    + `<small>${d.steps?.length || 0} 步 · ${escape(d.run_id)}</small></div>`;
+}
+
+function beginConversationChain(chain){
+  messages.replaceChildren();
+  rendered = new Map();
+  resetWorkbench();
+  for (const previous of chain.slice(0, -1)) {
+    message('user', `<p>${escape(previous.task || '(无任务描述)').replace(/\n/g, '<br>')}</p>`);
+    message('assistant', archivedRunHtml(previous));
+  }
+  const latest = chain.at(-1);
+  message('user', `<p>${escape(latest.task || '(无任务描述)').replace(/\n/g, '<br>')}</p>`);
+  mountAgentResponse(chain.length > 1);
+}
+
 async function openRun(id){
   if (!id) return;
   closeHistory();
   viewingRun = id;
   setRunning(false);
   try {
-    const d = await api(`/api/runs/${id}`);
+    const chain = await loadConversationChain(id);
+    const d = chain.at(-1);
     if (viewingRun !== id) return;
-    beginRunView(d);
+    showRunModel(d);
+    beginConversationChain(chain);
     replayBtn.classList.remove('hidden');
     poll();
   } catch (e) {
@@ -780,6 +915,7 @@ stopBtn.addEventListener('click', async () => {
     status.textContent = '停止失败：' + e.message;
   } finally {
     stopBtn.disabled = false;
+    if (viewingRun) await poll();
   }
 });
 

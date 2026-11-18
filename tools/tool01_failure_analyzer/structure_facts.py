@@ -170,10 +170,82 @@ def ego_geometry():
     return _EGO_GEOMETRY
 
 
+def _point_on_segment(point, start, end, tolerance=1e-9):
+    px, py = point
+    ax, ay = start
+    bx, by = end
+    cross = (px - ax) * (by - ay) - (py - ay) * (bx - ax)
+    if abs(cross) > tolerance:
+        return False
+    return (min(ax, bx) - tolerance <= px <= max(ax, bx) + tolerance
+            and min(ay, by) - tolerance <= py <= max(ay, by) + tolerance)
+
+
+def _segment_distance(first, second):
+    a, b = first
+    c, d = second
+
+    def dot(u, v):
+        return u[0] * v[0] + u[1] * v[1]
+
+    def point_segment(point, start, end):
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        if dx == 0.0 and dy == 0.0:
+            return math.hypot(point[0] - start[0], point[1] - start[1])
+        t = max(0.0, min(1.0, dot((point[0] - start[0], point[1] - start[1]), (dx, dy)) / (dx * dx + dy * dy)))
+        return math.hypot(point[0] - (start[0] + t * dx), point[1] - (start[1] + t * dy))
+
+    def orientations(p1, p2, p3):
+        value = (p2[0] - p1[0]) * (p3[1] - p1[1]) - (p2[1] - p1[1]) * (p3[0] - p1[0])
+        return 0 if abs(value) <= 1e-9 else (1 if value > 0 else -1)
+
+    o1, o2, o3, o4 = orientations(a, b, c), orientations(a, b, d), orientations(c, d, a), orientations(c, d, b)
+    if o1 != o2 and o3 != o4:
+        return 0.0
+    if o1 == 0 and _point_on_segment(c, a, b):
+        return 0.0
+    if o2 == 0 and _point_on_segment(d, a, b):
+        return 0.0
+    if o3 == 0 and _point_on_segment(a, c, d):
+        return 0.0
+    if o4 == 0 and _point_on_segment(b, c, d):
+        return 0.0
+    return min(point_segment(a, c, d), point_segment(b, c, d),
+               point_segment(c, a, b), point_segment(d, a, b))
+
+
+class _OrientedRectangle:
+    """Small convex polygon used here so target selection needs no GIS runtime."""
+
+    def __init__(self, points):
+        self.points = tuple((float(x), float(y)) for x, y in points)
+
+    def contains(self, point):
+        signs = []
+        for index, start in enumerate(self.points):
+            end = self.points[(index + 1) % len(self.points)]
+            if _point_on_segment(point, start, end):
+                return True
+            signs.append((end[0] - start[0]) * (point[1] - start[1])
+                         - (end[1] - start[1]) * (point[0] - start[0]))
+        return all(value >= 0.0 for value in signs) or all(value <= 0.0 for value in signs)
+
+    def distance(self, other):
+        if any(other.contains(point) for point in self.points):
+            return 0.0
+        if any(self.contains(point) for point in other.points):
+            return 0.0
+        distances = []
+        for first_index, first in enumerate(self.points):
+            first_end = self.points[(first_index + 1) % len(self.points)]
+            for second_index, second in enumerate(other.points):
+                second_end = other.points[(second_index + 1) % len(other.points)]
+                distances.append(_segment_distance((first, first_end), (second, second_end)))
+        return min(distances)
+
+
 def body_polygon(center_x, center_y, heading, length, width):
     """Oriented footprint of one body in world coordinates."""
-    from shapely.geometry import Polygon
-
     if not all(math.isfinite(value) for value in (center_x, center_y, heading, length, width)):
         raise FactsError(f"unusable body geometry: centre=({center_x}, {center_y}) heading={heading} "
                          f"size={length}x{width}")
@@ -183,8 +255,9 @@ def body_polygon(center_x, center_y, heading, length, width):
     half_length, half_width = length / 2.0, width / 2.0
     corners = ((half_length, half_width), (half_length, -half_width),
                (-half_length, -half_width), (-half_length, half_width))
-    return Polygon([(center_x + corner_x * cos - corner_y * sin,
-                     center_y + corner_x * sin + corner_y * cos) for corner_x, corner_y in corners])
+    return _OrientedRectangle([(center_x + corner_x * cos - corner_y * sin,
+                                center_y + corner_x * sin + corner_y * cos)
+                               for corner_x, corner_y in corners])
 
 
 def ego_body(frame, index):
@@ -432,11 +505,11 @@ def map_ego_action(map_location, frames, ego):
     curving road. When the recorded path enters a connected lane group, use the official
     connector turn type; return None when the map cannot establish a turn.
     """
-    import geopandas as gpd
-    from pyproj import Transformer
-    from shapely.geometry import Point
-
     try:
+        import geopandas as gpd
+        from pyproj import Transformer
+        from shapely.geometry import Point
+
         path = map_file(map_location)
         lanes = map_layer(gpd, path, "lanes_polygons")
         connectors = map_layer(gpd, path, "lane_connectors")
@@ -485,7 +558,7 @@ def map_ego_action(map_location, frames, ego):
         if abs(delta) < TURN_DEG:
             return None
         return "turn_left" if delta > 0 else "turn_right"
-    except FactsError:
+    except (ImportError, FactsError):
         return None
     except (OSError, ValueError, TypeError, KeyError):
         return None

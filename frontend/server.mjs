@@ -17,12 +17,16 @@ import { resolve, extname, sep, join, basename, dirname } from 'node:path';
 import { resolveRunStatus } from './run-status.mjs';
 import { failureAnalyzerEvidence } from './tool01-evidence.mjs';
 import { retrievalMedia } from './run-media.mjs';
+import { readSubagentActivity } from './run-activity.mjs';
+import { prepareRunRequest, agentArguments } from './run-continuation.mjs';
 
 const ROOT = resolve(process.env.ADAGENT_PROJECT_ROOT || '/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent');
 const LOGS = join(ROOT, 'logs');
-const PYTHON = join(ROOT, 'environments/agent/.venv/bin/python');
+const PYTHON = process.env.ADAGENT_AGENT_PYTHON || join(ROOT, 'environments/agent/.venv/bin/python');
 const FRONTEND_DIR = resolve(process.cwd());
-const CONFIGS = join(ROOT, 'configs');
+const DEFAULT_PROJECT_ROOT = '/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent';
+const CONFIGS = process.env.ADAGENT_CONFIG_ROOT
+  || (existsSync(join(ROOT, 'configs')) ? join(ROOT, 'configs') : join(DEFAULT_PROJECT_ROOT, 'configs'));
 const PORT = Number(process.env.PORT || 5173);
 const HOST = process.env.HOST || '127.0.0.1';
 
@@ -40,6 +44,17 @@ const MEDIA_EXT = new Set(['.mp4', '.webm', '.jpg', '.jpeg', '.png', '.gif', '.w
 
 /** run_id -> { proc, task, startedAt, console: string[], exitCode } */
 const activeRuns = new Map();
+const TERMINAL_RUN_STATES = new Set(['finished', 'success', 'error', 'interrupted', 'stopped', 'incomplete']);
+
+async function findBusyRun(){
+  for (const [runId, record] of activeRuns) {
+    if (!record || record.exitCode != null || record.proc?.exitCode != null || record.proc?.killed) continue;
+    const finalState = await readJson(join(LOGS, runId, 'final_state.json'));
+    if (TERMINAL_RUN_STATES.has(finalState?.status)) continue;
+    return [runId, record];
+  }
+  return null;
+}
 
 /* ---------------- 工具函数 ---------------- */
 
@@ -293,6 +308,7 @@ async function getRunDetail(runId) {
   steps.sort((a, b) => a.step - b.step);
 
   const thinking = await readThinking(runDir);
+  const activities = await readSubagentActivity(runDir);
 
   // 运行级汇总：累计思考时间 vs 累计工具执行时间
   const ordered = [...decisions.entries()].sort((a, b) => a[0] - b[0]);
@@ -344,10 +360,17 @@ async function getRunDetail(runId) {
     started_at: meta.start_time || meta.started_at || meta.created_at || null,
     duration_seconds:runState.duration_seconds,
     llm_model: meta.llm_model || null,
+    llm_reasoning_effort: meta.llm_reasoning_effort || meta.reasoning_effort || null,
+    continuation_supported: true,
+    original_task: meta.original_task || finalState?.task || meta.task || '',
+    parent_run_id: meta.parent_run_id || null,
+    conversation_id: meta.conversation_id || runId,
+    user_messages: finalState?.user_messages || [],
     active:runState.active,
     summary,
     thinking,
     extra_decisions: extraDecisions,
+    activities,
     steps,
   };
 }
@@ -385,9 +408,9 @@ async function listRuns() {
 }
 
 /** 发起真实运行 */
-function launchRun(task) {
+function launchRun(task, resumeFrom = null) {
   return new Promise((resolvePromise, reject) => {
-    const proc = spawn(PYTHON, ['-m', 'agent.main', task], {
+    const proc = spawn(PYTHON, agentArguments(task, resumeFrom), {
       cwd: ROOT,
       detached: true,
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
@@ -420,7 +443,7 @@ function launchRun(task) {
         clearTimeout(timer);
         activeRuns.set(runId, record);
         proc.on('exit', (code) => { record.exitCode = code ?? -1; });
-        resolvePromise({ run_id: runId });
+        resolvePromise({ run_id: runId, parent_run_id: resumeFrom || null });
       }
     });
     proc.stderr.on('data', pushLog);
@@ -581,17 +604,19 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/runs' && req.method === 'POST') {
       let body = '';
       for await (const c of req) body += c;
-      const { task } = JSON.parse(body || '{}');
-      if (!task || typeof task !== 'string' || !task.trim()) {
-        return sendJson(res, 400, { error: '任务内容不能为空' });
+      let request;
+      try {
+        const parsed = JSON.parse(body || '{}');
+        request = await prepareRunRequest(parsed, LOGS);
+      } catch (failure) {
+        return sendJson(res, 400, { error: failure.message });
       }
-      const busy = [...activeRuns.entries()].find(([, r]) => r.exitCode == null);
+      const busy = await findBusyRun();
       if (busy) {
         return sendJson(res, 409, { error: `已有运行进行中：${busy[0]}，请先停止或等待完成`, running: busy[0] });
       }
       try {
-        const { run_id } = await launchRun(task.trim());
-        return sendJson(res, 200, { run_id });
+        return sendJson(res, 200, await launchRun(request.task, request.resume_from));
       } catch (err) {
         return sendJson(res, 500, { error: String(err.message || err) });
       }
