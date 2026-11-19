@@ -164,26 +164,28 @@ def test_invalid_tool_configuration_fails_without_network(tmp_path):
     assert not client.messages
 
 
-def test_tools_use_shared_client_without_parameter_overrides():
+def test_tool02_uses_shared_client_with_its_component_profile():
     from tools.tool02_scene_instance_generator.real import run
     client=ScriptedClient(response_for(CASES[0][0],CASES[0][2]))
     with patch("agent.llm_client.LLMClient",return_value=client) as factory:
         result=run({"failure_analysis":ANALYSIS})
     assert result["status"]=="success"
-    factory.assert_called_once_with()
+    factory.assert_called_once_with(component='scene_instance_generator')
 
 
 def test_llm_client_inherits_root_limits(monkeypatch):
     from agent.llm_client import LLMClient
     monkeypatch.setenv("OPENAI_API_KEY","test-only")
     profile={"model":"root-model","base_url":"https://example.invalid/v1",
-             "timeout":77,"max_tokens":3456}
+             "timeout":77,"max_tokens":3456,"api_key_env":"OPENAI_API_KEY"}
     sdk=Mock()
+    timeout=Mock()
     with patch.object(LLMClient,"_load_llm_config",return_value=profile), patch.dict(
-            "sys.modules",{"openai":SimpleNamespace(OpenAI=sdk)}):
+            "sys.modules",{"openai":SimpleNamespace(OpenAI=sdk,Timeout=timeout)}):
         client=LLMClient()
     assert (client.model,client.timeout,client.max_tokens)==("root-model",77,3456)
-    assert sdk.call_args.kwargs["timeout"]==77
+    timeout.assert_called_once_with(77., connect=15.0, read=60.0)
+    assert sdk.call_args.kwargs["timeout"] is timeout.return_value
     assert sdk.call_args.kwargs["max_retries"]==0
 
 

@@ -27,11 +27,9 @@ class LLMClient:
         # follows active_profile / the global reasoning_effort.
         profile_name, effort = "kimi", None
         if component:
-            try:
-                from common.api_profiles import effort_for, profile_argument
+            from common.api_profiles import ENV, effort_for, profile_argument
+            if component in ENV:
                 profile_name, effort = profile_argument(component), effort_for(component)
-            except Exception:
-                profile_name, effort = "kimi", None
         file_config = self._load_llm_config(profile_name)
         self.request_profile = dict(file_config)
         if effort:

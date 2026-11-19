@@ -132,11 +132,29 @@ def test_orphan_child_blocks_replacement(tmp_path):
                     break
                 time.sleep(.01)
             assert state["job"]["state"]=="orphaned"
+            assert store.wait(job, 720)['job']['state'] == 'orphaned'
             assert store.submit("test","mock",{},"run",retry=True)==job
         finally:
             os.killpg(child.pid,signal.SIGKILL)
             child.wait()
         assert store.wait(job,5)["error"]["type"]=="job_interrupted"
+
+
+def test_stale_worker_and_child_identities_cannot_signal_reused_process_groups(tmp_path):
+    from agent.jobs import write
+
+    store = JobStore(tmp_path)
+    job = 'a' * 32
+    folder = tmp_path / job
+    folder.mkdir()
+    manifest = dict(pid=500, process_start='old-parent', status='running', tool='test')
+    write(folder / 'manifest.json', manifest)
+    write(folder / 'children.json', [dict(pid=600, process_start='old-child')])
+    with patch('agent.jobs.process_identity', return_value='new'), patch('agent.jobs.os.killpg') as kill:
+        assert store.query(job)['job']['state'] == 'interrupted'
+        write(folder / 'manifest.json', manifest)
+        assert store.stop(job)['status'] == 'interrupted'
+    kill.assert_not_called()
 
 
 def test_subprocess_registration_and_real_timeout_cleanup(tmp_path,monkeypatch):

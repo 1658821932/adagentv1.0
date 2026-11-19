@@ -201,3 +201,20 @@ def test_running_job_is_waited_without_another_llm_decision(tmp_path):
     query.assert_called_once()
     assert len(client.messages)==2
     assert result["pending_job"] is None
+
+
+def test_agent_records_orphaned_job_and_ends_without_retry(tmp_path):
+    agent, client = make_agent(tmp_path, [call('failure_analyzer', {'token': 'example'})])
+    job = dict(job_id='a'*32, state='running', manifest_path='/fixture/manifest.json')
+    pending = dict(status='running', tool='failure_analyzer', job=job)
+    orphan = dict(pending, job=dict(job, state='orphaned'))
+    with patch.object(agent.executor, 'execute', return_value=pending) as execute, patch.object(
+            agent.executor, 'query', return_value=orphan) as query:
+        result = agent.run('Analyze one scene')
+    execute.assert_called_once()
+    query.assert_called_once()
+    assert len(client.messages) == 1
+    assert result['status'] == 'error' and result['pending_job'] is None
+    recorded = next(item['result'] for item in result['history'] if item.get('tool') == 'failure_analyzer')
+    assert recorded['error']['type'] == 'job_orphaned'
+    assert recorded['job']['manifest_path'] == job['manifest_path']

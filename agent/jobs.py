@@ -37,8 +37,27 @@ def process_identity(pid):
 
 def alive(manifest):
     pid = manifest.get("pid")
-    return bool(pid and manifest.get("process_start") and
+    return bool(type(pid) is int and pid > 0 and manifest.get("process_start") and
                 process_identity(pid) == manifest["process_start"])
+
+
+def owned_process_group(record):
+    if not alive(record):
+        return False
+    try:
+        return os.getpgid(record['pid']) == record['pid']
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def signal_owned_group(record, sig):
+    if owned_process_group(record):
+        try:
+            os.killpg(record['pid'], sig)
+        except (ProcessLookupError, PermissionError):
+            return False
+        return True
+    return False
 
 
 def preparation_run_dir(manifest):
@@ -152,9 +171,7 @@ class JobStore:
                 with locked(folder / "children.lock"):
                     children = json.loads(children_path.read_text()) if children_path.exists() else []
                 for child in children:
-                    try:
-                        os.killpg(child["pid"], 0)
-                    except ProcessLookupError:
+                    if not owned_process_group(child):
                         continue
                     return dict(status="running", tool=manifest["tool"],
                                 job=dict(job_id=job_id, state="orphaned",
@@ -183,36 +200,14 @@ class JobStore:
             with locked(folder / "children.lock"):
                 path = folder / "children.json"
                 records.extend(json.loads(path.read_text()) if path.exists() else [])
-            groups = []
-            for record in records:
-                pid = record.get("pid")
-                if type(pid) is not int or pid <= 0:
-                    continue
-                try:
-                    os.killpg(pid, 0)
-                except (ProcessLookupError, PermissionError):
-                    continue
-                groups.append(pid)
-            for pid in groups:
-                try:
-                    os.killpg(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+            groups = [record for record in records if signal_owned_group(record, signal.SIGTERM)]
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline:
-                live = []
-                for record in records:
-                    pid = record.get("pid")
-                    if type(pid) is int and pid in groups and process_identity(pid) == record.get("process_start"):
-                        live.append(pid)
-                if not live:
+                if not any(owned_process_group(record) for record in groups):
                     break
                 time.sleep(.05)
-            for pid in groups:
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            for record in groups:
+                signal_owned_group(record, signal.SIGKILL)
             result = dict(status="error", tool=manifest["tool"],
                           error=dict(type="job_interrupted", message="Job stopped by user"))
             manifest.update(status="interrupted", finished_at=time.time())
@@ -238,7 +233,8 @@ class JobStore:
         started = time.monotonic()
         while True:
             result = self.query(job_id)
-            if result["status"] != "running" or (timeout is not None and time.monotonic()-started >= timeout):
+            if (result["status"] != "running" or (result.get('job') or {}).get('state') == 'orphaned'
+                    or (timeout is not None and time.monotonic()-started >= timeout)):
                 return result
             time.sleep(min(.2, max(.001, timeout-(time.monotonic()-started))) if timeout is not None else .2)
 

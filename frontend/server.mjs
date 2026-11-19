@@ -484,6 +484,7 @@ async function listRuns() {
 // 工具内部自己调模型的组件；这些可以在配置面板里单独指定 profile
 const TOOL_COMPONENTS = [
   ['failure_analyzer', '失败分析（①）'],
+  ['scene_instance_generator', '场景需求生成（②）'],
   ['edit_planner', '编辑规划（④）'],
   ['attack_editor', '攻击车辆编辑（⑤）'],
   ['ego_editor', '专家轨迹编辑（⑥）'],

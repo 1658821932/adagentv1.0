@@ -3,6 +3,9 @@
 The host Agent already owns this transition in agent/prompt.md. This executable
 provides the same transition for reproducible tool acceptance without asking an
 extra model to schedule deterministic validation steps.
+
+The optional config.pdm object controls ignore_traffic_lights and history_s.
+History defaults to the exported takeover time when shared history is present.
 """
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import math
 import time
 from datetime import datetime, timezone
 
@@ -78,9 +82,29 @@ def defense_revision_feedback(response, attack):
         'This result is not a global infeasibility proof.', evidence=evidence)
 
 
-def load_seed(directory, attack_input):
+def pdm_request(attack_input, accepted, settings=None):
+    settings = {} if settings is None else settings
+    if not isinstance(settings, dict) or set(settings) - {'ignore_traffic_lights', 'history_s'}:
+        raise ValueError('Validation pdm settings accept ignore_traffic_lights and history_s')
+    ignore_lights = settings.get('ignore_traffic_lights', False)
+    shared_history = accepted.get('shared_history') or {}
+    history = settings.get('history_s', shared_history.get('takeover_s', shared_history.get('end_s', 3.0)))
+    if type(ignore_lights) is not bool or type(history) not in (int, float) or not math.isfinite(history) or history <= 0:
+        raise ValueError('Validation PDM requires a boolean traffic-light setting and positive finite history seconds')
+    operation = accepted.get('operation') or attack_input['operation']
+    if operation not in ('add_vehicle', 'edit_existing'):
+        raise ValueError('An auto attack result must state the operation it actually used')
+    return dict(execution_mode='pdm_closed_loop', challenge_baseline_scene_path=attack_input['scene_ref']['sample_root'],
+                challenge_attack_scene_path=accepted['frozen_scene_path'], challenge_target_track=accepted['target_track'],
+                challenge_target_is_new=operation == 'add_vehicle', challenge_history_s=history,
+                challenge_ignore_traffic_lights=ignore_lights, timeout=300)
+
+
+def load_seed(directory, attack_input, pdm_settings=None):
     directory = Path(directory)
-    previous = AttackInput.model_validate(json.loads((directory/'attack-input.json').read_text())).model_dump()
+    archived_input = json.loads((directory/'attack-input.json').read_text())
+    archived_traffic_lights = archived_input.pop('pdm_ignore_traffic_lights', None)
+    previous = AttackInput.model_validate(archived_input).model_dump()
     current = AttackInput.model_validate(attack_input).model_dump()
     if previous != current:
         raise ValueError('Seed attack input differs from the current task or acceptance policy')
@@ -90,13 +114,13 @@ def load_seed(directory, attack_input):
     if accepted['source_scene_ref'] != current['scene_ref']:
         raise ValueError('Seed attack belongs to a different source scene')
     request = json.loads((directory/'pdm-input.json').read_text())
-    expected = dict(challenge_baseline_scene_path=current['scene_ref']['sample_root'],
-        challenge_attack_scene_path=accepted['frozen_scene_path'], challenge_target_track=accepted['target_track'],
-        challenge_target_is_new=current['operation']=='add_vehicle',
-        challenge_history_s=current['constraints']['no_ego_contact_until_s'])
-    if bool(request.get('challenge_ignore_traffic_lights',False)) != current['pdm_ignore_traffic_lights']:
+    expected = pdm_request(current, accepted, pdm_settings)
+    ignore_lights = expected['challenge_ignore_traffic_lights']
+    if (request.get('challenge_ignore_traffic_lights', False) is not ignore_lights
+            or (archived_traffic_lights is not None and archived_traffic_lights is not ignore_lights)):
         raise ValueError('Seed PDM traffic-light mode differs from the current task')
-    if any(request.get(key) != value for key, value in expected.items()):
+    if any(request.get(key) != value for key, value in expected.items()
+           if key.startswith('challenge_') and key != 'challenge_ignore_traffic_lights'):
         raise ValueError('Seed PDM request is bound to a different attack or timeline')
     pdm_feedback(attack, pdm)
     requests = sum(1 for path in (directory/'services').rglob('request.json')
@@ -188,12 +212,7 @@ def run(config, output, *, seed=None, tool_runner=call_tool):
             accepted = attack['result']
             if not check_budget():
                 return stop('budget_exhausted','Budget exhausted after attack')
-            pdm_arguments=dict(execution_mode='pdm_closed_loop',
-                challenge_baseline_scene_path=base['scene_ref']['sample_root'],
-                challenge_attack_scene_path=accepted['frozen_scene_path'],
-                challenge_target_track=accepted['target_track'], challenge_target_is_new=base['operation']=='add_vehicle',
-                challenge_history_s=base['constraints']['no_ego_contact_until_s'],
-                challenge_ignore_traffic_lights=base['pdm_ignore_traffic_lights'],timeout=300)
+            pdm_arguments = pdm_request(base, accepted, config.get('pdm'))
             if accepted.get('pdm_probe_result_path'):
                 pdm_arguments['challenge_probe_result_path']=accepted['pdm_probe_result_path']
             pdm = stage(record,'pdm','policy_runner',pdm_arguments)
@@ -249,7 +268,7 @@ def main():
     parser.add_argument('--seed-case-directory',type=Path)
     args=parser.parse_args()
     config=json.loads(args.config.read_text())
-    seed=load_seed(args.seed_case_directory,config['attack_input']) if args.seed_case_directory else None
+    seed=load_seed(args.seed_case_directory,config['attack_input'],config.get('pdm')) if args.seed_case_directory else None
     result=run(config,args.output,seed=seed)
     print(json.dumps(dict(status=result['status'],stop_reason=result['stop_reason'],output=str(args.output)),ensure_ascii=False),flush=True)
 
