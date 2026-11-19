@@ -71,7 +71,12 @@ def bind_scene(source_file, output_dir):
         video = None
         for folder in dict.fromkeys((sample / "preview", sidecar.parent)):
             for candidate in sorted(folder.glob("*.scene.json")):
-                other = json.loads(candidate.read_text())
+                try:
+                    other = json.loads(candidate.read_text())
+                except (FileNotFoundError, ValueError):
+                    continue
+                if not isinstance(other, dict):
+                    continue
                 other_root = Path(other.get("sample_root", ".")).expanduser()
                 if not other_root.is_absolute():
                     other_root = candidate.parent / other_root

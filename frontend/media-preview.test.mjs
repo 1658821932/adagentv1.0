@@ -35,6 +35,43 @@ test('artifact preview defers videos and collapsed images', () => {
   assert.match(html, /path=a&amp;x=1/);
 });
 
+test('file locations belong to visible media and work on forwarded historical video URLs', () => {
+  const html = artifactPreviewHtml([
+    { kind: 'image', src: '/api/file?path=unrelated', path: '/tmp/专家 <轨迹>.png', primary: true },
+    { kind: 'video', src: 'https://adagent.test/proxy/5174/api/video?path=%2Ftmp%2Fexpert.mp4' },
+    { kind: 'file', src: '/api/file?path=%2Ftmp%2Fcheckpoint.pth', path: '/tmp/checkpoint.pth' },
+    { kind: 'image', src: '/assets/preview.png' },
+  ]);
+  assert.equal((html.match(/<summary>文件位置<\/summary>/g) || []).length, 2);
+  assert.match(html, /<code>\/tmp\/专家 &lt;轨迹&gt;\.png<\/code>/);
+  assert.match(html, /<code>\/tmp\/expert\.mp4<\/code>/);
+  assert.doesNotMatch(html, /checkpoint\.pth|<轨迹>/);
+});
+
+test('copy handles exact media paths and clipboard denial', async () => {
+  const path = { textContent: '/tmp/专家 & 轨迹.png' };
+  const copied = [];
+  const range = { selectNodeContents(node) { this.node = node; } };
+  const selection = { removeAllRanges() {}, addRange(value) { this.range = value; } };
+  const navigator = { clipboard: { async writeText(value) { copied.push(value); } } };
+  let click;
+  const button = {
+    closest: () => ({ querySelector: () => path }),
+    addEventListener(type, handler) { assert.equal(type, 'click'); click = handler; },
+  };
+  bindArtifactPreview({
+    ownerDocument: { defaultView: { navigator }, createRange: () => range, getSelection: () => selection },
+    querySelectorAll: selector => selector === '[data-copy-media-path]' ? [button] : [],
+  });
+  await click();
+  assert.deepEqual(copied, [path.textContent]);
+  assert.equal(button.textContent, '已复制');
+  delete navigator.clipboard;
+  await click();
+  assert.equal(selection.range.node, path);
+  assert.equal(button.textContent, '请按 Ctrl/Cmd+C');
+});
+
 function videoDom() {
   const listeners = object => {
     const handlers = new Map();

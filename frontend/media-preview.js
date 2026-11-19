@@ -2,10 +2,25 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[char]));
 
+function mediaPath(item) {
+  if (typeof item.path === 'string' && item.path.startsWith('/')) return item.path;
+  // Older run records have the original path only in the media API URL.
+  const url = URL.canParse(item.src, 'https://adagent.invalid')
+    ? new URL(item.src, 'https://adagent.invalid')
+    : null;
+  if (!url || !/\/api\/(?:file|video|wevideo|eightcam)$/.test(url.pathname)) return '';
+  const path = url.searchParams.get('path');
+  return path?.startsWith('/') ? path : '';
+}
+
 function mediaCard(item, extra) {
   const title = escapeHtml(item.title || (item.kind === 'video' ? '视频产物' : '图片产物'));
   const note = item.note ? `<small>${escapeHtml(item.note)}</small>` : '';
   const src = escapeHtml(item.src);
+  const path = mediaPath(item);
+  const location = path ? '<details class="artifact-path"><summary>文件位置</summary>'
+    + `<div class="artifact-path-content"><code>${escapeHtml(path)}</code>`
+    + '<button type="button" data-copy-media-path>复制路径</button></div></details>' : '';
   if (item.kind === 'video') {
     return `<figure class="artifact-media artifact-video" data-video-src="${src}" data-state="idle">`
       + `<div class="artifact-video-frame">`
@@ -14,7 +29,7 @@ function mediaCard(item, extra) {
       + `<video controls playsinline preload="none" data-artifact-video hidden></video>`
       + `<div class="artifact-media-status" role="status" hidden><span data-media-message></span>`
       + `<button type="button" data-retry-video hidden>重试</button></div>`
-      + `</div><figcaption><span>${title}</span><a href="${src}" target="_blank" rel="noopener">打开视频</a>${note}</figcaption>`
+      + `</div><figcaption><span>${title}</span><a href="${src}" target="_blank" rel="noopener">打开视频</a>${note}${location}</figcaption>`
       + `</figure>`;
   }
   return `<figure class="artifact-media artifact-image" data-state="idle">`
@@ -23,7 +38,7 @@ function mediaCard(item, extra) {
     + `<img data-artifact-image data-src="${src}"${extra ? '' : ` src="${src}"`} loading="lazy" decoding="async" alt="${title}"></a>`
     + `<div class="artifact-media-status" role="status" hidden><span>图片加载失败</span>`
     + `<button type="button" data-retry-image>重试</button></div></div>`
-    + `<figcaption><span>${title}</span><button type="button" class="artifact-zoom-btn" data-zoom-image="${src}" data-zoom-title="${title}">放大预览</button><a href="${src}" target="_blank" rel="noopener">查看原图</a>${note}</figcaption>`
+    + `<figcaption><span>${title}</span><button type="button" class="artifact-zoom-btn" data-zoom-image="${src}" data-zoom-title="${title}">放大预览</button><a href="${src}" target="_blank" rel="noopener">查看原图</a>${note}${location}</figcaption>`
     + `</figure>`;
 }
 
@@ -47,6 +62,24 @@ function retryUrl(src, attempt) {
 }
 
 export function bindArtifactPreview(root) {
+  root.querySelectorAll('[data-copy-media-path]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const path = button.closest('.artifact-path-content').querySelector('code');
+      const doc = root.ownerDocument;
+      try {
+        await doc.defaultView.navigator.clipboard.writeText(path.textContent);
+        button.textContent = '已复制';
+      } catch {
+        const range = doc.createRange();
+        range.selectNodeContents(path);
+        const selection = doc.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        button.textContent = '请按 Ctrl/Cmd+C';
+      }
+    });
+  });
+
   root.querySelectorAll('.artifact-preview-more').forEach(details => {
     const loadImages = () => {
       if (details.open) details.querySelectorAll('img[data-artifact-image]').forEach(img => {

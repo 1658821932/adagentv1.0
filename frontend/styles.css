@@ -812,12 +812,16 @@ strong,b{color:inherit}
 .artifact-media [hidden] { display: none; }
 .artifact-image-frame, .artifact-video-frame { position: relative; min-height: 60px; }
 .artifact-media figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; padding-top: 8px; color: #222; }
-.artifact-media figcaption a, .artifact-zoom-btn {
-  color: #333; font-size: 11px; text-decoration: none;
+.artifact-media figcaption a, .artifact-media figcaption button, .artifact-path summary {
+  color: #333; font-family: inherit; font-size: 11px; text-decoration: none;
   border: 1px solid #e2e2e2; background: #fafafa; border-radius: 4px; padding: 2px 7px;
 }
-.artifact-media figcaption a:hover, .artifact-zoom-btn:hover { background: #efefef; border-color: #ccc; }
+.artifact-media figcaption :is(a, button, summary):hover { background: #efefef; border-color: #ccc; }
 .artifact-media figcaption small { width: 100%; color: #8a8a8a; }
+.artifact-path { flex-basis: 100%; min-width: 0; }
+.artifact-path summary { display: inline-block; cursor: pointer; }
+.artifact-path-content { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 8px; margin-top: 6px; }
+.artifact-path-content code { flex: 1 1 180px; min-width: 0; color: #555; font: inherit; overflow-wrap: anywhere; user-select: text; }
 .artifact-video-load {
   width: 100%; min-height: 140px; display: flex; flex-direction: column; gap: 9px;
   align-items: center; justify-content: center; border: 1px dashed #dcdcdc; border-radius: 5px;

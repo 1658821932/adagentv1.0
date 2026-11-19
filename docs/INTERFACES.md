@@ -524,7 +524,7 @@ Select zero-score failure scenes from official closed-loop PDM results.
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `scenario_pkl` | string | ✅ | — | Scenario pickle whose identities correspond to the evaluated run. |
-| `result_dir` | string | ✅ | — | policy_runner output containing official PDM CSV and execution metadata. |
+| `result_dir` | string | ✅ | — | policy_runner output containing exactly one official PDM CSV and the matching execution metadata. |
 | `scene_token` | string \| null | — | null | Optional full scene identity or unambiguous 16-character suffix. |
 | `timeout` | integer >0 | — | `120` | Score-reading process timeout in seconds. |
 | `python` | string \| null | — | null | Optional interpreter for reading native scenario metadata. |

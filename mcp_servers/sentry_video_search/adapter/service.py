@@ -12,11 +12,11 @@ def search_local(requirement, config=None):
     from ..core.config import SearchConfig
     from ..core.service import search_local as search
     from ..core.workspace import bind_run
-    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile):
-        result = search(requirement, config or SearchConfig())
-        from .scene_binding import bind_scene
-        result.scene_ref = bind_scene(result.source_file, current_run("sentry_video_search").output)
-        return result
+    from .scene_binding import bind_scene
+    run = current_run("sentry_video_search")
+    with bind_run(run), bind_profiles(get_profile):
+        return search(requirement, config or SearchConfig(),
+                      bind_source=lambda source: bind_scene(source, run.output))
 
 @runtime_task("sentry_video_search", "index_local")
 def index_local(path, config=None):
