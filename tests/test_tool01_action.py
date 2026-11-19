@@ -217,26 +217,40 @@ class ActionTests(unittest.TestCase):
 
 
 class EntryPointTests(unittest.TestCase):
-    """Drive the real facts() entry with file and map dependencies replaced."""
+    """Drive the real facts() entry with file, lane, and map dependencies replaced."""
+
+    @staticmethod
+    def measured_lanes(*args, **kwargs):
+        sequences, selected, violation = args[3], args[4], args[5]
+        return {
+            "available": True,
+            "reason": None,
+            "map_context": "t_junction",
+            "ego_lane_keeping": "keep",
+            "other_origin": "ahead_same_lane",
+            "other_action": direction_action(sequences[selected], through=violation),
+            "other_lane_keeping": "keep",
+            "interaction": "rear_end",
+            "evidence": {},
+        }
+
+    def run_facts(self, frames):
+        with mock.patch.object(facts, "scene_pickle", return_value=(frames, "synthetic-token")):
+            with mock.patch.object(facts, "outcome", return_value=("collision", None, 1)):
+                with mock.patch.object(facts, "analyze_lanes", side_effect=self.measured_lanes):
+                    with mock.patch.object(facts, "map_ego_action", return_value="straight"):
+                        with mock.patch.object(facts, "frame_images", return_value=[]):
+                            return facts.facts("archive", "token")
 
     def test_facts_entry_reports_the_actor_turn(self):
         frames = scene(0.0, math.radians(-30.0), 0.0, math.radians(-360.0), start=(4.0, 0.0, 0.0))
-        with mock.patch.object(facts, "scene_pickle", return_value=(frames, "synthetic-token")), \
-             mock.patch.object(facts, "outcome", return_value=("collision", None, 1)), \
-             mock.patch.object(facts, "map_context", return_value="t_junction"), \
-             mock.patch.object(facts, "frame_images", return_value=[]):
-            result = facts.facts("archive", "token")
+        result = self.run_facts(frames)
         self.assertEqual(result["attack"]["other_action"], "turn_right")
 
     def test_facts_entry_keeps_a_straight_actor_with_a_turning_ego(self):
         frames = scene(0.0, math.radians(30.0), 0.0, 0.0, start=(4.0, 0.0, 0.0))
-        with mock.patch.object(facts, "scene_pickle", return_value=(frames, "synthetic-token")), \
-             mock.patch.object(facts, "outcome", return_value=("collision", None, 1)), \
-             mock.patch.object(facts, "map_context", return_value="t_junction"), \
-             mock.patch.object(facts, "frame_images", return_value=[]):
-            result = facts.facts("archive", "token")
+        result = self.run_facts(frames)
         self.assertEqual(result["attack"]["other_action"], "straight")
-
 
 if __name__ == "__main__":
     unittest.main()

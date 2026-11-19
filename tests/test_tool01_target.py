@@ -189,47 +189,42 @@ class VehicleGeometryValidationTests(unittest.TestCase):
 
 
 class TargetEntryPointTests(unittest.TestCase):
-    def call(self, frames, capture=None):
-        def map_context(*args):
-            if capture is not None:
-                capture.append(args)
-            return "t_junction"
-        with mock.patch.object(facts, "scene_pickle", return_value=(frames, "synthetic")), \
-             mock.patch.object(facts, "outcome", return_value=("collision", None, 7)), \
-             mock.patch.object(facts, "map_context", side_effect=map_context), \
-             mock.patch.object(facts, "frame_images", return_value=[]):
-            return facts.facts("archive", "token")
+    def call(self, frames, lane_data=None):
+        original = facts.analyze_lanes
+
+        def measured(*args, **kwargs):
+            return dict(lane_data) if lane_data is not None else original(*args, **kwargs)
+
+        with mock.patch.object(facts, "scene_pickle", return_value=(frames, "synthetic")):
+            with mock.patch.object(facts, "outcome", return_value=("collision", None, 7)):
+                with mock.patch.object(facts, "analyze_lanes", side_effect=measured):
+                    with mock.patch.object(facts, "map_ego_action", return_value="straight"):
+                        with mock.patch.object(facts, "frame_images", return_value=[]):
+                            return facts.facts("archive", "token")
 
     def test_facts_reports_no_target_and_says_so(self):
-        result = self.call(frames_with({7: [ahead(30.0)]}))
+        lane_data = {
+            "available": True,
+            "reason": None,
+            "map_context": "t_junction",
+            "ego_lane_keeping": "keep",
+            "other_origin": None,
+            "other_action": None,
+            "other_lane_keeping": "unknown",
+            "interaction": "single_vehicle",
+            "evidence": {},
+        }
+        result = self.call(frames_with({7: [ahead(30.0)]}), lane_data=lane_data)
         self.assertEqual(result["attack"]["other_origin"], "none")
         self.assertEqual(result["attack"]["other_action"], "none")
+        self.assertEqual(result["failure"]["interaction"], "single_vehicle")
         self.assertEqual(result["failure"]["ego_cause"],
-                         "在丁字路口直行时发生单车碰撞，首次违规时刻5米内无目标车辆")
+                         "在丁字路口直行并保持在本车道内时发生单车碰撞，首次违规时刻5米内无目标车辆")
 
-    def test_facts_reports_the_selected_target(self):
-        result = self.call(frames_with({7: [ahead(6.0)]}))
-        self.assertEqual(result["attack"]["other_origin"], "ahead_same_lane")
-        self.assertNotEqual(result["attack"]["other_action"], "none")
-
-    def test_map_context_uses_the_first_violation_pose_without_a_target(self):
-        frames = frames_with({})
-        for index, frame in enumerate(frames):
-            frame["ego2global"][0][3] = index * 10.0
-            frame["ego2global"][1][3] = index * 20.0
-        calls = []
-        self.call(frames, capture=calls)
-        self.assertEqual(calls[0][1], (70.0, 140.0))
-
-    def test_map_context_does_not_use_a_later_closer_actor_position(self):
-        frames = frames_with({index: [ahead(6.0)] for index in range(N)})
-        frames[8]["anns"]["gt_boxes"][0][0] = 5.1
-        for index, frame in enumerate(frames):
-            frame["ego2global"][0][3] = index * 10.0
-        calls = []
-        self.call(frames, capture=calls)
-        self.assertEqual(calls[0][1], (70.0, 0.0))
-
+    def test_selected_target_without_an_official_lane_binding_is_an_error(self):
+        with self.assertRaises(facts.FactsError) as caught:
+            self.call(frames_with({7: [ahead(6.0)]}))
+        self.assertIn("lane analysis", str(caught.exception))
 
 if __name__ == "__main__":
     unittest.main()

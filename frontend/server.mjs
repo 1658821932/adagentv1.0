@@ -137,6 +137,13 @@ async function ensurePlayableEightcam(src) {
 }
 
 
+function videoApiUrl(value) {
+  const video = resolve(String(value));
+  if (video.startsWith(WE_ROOT + sep)) return '/api/wevideo?path=' + encodeURIComponent(video);
+  if (video.startsWith(ROOT + sep)) return '/api/video?path=' + encodeURIComponent(video);
+  return null;
+}
+
 /** 各工具的关键视频证据（统一返回可直接播放的 URL） */
 function evidenceVideos(tool, output) {
   const r = output?.result || {};
@@ -147,13 +154,15 @@ function evidenceVideos(tool, output) {
   }
   if (tool === 'policy_runner' && Array.isArray(r.videos)) {
     r.videos.slice(0, 2).forEach((p, i) => {
-      if (existsSync(p)) list.push({ title: i === 0 ? '仿真回放' : `仿真回放 ${i + 1}`, src: '/api/wevideo?path=' + encodeURIComponent(p) });
+      const src = existsSync(p) ? videoApiUrl(p) : null;
+      if (src) list.push({ title: i === 0 ? '仿真回放' : `仿真回放 ${i + 1}`, src });
     });
   }
   if (tool === 'ego_trajectory_editor' && r.rendered_videos) {
     const v = r.rendered_videos.manual_explained;
     if (typeof v === 'string' && existsSync(v)) {
-      list.push({ title: '专家轨迹回放', src: '/api/wevideo?path=' + encodeURIComponent(v) });
+      const src = videoApiUrl(v);
+      if (src) list.push({ title: '专家轨迹回放', src });
     }
   }
   if (tool === 'video_retriever') return retrievalMedia(r, { projectRoot: ROOT });

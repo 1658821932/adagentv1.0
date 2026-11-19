@@ -1,5 +1,4 @@
 """Quick source-scene review with a direct, validated handoff to tool05."""
-from contextvars import ContextVar
 import json
 import math
 from pathlib import Path
@@ -8,17 +7,15 @@ from time import perf_counter
 # A vehicle is only worth editing if it is close to the ego path and ahead of it once.
 ELIGIBLE_MAX_DISTANCE_M = 30.0
 ELIGIBLE_BEHIND_TOLERANCE_M = 10.0
-from tools.llm_runtime import LLMTool, validation_details
-from .schemas import Input, Decision, Output
-from .observations import settings, sample_indices, Observation, ViewClient, ACTIVE_OBSERVATION
-from . import observations
+from tools.llm_runtime import validation_details
+from .schemas import Input, Output
 
-_INSPECTION=ContextVar('edit_planner_inspection',default=None)
+def sample_indices(count,limit):
+    if count<=limit:return list(range(count))
+    return [round(i*(count-1)/(limit-1)) for i in range(limit)]
 
 
 def inspect_scene(data):
-    cached=_INSPECTION.get()
-    if cached is not None and cached[0]==data.model_dump(mode='json'):return cached[1]
     ref=data.scene_ref;missing=[]
     if data.retrieval_result.mode=='mock':missing.append('Mock retrieval does not establish a real source scene')
     frames_path=Path(ref.frames_path).expanduser()
@@ -33,8 +30,7 @@ def inspect_scene(data):
         if any(b<=a for a,b in zip(times,times[1:])):raise ValueError('Frame timestamps must increase strictly')
     if not Path(ref.cameras_path).expanduser().is_file():missing.append('Missing scene camera calibration metadata')
     assets=list(dict.fromkeys(p for p in [ref.runtime_asset_path,ref.asset_path] if p and Path(p).expanduser().exists()))
-    visual_settings=settings()
-    indices=sample_indices(len(frames),visual_settings['time_samples']) if frames else []
+    indices=sample_indices(len(frames),min(12,len(frames))) if frames else []
     catalog={};eligible=None;positions={}
     for frame in frames:
         anns=frame.get('anns',{})
@@ -66,37 +62,12 @@ def inspect_scene(data):
     for track in relevant: catalog[track]['edit_relevance']='relevant'
     eligible=relevant
     for track,entry in catalog.items():entry['editable_existing']=track in eligible
-    binding={};manifest=Path(ref.manifest_path).expanduser()
+    manifest=Path(ref.manifest_path).expanduser()
     if manifest.is_file():
         value=json.loads(manifest.read_text())
         if isinstance(value,dict) and 'timestamps_us' in value:
             if value.get('scene_token')!=ref.scene_token or value['timestamps_us']!=[f['timestamp'] for f in frames]:
                 raise ValueError('Retrieval manifest belongs to a different scene or timeline')
-            binding=value
-    snapshots=[];images=[];image_evidence=[]
-    camera_names=[visual_settings['initial_camera']]
-    snapshot_indices={indices[0],indices[len(indices)//2],indices[-1]} if indices else set()
-    for index in indices:
-        frame=frames[index];anns=frame.get('anns',{})
-        if index in snapshot_indices:
-            objects=[]
-            for i,track in enumerate(anns.get('track_tokens',[])):
-                velocities=anns.get('gt_velocity_3d',[])
-                objects.append(dict(track_id=str(track),label=anns['gt_names'][i],box=anns['gt_boxes'][i],velocity=velocities[i] if i<len(velocities) else None))
-            snapshots.append(dict(frame_index=index,timestamp=frame['timestamp'],ego2global=frame.get('ego2global'),lidar2global=frame.get('lidar2global'),objects=objects))
-        for camera_name in camera_names:
-            camera=frame.get('cams',{}).get(camera_name,{})
-            name=next((camera.get(k) for k in ['data_path','image_path','filename','image_file'] if camera.get(k)),None)
-            possible=[];bound=binding.get('cameras',{}).get(camera_name,{}).get('frames',[])
-            if index<len(bound) and bound[index].get('timestamp_us')==frame['timestamp'] and bound[index].get('image_path'):
-                possible.append(Path(bound[index]['image_path']))
-            if isinstance(name,str):
-                path=Path(name).expanduser()
-                possible += [path] if path.is_absolute() else [Path(ref.sample_root)/'original_images'/path,Path(ref.sample_root)/path]
-            image=next((p for p in possible if p.is_file() and p.suffix.lower() in {'.jpg','.jpeg','.png'}),None)
-            if image is not None and image not in images:
-                images.append(image);image_evidence.append(dict(frame_index=index,timestamp=frame['timestamp'],camera=camera_name,image_path=str(image)))
-    if not images:missing.append('No source keyframes available for quick scene review')
     road=Path(ref.sample_root)/'metadata/map_drivable_official.json'
     from .mapfacts import collect as collect_map_facts
     precheck=collect_map_facts(frames,data.scenario.attack.model_dump(mode='json')) if frames else None
@@ -104,8 +75,8 @@ def inspect_scene(data):
     candidate=data.candidate
     retrieval=dict(video_path=data.retrieval_result.video_path,source_file=data.retrieval_result.source_file,
         source_segment=data.retrieval_result.source_segment,candidate_id=data.retrieval_result.candidate_id)
-    evidence=dict(annotation_path=str(frames_path),gaussian_assets=assets,frame_indices=indices,source_images=[str(p) for p in images],
-        keyframes=image_evidence,visual_settings=visual_settings,eligible_vehicle_tracks=sorted(eligible),road_geometry_available=road.is_file(),
+    evidence=dict(annotation_path=str(frames_path),gaussian_assets=assets,frame_indices=indices,source_images=[],
+        eligible_vehicle_tracks=sorted(eligible),road_geometry_available=road.is_file(),
         missing_resources=missing,retrieval=retrieval,
         map_facts=(precheck or {}).get('facts'),
         map_checks=(precheck or {}).get('checks'),
@@ -120,7 +91,7 @@ def inspect_scene(data):
                               if row.get('distance_to_target_m') is not None],
         review_scope='Whole bound scene; source_segment is only the retrieval match, not a synchronized crop')
     summary=dict(scene_id=ref.scene_id,scene_token=ref.scene_token,matched_camera=ref.matched_camera,frame_count=len(frames),
-        actors=list(catalog.values()),snapshots=snapshots,evidence=evidence,
+        actors=list(catalog.values()),evidence=evidence,
         box_coordinates='Original source annotation coordinates; transforms are supplied where available.',
         target_scene=data.scenario.target_scene,
         attack=data.scenario.attack.model_dump(mode='json'),
@@ -131,14 +102,7 @@ def inspect_scene(data):
             attack_edit_strategy=candidate.attack_edit_strategy,
             ego_input_edit_strategy=candidate.ego_input_edit_strategy,
             ego_correct_trajectory_strategy=candidate.ego_correct_trajectory_strategy))
-    return summary,eligible,images
-
-
-def payload(data):
-    summary,_,_=inspect_scene(data)
-    observation=Observation(data,summary)
-    ACTIVE_OBSERVATION.set(observation)
-    return observation.initial_content()
+    return summary,eligible,[]
 
 
 def bound_result(data,summary,response):
@@ -157,6 +121,7 @@ def insufficient(data,summary,reasons,elapsed_seconds):
         suitability="needs_information",reasons=list(reasons),
         checks=dict(road="unknown",lanes="unknown",space="unknown"),
         adapted_plan=None,retrieval_suggestion=None))
+    result["evidence"]=dict(result["evidence"],visual_model_used=False)
     return dict(status="success",tool="edit_planner",result=Output.model_validate(result).model_dump(mode="json"),
         meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=elapsed_seconds))
 
@@ -164,56 +129,86 @@ def insufficient(data,summary,reasons,elapsed_seconds):
 def unsuitable_from_precheck(data,summary,checks,elapsed_seconds):
     """Trusted data verdict rejects the structure before any observation or model call."""
     reasons=list(summary["evidence"].get("map_reasons") or [])
-    reasons.append("Measured structure contradicts the target scene, so no visual review or plan is produced.")
+    reasons.append("Measured structure contradicts the target scene, so no plan is produced.")
     suggestion=summary["evidence"].get("map_suggestion") or (
         "Retrieve a scene whose measured road structure supports the target scene.")
     result=bound_result(data,summary,dict(
         suitability="unsuitable",reasons=[reason for reason in reasons if reason],checks=checks,
         adapted_plan=None,retrieval_suggestion=suggestion))
-    result["evidence"]=dict(result["evidence"],verification_source="measured_map_precheck")
+    result["evidence"]=dict(result["evidence"],verification_source="measured_map_precheck",
+                            visual_model_used=False)
     return dict(status="success",tool="edit_planner",
         result=Output.model_validate(result).model_dump(mode="json"),
         meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=elapsed_seconds))
 
 
-def enrich(data,response):
-    summary,_,_=inspect_scene(data)
-    result=bound_result(data,summary,response)
-    precheck=summary["evidence"].get("map_checks") or {}
-    conflicts={name:{"data":value,"review":result["checks"].get(name)}
-               for name,value in precheck.items()
-               if value in ("pass","fail") and result["checks"].get(name)!=value}
-    visual=summary["evidence"].get("visual_observation") or {}
-    result["evidence"]=dict(result["evidence"],
-        verification_source="visual_review" if result["checks"] else "measured_map_precheck",
-        visual_review=dict(cameras=sorted({sheet.get("camera") for sheet in visual.get("sheets", [])}),
-                           sheet_count=len(visual.get("sheets", [])),
-                           model_calls=visual.get("model_calls"),
-                           checks=result["checks"], reasons=result["reasons"]))
-    if conflicts:
-        # A reliable measured verdict must not be silently overridden by the image review.
-        result["evidence"]=dict(result["evidence"],precheck_conflicts=conflicts)
-        detail="; ".join(f"{name}: data={value['data']}, review={value['review']}"
-                         for name,value in conflicts.items())
-        result["reasons"]=[*result["reasons"],
-                           "Visual review disagrees with the measured pre-check (" + detail + "); "
-                           "the scene needs re-checking before it can be planned."]
-        result["adapted_plan"]=None
-        if "fail" in result["checks"].values():
-            result["suitability"]="unsuitable"
-            result["retrieval_suggestion"]=result.get("retrieval_suggestion") or (
-                "Retrieve a scene that matches the measured structure.")
-        else:
-            result["suitability"]="needs_information"
-    return result
+def _path_plan(facts,candidate):
+    pairs=((facts or {}).get('interaction_path_pairs') or [])
+    chosen=next((pair for pair in pairs if pair.get('interaction_compatible') is True),None)
+    if chosen is None:
+        return candidate.ego_input_edit_strategy or "沿当前可通行车道调整自车接近速度和到达时机，形成目标交互。"
+    ego_kind=str(chosen.get('ego_path_kind') or '')
+    other_id=chosen.get('other_connector_fid')
+    if ego_kind.startswith('approach_straight:'):
+        lane=ego_kind.split(':',1)[1]
+        route=f"沿车道 {lane} 的现有直行接近路径"
+    elif ego_kind.startswith('turn:'):
+        _,turn,connector=ego_kind.split(':',2)
+        turn_name={'left':'左转','right':'右转','straight':'直行'}.get(turn,turn)
+        route=f"使用现有 connector {connector} 在目标阶段{turn_name}进入路口"
+    else:
+        route="使用现有车道连接进入目标交互区域"
+    detail=candidate.ego_input_edit_strategy or "调整自车接近速度与到达时刻，保持正常行驶速度。"
+    return f"{route}，与右侧支路 connector {other_id} 的目标车辆形成交互；{detail}"
 
 
-TOOL=LLMTool(name='edit_planner',directory=Path(__file__).parent,input_model=Input,response_model=Decision,
-    output_model=Output,payload_builder=payload,enrich_result=enrich,
-    client_adapter=lambda client,data:ViewClient(client,ACTIVE_OBSERVATION.get()))
+def _correct_plan(facts,candidate):
+    pairs=((facts or {}).get('interaction_path_pairs') or [])
+    chosen=next((pair for pair in pairs if pair.get('interaction_compatible') is True),None)
+    kind=str((chosen or {}).get('ego_path_kind') or '')
+    if kind.startswith('turn:'):
+        turn=kind.split(':',2)[1]
+        turn_name={'left':'左转','right':'右转'}.get(turn,'转弯')
+        return f"危险出现时先减速或停车让行，确认安全后沿现有道路正常{turn_name}驶出。"
+    return candidate.ego_correct_trajectory_strategy
 
 
-def _run_scene(data,client,started):
+def ready_from_precheck(data,summary,checks,elapsed_seconds):
+    """Data-only ready verdict and plan; no image or model call is used."""
+    facts=summary['evidence'].get('map_facts') or {}
+    candidate=data.candidate
+    attack_plan=(None if data.scenario.attack.other_origin=='none'
+                 else candidate.attack_edit_strategy or "编辑右侧支路车辆，使其在目标阶段进入自车路径。")
+    plan=dict(attack_edit_strategy=attack_plan,
+              ego_input_edit_strategy=_path_plan(facts,candidate),
+              ego_correct_trajectory_strategy=_correct_plan(facts,candidate))
+    reasons=list(summary['evidence'].get('map_reasons') or [])
+    reasons.append("Map and annotation evidence pass road, lane and placement checks; no visual model was used.")
+    result=bound_result(data,summary,dict(
+        suitability="ready",reasons=reasons,checks=checks,adapted_plan=plan,
+        retrieval_suggestion=None))
+    result['evidence']=dict(result['evidence'],verification_source="measured_map_precheck",
+                            visual_model_used=False)
+    return dict(status="success",tool="edit_planner",
+        result=Output.model_validate(result).model_dump(mode="json"),
+        meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=elapsed_seconds))
+
+
+def needs_information_from_precheck(data,summary,checks,elapsed_seconds):
+    reasons=list(summary['evidence'].get('map_reasons') or [])
+    reasons.extend(summary['evidence'].get('map_evidence_limits') or [])
+    reasons.append("Map or annotation evidence is incomplete; no visual model fallback is configured.")
+    result=bound_result(data,summary,dict(
+        suitability="needs_information",reasons=reasons,checks=checks,
+        adapted_plan=None,retrieval_suggestion=None))
+    result['evidence']=dict(result['evidence'],verification_source="measured_map_precheck",
+                            visual_model_used=False)
+    return dict(status="success",tool="edit_planner",
+        result=Output.model_validate(result).model_dump(mode="json"),
+        meta=dict(mode="real",model=None,attempts=0,elapsed_seconds=elapsed_seconds))
+
+
+def _run_scene(data,started):
     try:
         inspection=inspect_scene(data)
     except (OSError,ValueError,TypeError,KeyError) as error:
@@ -226,16 +221,10 @@ def _run_scene(data,client,started):
     if 'fail' in precheck_checks.values():
         elapsed_seconds=round(perf_counter()-started,4)
         return unsuitable_from_precheck(data,summary,precheck_checks,elapsed_seconds)
-    token=_INSPECTION.set((data.model_dump(mode='json'),inspection))
-    observation_token=ACTIVE_OBSERVATION.set(None)
-    try:
-        arguments=data.model_dump(mode='json')
-        if client is not None:
-            arguments['_llm_client']=client
-        return TOOL.execute(arguments)
-    finally:
-        ACTIVE_OBSERVATION.reset(observation_token)
-        _INSPECTION.reset(token)
+    elapsed_seconds=round(perf_counter()-started,4)
+    if precheck_checks == dict(road='pass',lanes='pass',space='pass'):
+        return ready_from_precheck(data,summary,precheck_checks,elapsed_seconds)
+    return needs_information_from_precheck(data,summary,precheck_checks,elapsed_seconds)
 
 
 def _alternative_input(data,alternative):
@@ -271,14 +260,13 @@ def run(input_data):
     try:data=Input.model_validate({k:v for k,v in input_data.items() if k!='_llm_client'})
     except (AttributeError,ValueError,TypeError,KeyError) as error:
         return dict(status='error',tool='edit_planner',error=dict(type='input_validation_error',message='Tool input does not match its schema',validation_errors=validation_details(error)))
-    client=input_data.get('_llm_client')
     queue=[(1,data)]
     queue.extend((item.rank,_alternative_input(data,item))
                  for item in sorted(data.retrieval_result.alternatives,key=lambda item:item.rank))
     attempts=[];first_failure=None
     for rank,current in queue:
         attempt_started=started if rank==1 else perf_counter()
-        outcome=_run_scene(current,client,attempt_started)
+        outcome=_run_scene(current,attempt_started)
         attempts.append(_attempt_note(rank,outcome,current))
         if outcome.get('status')=='success' and outcome['result']['suitability']=='ready':
             return _with_attempts(outcome,attempts,rank)

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = Path(__file__).with_name("mapfacts_sim.py")
+SCRIPT = Path(__file__).with_name("mapfacts_route.py")
 TIMEOUT_S = 180
 UNKNOWN = dict(road="unknown", lanes="unknown", space="unknown")
 

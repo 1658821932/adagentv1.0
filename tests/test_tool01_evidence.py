@@ -42,11 +42,7 @@ def facts_for(archive="archive", simulation="run/sim", images=None, root=None):
             "frame_images": camera_frames(root=root) if images is None else images}
 
 
-FINAL = {
-    "map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
-    "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep",
-    "interaction": "crossing", "notes": [], "weather": "cloudy", "extra": "白天",
-}
+FINAL = {"weather": "cloudy", "extra": "白天", "notes": []}
 
 
 class StubClient:
@@ -91,7 +87,7 @@ class ManifestTests(unittest.TestCase):
 
         manifest = evidence.read_manifest(self.run_dir)
         self.assertEqual((manifest["status"], manifest["stage"]), ("success", "done"))
-        indices = visual_check.sheet_indices(COUNT, VIOLATION)
+        indices = [VIOLATION]
         self.assertEqual([frame["index"] for frame in manifest["frames"]], indices)
         self.assertEqual([entry["index"] for entry in manifest["selected"]], indices)
         for entry in manifest["selected"]:
@@ -113,44 +109,44 @@ class ManifestTests(unittest.TestCase):
         self.assertNotEqual(sent[0]["sha256"], original)
         self.assertTrue((self.run_dir / "response.txt").is_file())
 
-    def test_model_timeout_keeps_the_evidence(self):
+    def test_model_timeout_keeps_measured_data_and_degrades_environment(self):
         StubClient.answer = TimeoutError("request timed out")
         try:
             result = analyze(self.run_dir)
         finally:
             StubClient.answer = json.dumps(FINAL, ensure_ascii=False)
-        self.assertEqual(result["status"], "error")
-        self.assertEqual(result["error"]["type"], "timeout")
-        self.assertEqual(result["error"]["stage"], "vlm")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result"]["attack"]["ego_action"], "turn_right")
+        self.assertEqual(result["result"]["environment"]["weather"], "unknown")
+        self.assertEqual(result["result"]["environment"]["extra"], "")
+        self.assertTrue(any("环境补充失败" in note for note in result["result"]["verification"]["notes"]))
         manifest = evidence.read_manifest(self.run_dir)
-        self.assertEqual((manifest["status"], manifest["stage"]), ("failed", "vlm"))
-        self.assertEqual(len(manifest["frames"]), 3)
-        self.assertEqual(len(manifest["sent_images"]), 3)
+        self.assertEqual((manifest["status"], manifest["stage"]), ("success", "done"))
+        self.assertIn("optional_error", manifest)
+        self.assertEqual(len(manifest["frames"]), 1)
 
-    def test_empty_reply_is_reported_separately(self):
+    def test_empty_reply_degrades_only_environment(self):
         StubClient.answer = RuntimeError("LLM returned empty response")
         try:
             result = analyze(self.run_dir)
         finally:
             StubClient.answer = json.dumps(FINAL, ensure_ascii=False)
-        self.assertEqual((result["error"]["type"], result["error"]["stage"]),
-                         ("visual_check_error", "vlm_empty"))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result"]["environment"]["weather"], "unknown")
+        self.assertEqual(result["result"]["environment"]["extra"], "")
 
-    def test_visual_model_can_correct_and_returns_success(self):
-        corrected = dict(FINAL, map_context="straight_road", ego_action="straight",
-                         ego_lane_keeping="left_offset", other_origin="oncoming",
-                         other_action="straight", interaction="opposite_direction",
-                         notes=["画面显示直路、自车向左偏移并对向车辆直行"])
-        StubClient.answer = json.dumps(corrected, ensure_ascii=False)
+    def test_visual_model_cannot_change_key_data(self):
+        invalid = dict(FINAL, ego_action="straight", interaction="opposite_direction")
+        StubClient.answer = json.dumps(invalid, ensure_ascii=False)
         try:
             result = analyze(self.run_dir)
         finally:
             StubClient.answer = json.dumps(FINAL, ensure_ascii=False)
         self.assertEqual(result["status"], "success")
-        self.assertEqual(result["result"]["attack"]["ego_action"], "straight")
-        self.assertEqual(result["result"]["attack"]["ego_lane_keeping"], "left_offset")
-        self.assertEqual(result["result"]["failure"]["interaction"], "opposite_direction")
-        self.assertTrue(result["result"]["verification"]["corrections"])
+        self.assertEqual(result["result"]["attack"]["ego_action"], "turn_right")
+        self.assertEqual(result["result"]["failure"]["interaction"], "crossing")
+        self.assertEqual(result["result"]["verification"]["corrections"], [])
+        self.assertEqual(result["result"]["environment"]["weather"], "unknown")
         self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "success")
 
     def test_data_failure_is_reported_with_its_stage(self):
@@ -181,21 +177,20 @@ class AnalysisStageTests(unittest.TestCase):
     def test_selected_frames_are_saved_before_composition(self):
         with mock.patch.object(visual_check, "contact_sheet", side_effect=OSError("disk full")):
             result = analyze(self.run_dir)
-        self.assertEqual((result["error"]["type"], result["error"]["stage"]),
-                         ("visual_check_error", "images"))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result"]["environment"]["weather"], "unknown")
         manifest = evidence.read_manifest(self.run_dir)
-        self.assertEqual((manifest["status"], manifest["stage"]), ("failed", "images"))
-        self.assertEqual(len(manifest["selected"]), 3)
-        self.assertEqual([entry["index"] for entry in manifest["selected"]],
-                         visual_check.sheet_indices(COUNT, VIOLATION))
+        self.assertEqual((manifest["status"], manifest["stage"]), ("success", "done"))
+        self.assertEqual(len(manifest["selected"]), 1)
+        self.assertEqual([entry["index"] for entry in manifest["selected"]], [VIOLATION])
 
     def test_image_reading_failure_marks_the_manifest_failed(self):
         facts = facts_for(root=Path(self.tmp.name))
         facts["frame_images"][0]["images"]["CAM_F0"] = "/nonexistent/frame.jpg"
         result = analyze(self.run_dir, facts)
-        self.assertEqual((result["error"]["type"], result["error"]["stage"]),
-                         ("visual_check_error", "images"))
-        self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "failed")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result"]["environment"]["weather"], "unknown")
+        self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "success")
 
     def test_client_construction_failure_is_controlled(self):
         class BrokenClient:
@@ -203,18 +198,17 @@ class AnalysisStageTests(unittest.TestCase):
                 raise RuntimeError("no api key")
 
         result = analyze(self.run_dir, client=BrokenClient)
-        self.assertEqual((result["error"]["type"], result["error"]["stage"]),
-                         ("visual_check_error", "vlm"))
-        self.assertEqual(evidence.read_manifest(self.run_dir)["stage"], "vlm")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result"]["environment"]["weather"], "unknown")
+        self.assertIn("optional_error", evidence.read_manifest(self.run_dir))
 
-    def test_empty_and_non_string_replies_are_rejected(self):
-        for reply, stage in (("", "vlm_empty"), ("   ", "vlm_empty"), (None, "vlm_empty")):
+    def test_empty_and_non_string_replies_degrade_only_environment(self):
+        for reply in ("", "   ", None):
             with self.subTest(reply=reply):
                 StubClient.answer = reply
                 result = analyze(self.run_dir)
-                self.assertEqual(result["status"], "error")
-                self.assertEqual(result["error"]["stage"], stage)
-                self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "failed")
+                self.assertEqual(result["status"], "success")
+                self.assertEqual(result["result"]["environment"]["weather"], "unknown")
 
     def test_standalone_check_creates_its_own_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -226,7 +220,7 @@ class AnalysisStageTests(unittest.TestCase):
             self.assertEqual(len(created), 1)
             manifest = json.loads(created[0].read_text())
             self.assertEqual((manifest["status"], manifest["stage"]), ("success", "done"))
-            self.assertEqual(len(manifest["frames"]), 3)
+            self.assertEqual(len(manifest["frames"]), 1)
 
     def test_data_stage_uses_its_own_limit_not_a_worker_deadline(self):
         with mock.patch.object(real, "failure_facts",

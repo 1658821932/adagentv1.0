@@ -1,7 +1,9 @@
 """Identifier normalisation and arm/Direction helpers used by the map reader."""
 import pytest
-from tools.tool04_edit_planner.map_ids import (arm_position, key, origin_from_arm,
-                                               tangent_deg, turn_from_tangents)
+from tools.tool04_edit_planner.map_ids import (arm_position, connected_intersection_regions,
+                                               connector_paths_cross, key,
+                                               origin_from_arm, tangent_deg,
+                                               turn_from_tangents)
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -59,3 +61,33 @@ def test_tangent_deg_matches_geometry():
     assert tangent_deg((0, 0), (1, 0)) == 0.0
     assert tangent_deg((0, 0), (0, 1)) == 90.0
     assert tangent_deg((0, 0), (0, 0)) is None
+
+
+def test_split_intersection_regions_follow_touching_topology_but_stop_at_the_neighbourhood():
+    box = pytest.importorskip("shapely.geometry").box
+    geometries = {
+        1: box(0, 0, 1, 1),
+        2: box(1, 0, 2, 1),
+        3: box(2, 0, 3, 1),
+        4: box(50, 50, 51, 51),
+    }
+    assert connected_intersection_regions(1, geometries, max_radius_m=10,
+                                          touch_tolerance_m=.1) == [1, 2, 3]
+
+
+def test_connector_path_pair_requires_a_crossing_not_just_existing_connectors():
+    LineString = pytest.importorskip("shapely.geometry").LineString
+    crossing = LineString([(0, 0), (.5, .5)])
+    crossing_other = LineString([(0, .5), (.5, 0)])
+    parallel = LineString([(0, .1), (.4, .5)])
+    assert connector_paths_cross(crossing, crossing_other, endpoint_extension_m=0) is True
+    assert connector_paths_cross(crossing, parallel, endpoint_extension_m=0) is False
+    assert connector_paths_cross(crossing, None) is None
+
+
+def test_connector_endpoint_extension_can_reach_a_real_crossing_inside_the_junction():
+    LineString = pytest.importorskip("shapely.geometry").LineString
+    first = LineString([(0, 0), (2, 0)])
+    second = LineString([(4, -1), (4, 1)])
+    assert connector_paths_cross(first, second, endpoint_extension_m=0) is False
+    assert connector_paths_cross(first, second, endpoint_extension_m=3) is True

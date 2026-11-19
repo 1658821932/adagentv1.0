@@ -23,7 +23,6 @@ from mcp_servers.process import run_logged
 from mcp_servers.worldengine_failure_analysis.adapter.service import WfaError, failure_facts
 
 from . import evidence
-from .language import ego_cause
 from .schemas import Output
 from .visual_check import VisualCheckError, check as visual_check
 
@@ -89,29 +88,15 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
         visual = visual_check(facts["archive"], facts["token"].split("-")[-1], facts, run_dir=run_dir)
     except (VisualCheckError, OSError, ValueError) as error:
         stage = getattr(error, "stage", "images")
-        evidence.write_manifest(run_dir, status="failed", stage=stage, error=str(error))
-        return _failure("timeout" if _timeout_of(error) else "visual_check_error",
-                        run_dir, stage, str(error))
-
-    decision = visual["decision"]
-    facts["attack"].update({
-        "map_context": decision["map_context"],
-        "ego_action": decision["ego_action"],
-        "ego_lane_keeping": decision["ego_lane_keeping"],
-        "other_origin": decision["other_origin"],
-        "other_action": decision["other_action"],
-        "other_lane_keeping": decision["other_lane_keeping"],
-    })
-    facts["failure"]["interaction"] = decision["interaction"]
-    facts["failure"]["ego_cause"] = ego_cause(
-        decision["interaction"], facts["attack"], decision["ego_action"],
-        decision["ego_lane_keeping"], facts["failure"].get("outcome")
-    )
+        evidence.write_manifest(run_dir, stage="environment_optional", optional_error=str(error))
+        visual = {"sample_frames": [], "corrections": [],
+                  "notes": [f"可选环境补充失败（{stage}），关键测量数据保持不变：{error}"],
+                  "weather": "unknown", "extra": ""}
     evidence.write_manifest(
         run_dir,
         stage="verification",
         final=facts["attack"],
-        corrections=visual["corrections"],
+        corrections=[],
     )
 
     evidence.write_manifest(run_dir, status="success", stage="done", finished_at=evidence.stamp())

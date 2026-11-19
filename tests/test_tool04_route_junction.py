@@ -2,7 +2,7 @@
 import pytest
 pytest.importorskip('shapely')
 from shapely.geometry import box
-from tools.tool04_edit_planner.route_junction import first_route_junction
+from tools.tool04_edit_planner.route_junction import first_route_junction, route_junctions
 
 
 def test_start_inside_real_junction_wins_over_later_target():
@@ -39,6 +39,14 @@ def test_mini_intersections_are_skipped():
 
 def test_nearby_unvisited_junction_is_not_substituted():
     assert first_route_junction([(0, 0), (10, 0)], [(1, box(3, 1, 5, 3), False)]) is None
+
+
+def test_nearby_junction_split_from_the_route_can_be_used_when_its_connectors_reach_the_route():
+    ordered = route_junctions([(0, 0), (20, 0)],
+                              [(1, box(4, -1, 6, 1), False),
+                               (2, box(12, 2, 15, 5), False)],
+                              route_connected_fids={2})
+    assert [item['intersection_fid'] for item in ordered] == [1, 2]
 
 
 def test_boundary_only_touch_does_not_count_as_entering():

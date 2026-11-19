@@ -57,6 +57,29 @@ test('detail rows expose the measured fields with readable labels', () => {
   });
 });
 
+test('a nearby vehicle without an official collision is shown as a near miss', () => {
+  const result = {
+    ...CURRENT,
+    violation_step: 6,
+    failure: {
+      outcome: 'road_departure', collision_confirmed: false, interaction: 'near_miss',
+      ego_cause: '在丁字路口直行并保持在本车道内时驶出可行驶道路，首次违规时刻5米内最近车辆位于右相邻车道并直行',
+    },
+    attack: {
+      ...CURRENT.attack,
+      other_origin: 'right_adjacent', other_lane_keeping: 'unknown',
+    },
+  };
+  assert.deepEqual(rowsOf(failureDetailGroups(result, null), '失败判定'), {
+    判定: '出界',
+    碰撞确认: '否',
+    首次违规帧: '6',
+    交互类型: '近距冲突',
+    自车原因: result.failure.ego_cause,
+  });
+  assert.equal(rowsOf(failureDetailGroups(result, null), '复刻结构').目标车辆来向, '右相邻车道');
+});
+
 test('corrected verification keeps its count and notes', () => {
   const result = { ...CURRENT, verification: {
     sample_frames: [6, 8, 10],

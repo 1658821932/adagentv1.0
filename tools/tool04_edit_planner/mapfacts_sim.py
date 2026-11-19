@@ -18,17 +18,20 @@ sys.path.insert(0, str(ROOT / "projects" / "SimEngine"))
 
 import geopandas as gpd
 from pyproj import Transformer
-from shapely.geometry import Point
-from shapely.ops import transform as transform_geometry
+from shapely.geometry import LineString, Point
+from shapely.ops import nearest_points, transform as transform_geometry
 
 from tools.tool01_failure_analyzer.structure_facts import ego_heading as validate_ego_pose, map_file, metric_crs, utm_to_lonlat
-from tools.tool04_edit_planner.map_ids import (arm_position, key, lane_fit,
+from tools.tool04_edit_planner.map_ids import (arm_position, connected_intersection_regions,
+                                               connector_paths_cross, key,
                                                origin_from_arm, tangent_deg, turn_from_tangents)
 
-from tools.tool04_edit_planner.route_junction import first_route_junction
+from tools.tool04_edit_planner.route_junction import route_junctions
 
 UNKNOWN = dict(road="unknown", lanes="unknown", space="unknown")
 JUNCTION_CONTEXTS = ("t_junction", "cross_intersection")
+MIN_PLACEMENT_WIDTH_M = 3.0
+CONFLICT_PROXIMITY_M = 4.0
 
 
 def _coords(geometry):
@@ -49,6 +52,144 @@ def _coords(geometry):
     if hasattr(geometry, "coords"):
         return list(geometry.coords)
     return []
+
+
+def _nonjunction_facts(context, attack, frames, ego_path, lanes, connectors, baselines,
+                       group_connectors, from_map, map_location, path):
+    """Map-only lane checks for straight_road, curve and merge targets."""
+    route = LineString(ego_path) if len(ego_path) > 1 else None
+    if route is None:
+        return {"checks": dict(UNKNOWN), "facts": {"selection_policy": "no_junction_target",
+                "map_location": map_location, "map_file": str(path), "target_junction_fid": None,
+                "frame_target_distance": []},
+                "reasons": ["The recorded route has fewer than two poses."],
+                "evidence_limits": ["Lane continuity needs at least two ego poses."],
+                "retrieval_suggestion": None}
+
+    lanes = lanes.copy()
+    baselines = baselines.copy()
+    group_connectors = group_connectors.copy()
+    for frame in (lanes, baselines, group_connectors):
+        frame["geometry"] = frame.geometry.apply(lambda geometry: transform_geometry(from_map.transform, geometry))
+
+    lane_direction = {}
+    for _, row in baselines.iterrows():
+        lane = key(row.get("lane_fid")); coords = _coords(row.geometry)
+        if lane is not None and len(coords) >= 2:
+            lane_direction[lane] = tangent_deg(coords[0], coords[-1])
+
+    relevant = lanes[lanes.geometry.distance(route) <= 16.0].copy()
+    lane_geometries, lane_widths, lane_groups = {}, {}, {}
+    for _, row in relevant.iterrows():
+        lane = key(row.get("lane_fid")); group = key(row.get("lane_group_fid"))
+        if lane is None:
+            continue
+        lane_geometries[lane] = row.geometry if lane not in lane_geometries else lane_geometries[lane].union(row.geometry)
+        lane_groups[lane] = group
+        width = row.get("width")
+        if isinstance(width, (int, float)) and width > 0:
+            lane_widths.setdefault(lane, []).append(round(float(width), 2))
+    if not lane_geometries:
+        checks = dict(UNKNOWN)
+        return {"checks": checks, "facts": {"selection_policy": "recorded_route_lane_corridor",
+                "map_location": map_location, "map_file": str(path), "target_junction_fid": None,
+                "route_frame_count": len(ego_path), "frame_target_distance": []},
+                "reasons": ["No lane polygon is available near the recorded route; lanes stay unknown."],
+                "evidence_limits": ["The map has no usable lane geometry in the recorded route corridor."],
+                "retrieval_suggestion": None}
+
+    nearest_lane = []
+    for point in ego_path:
+        lane = min(lane_geometries, key=lambda lane_id: lane_geometries[lane_id].distance(Point(point)))
+        nearest_lane.append(lane if lane_geometries[lane].distance(Point(point)) <= 8.0 else None)
+    observed = [lane for lane in nearest_lane if lane is not None]
+    sequence = []
+    for lane in observed:
+        if not sequence or sequence[-1] != lane:
+            sequence.append(lane)
+    coverage = round(len(observed) / len(ego_path), 3) if ego_path else 0.0
+
+    connector_pairs = {(key(row.get("exit_lane_fid")), key(row.get("entry_lane_fid")))
+                       for _, row in connectors.iterrows()}
+    group_pairs = {(key(row.get("from_lane_group_fid")), key(row.get("to_lane_group_fid")))
+                   for _, row in group_connectors.iterrows()}
+    continuity = []
+    for first, second in zip(sequence, sequence[1:]):
+        continuity.append({"from": first, "to": second,
+                           "connected": (lane_groups.get(first) == lane_groups.get(second)
+                                         or (first, second) in connector_pairs
+                                         or (lane_groups.get(first), lane_groups.get(second)) in group_pairs)})
+
+    origin = str(attack.get("other_origin") or "none")
+    need_oncoming = origin == "oncoming"
+    need_side = "left" if origin == "left_adjacent" else "right" if origin == "right_adjacent" else None
+    candidates = []
+    waypoints = [(point, frame) for point, frame in zip(ego_path, frames)]
+    for lane, geometry in lane_geometries.items():
+        direction = lane_direction.get(lane)
+        if direction is None:
+            continue
+        route_point, lane_point = nearest_points(route, geometry)
+        point_index = min(range(len(waypoints)), key=lambda i: Point(waypoints[i][0]).distance(route_point))
+        matrix = frames[point_index]["ego2global"]
+        heading = math.degrees(math.atan2(float(matrix[1][0]), float(matrix[0][0])))
+        relative = (heading - direction + 180.0) % 360.0 - 180.0
+        dot = math.cos(math.radians(relative))
+        dx, dy = lane_point.x - route_point.x, lane_point.y - route_point.y
+        local_left = -math.sin(math.radians(heading)) * dx + math.cos(math.radians(heading)) * dy
+        side = "left" if local_left > 0 else "right" if local_left < 0 else None
+        distance = round(route.distance(geometry), 3)
+        if distance > 12.0:
+            continue
+        matches = ((need_oncoming and dot <= -0.5) or
+                   (need_side is not None and dot >= 0.5 and side == need_side) or
+                   (origin in ("ahead_same_lane", "behind_same_lane") and lane in sequence))
+        if matches:
+            candidates.append({"lane_fid": lane, "lane_group_fid": lane_groups.get(lane),
+                               "side": side, "direction_dot": round(dot, 3),
+                               "route_distance_m": distance,
+                               "widths_m": lane_widths.get(lane, [])})
+
+    checks = dict(UNKNOWN); reasons = []
+    if coverage >= 0.5 and sequence:
+        checks["road"] = "pass"
+        reasons.append(f"The recorded ego route stays in mapped lanes for {coverage:.1%} of frames.")
+    else:
+        reasons.append("The recorded ego route does not have enough mapped lane coverage; road stays unknown.")
+
+    continuity_known = all(item["connected"] for item in continuity)
+    target_ok = True if origin in ("ahead_same_lane", "behind_same_lane", "none") else bool(candidates)
+    if coverage >= 0.5 and continuity_known and target_ok:
+        checks["lanes"] = "pass"
+        reasons.append("Recorded lanes are connected and the required target lane is available."
+                       if target_ok else "Recorded lanes are connected.")
+    elif coverage >= 0.5 and continuity_known:
+        reasons.append("The target vehicle requires a lane direction/side that is not proven by the map; lanes stays unknown.")
+    else:
+        reasons.append("Lane continuity or the required target lane is incomplete; lanes stays unknown.")
+
+    space_lanes = set(sequence) | {item["lane_fid"] for item in candidates}
+    widths = [width for lane in space_lanes for width in lane_widths.get(lane, [])]
+    if widths and min(widths) >= MIN_PLACEMENT_WIDTH_M:
+        checks["space"] = "pass"
+        reasons.append(f"Official lane geometry provides at least {min(widths):.2f}m placement width.")
+    elif widths:
+        checks["space"] = "fail"
+        reasons.append(f"The narrowest candidate lane is {min(widths):.2f}m, below the placement minimum.")
+
+    return {"available": True, "checks": checks,
+            "facts": {"map_location": map_location, "map_file": str(path),
+                      "selection_policy": "recorded_route_lane_corridor",
+                      "route_frame_count": len(ego_path), "target_junction_fid": None,
+                      "ego_lane_sequence": sequence,
+                      "ego_lane_group_sequence": [lane_groups.get(lane) for lane in sequence],
+                      "ego_lane_coverage_fraction": coverage,
+                      "ego_lane_continuity": continuity,
+                      "target_lane_candidates": candidates, "frame_target_distance": []},
+            "reasons": reasons,
+            "evidence_limits": ["Non-junction lane checks use official lane polygons and baseline directions; "
+                                "dynamic obstacles and occlusion remain outside map evidence."],
+            "retrieval_suggestion": None}
 
 
 def main():
@@ -87,26 +228,36 @@ def main():
 
     context = str(attack.get("map_context") or "")
     if context not in JUNCTION_CONTEXTS:
-        # A straight road, curve or merge target has no junction requirement. Do not
-        # substitute a nearby or later junction; visual review decides its road shape.
-        print(json.dumps({"available": True, "checks": dict(UNKNOWN),
-                          "facts": {"map_location": map_location, "map_file": str(path),
-                                    "selection_policy": "no_junction_target",
-                                    "route_frame_count": len(ego_path),
-                                    "target_junction_fid": None, "frame_target_distance": []},
-                          "reasons": [f"{context or 'The target'} does not require a junction; "
-                                      "road, curve and merge evidence is left to visual review."],
-                          "evidence_limits": ["No junction is selected for straight_road, curve or merge targets."],
-                          "retrieval_suggestion": None}))
+        print(json.dumps(_nonjunction_facts(context, attack, frames, ego_path, lanes, connectors,
+                                            baselines, group_connectors, from_map, map_location, path),
+                         ensure_ascii=False, default=str))
         return
 
     # Inspect the actual recorded route, not a radius around its end or a graph search.
     junctions = junctions.copy()
     junctions["geometry"] = junctions.geometry.apply(
         lambda geometry: transform_geometry(from_map.transform, geometry))
-    selected = first_route_junction(ego_path, [
+    route_line = LineString(ego_path)
+    connector_map_frame = connectors.copy()
+    connector_map_frame["geometry"] = connector_map_frame.geometry.apply(
+        lambda geometry: transform_geometry(from_map.transform, geometry))
+    route_connected_fids = {
+        key(row["intersection_fid"]) for _, row in connector_map_frame.iterrows()
+        if row.geometry is not None and row.geometry.distance(route_line) <= 10.0
+    }
+    route_candidates = route_junctions(ego_path, [
         (key(fid), row.geometry, bool(row.get("is_mini")))
-        for fid, row in junctions.iterrows()])
+        for fid, row in junctions.iterrows()], route_connected_fids=route_connected_fids)
+    if request.get("list_junctions"):
+        print(json.dumps({"available": True, "route_junctions": [
+            {name: item[name] for name in ("intersection_fid", "entry_distance_m",
+                                            "entry_frame_index")}
+            for item in route_candidates
+        ]}, ensure_ascii=False))
+        return
+    forced = key(request.get("force_junction_fid"))
+    selected = next((item for item in route_candidates if item["intersection_fid"] == forced), None) \
+        if forced is not None else (route_candidates[0] if route_candidates else None)
     if selected is None:
         print(json.dumps({"available": True, "checks": dict(UNKNOWN),
                           "facts": {"map_location": map_location, "map_file": str(path),
@@ -118,10 +269,13 @@ def main():
                           "retrieval_suggestion": None}))
         return
     target = selected["intersection_fid"]
-    junctions = junctions.loc[[target]]
-    connectors = connectors[[key(value) == target for value in connectors["intersection_fid"]]].copy()
+    region_geometries = {key(fid): row.geometry for fid, row in junctions.iterrows()}
+    region_fids = connected_intersection_regions(target, region_geometries)
+    region_set = set(region_fids)
+    junctions = junctions.loc[[key(fid) in region_set for fid in junctions.index]]
+    connectors = connectors[[key(value) in region_set for value in connectors["intersection_fid"]]].copy()
     group_connectors = group_connectors[
-        [key(value) == target for value in group_connectors["intersection_fid"]]].copy()
+        [key(value) in region_set for value in group_connectors["intersection_fid"]]].copy()
     relevant_lanes = {key(value) for column in ("exit_lane_fid", "entry_lane_fid")
                       for value in connectors[column]} - {None}
     lanes = lanes[[key(value) in relevant_lanes for value in lanes["lane_fid"]]].copy()
@@ -148,13 +302,14 @@ def main():
     segments["geometry"] = segments.geometry.apply(
         lambda g: transform_geometry(from_map.transform, g))
 
-    lane_direction, connector_geometry, connector_tangents = {}, {}, {}
+    lane_direction, lane_baseline, connector_geometry, connector_tangents = {}, {}, {}, {}
     for _, row in baselines.iterrows():
         geometry = row.geometry
         coords = _coords(geometry)
         lane = key(row.get("lane_fid"))
         if lane is not None and len(coords) >= 2:
             lane_direction[lane] = tangent_deg(coords[0], coords[-1])
+            lane_baseline[lane] = geometry
         connector = key(row.get("lane_connector_fid"))
         if connector is not None and len(coords) >= 2:
             connector_geometry[connector] = geometry
@@ -203,6 +358,24 @@ def main():
                                    turn=turn, geometry_orientation=orientation,
                                    incoming_deg=incoming, outgoing_deg=outgoing))
 
+    # Recover the connector actually traversed by consecutive ego poses. Candidate
+    # connectors are not interchangeable: a left-turn connector cannot replace a
+    # recorded right turn merely because it crosses another vehicle path.
+    ego_lane_sequence = []
+    for point in ego_path:
+        if not lane_geometry:
+            break
+        lane = min(lane_geometry, key=lambda lane_id: lane_geometry[lane_id].distance(Point(point)))
+        distance = lane_geometry[lane].distance(Point(point))
+        if distance <= 8.0 and (not ego_lane_sequence or ego_lane_sequence[-1] != lane):
+            ego_lane_sequence.append(lane)
+    actual_connectors = []
+    for start_lane, end_lane in zip(ego_lane_sequence, ego_lane_sequence[1:]):
+        actual_connectors.extend(
+            row["connector_fid"] for row in connector_rows
+            if row["exit_lane_fid"] == start_lane and row["entry_lane_fid"] == end_lane)
+    actual_connectors = sorted(set(actual_connectors))
+
     junction_rows = {}
     for fid, row in junctions.iterrows():
         junction = key(fid)
@@ -233,6 +406,13 @@ def main():
     bound_connectors = route_hits if route_hits else covering_group_connectors
     approach_groups = {key(group_connectors.loc[fid]["from_lane_group_fid"])
                        for fid in bound_connectors} - {None}
+    # Prefer the ego's own lane at the exact route-entry frame. Group-connector
+    # coverage can be empty for a junction region split away from the recorded lane.
+    entry_point = Point(ego_path[selected["entry_frame_index"]])
+    if lane_geometry:
+        entry_lane = min(lane_geometry, key=lambda lane_id: lane_geometry[lane_id].distance(entry_point))
+        if lane_geometry[entry_lane].distance(entry_point) <= 8.0:
+            approach_groups = {lane_rows[entry_lane]["lane_group_fid"]} - {None}
     # Several possible entrances do not establish which one the ego uses.
     if len(approach_groups) != 1:
         approach_groups = set()
@@ -258,14 +438,19 @@ def main():
             row["arm_side"] = position
             row["arm_origin"] = origin_from_arm(position, incoming, ego_heading)
 
-    def complete_junction(junction):
-        rows = [row for row in connector_rows if row["intersection_fid"] == junction]
+    def complete_junction(_junction=None):
+        rows = connector_rows
         return bool(rows) and all(row["turn"] is not None and row["arm_origin"] is not None for row in rows)
 
     arms = {}
     for row in connector_rows:
         if row["arm_side"] is not None:
-            arms.setdefault(row["intersection_fid"], set()).add(row["arm_side"])
+            arms.setdefault(target, set()).add(row["arm_side"])
+    cluster_geometry = junctions.geometry.unary_union
+    cluster_branches = sorted({branch for item in junction_rows.values()
+                               for branch in item["branches"]})
+    cluster_groups = sorted({group for item in junction_rows.values()
+                             for group in item["branch_lane_groups"]})
 
     facts = dict(
         crs=str(metric), map_location=map_location, map_file=str(path),
@@ -281,12 +466,13 @@ def main():
         approach_group_connectors=sorted(covering_group_connectors),
         approach_route_hits=sorted(route_hits),
         roadblock_ids_from_frames=sorted(str(value) for value in frame_roadblocks)[:12],
-        junction_count=len(junction_rows),
+        junction_count=len(region_fids),
         target_junction=dict(intersection_fid=target,
-                             physical_branches=len(junction_rows[target]["branches"]),
-                             branch_lane_groups=junction_rows[target]["branch_lane_groups"],
+                             region_fids=region_fids,
+                             physical_branches=len(cluster_branches),
+                             branch_lane_groups=cluster_groups,
                              arms=sorted(arms.get(target, ())),
-                             distance_m=junction_rows[target]["distance_m"],
+                             distance_m=round(min(cluster_geometry.distance(Point(p)) for p in ego_path), 2),
                              connectors_complete=complete_junction(target)),
         connector_count=len(connector_rows),
         connectors_with_turn=sum(1 for row in connector_rows if row["turn"] is not None),
@@ -303,9 +489,9 @@ def main():
         "Connector direction follows the nuPlan SDK (exit lane -> entry lane) and is only used when "
         "the connector baseline geometry matches the lanes it joins; otherwise it stays unknown.",
         "Map polygons measure geometry and connection availability, not that a planned trajectory is feasible.",
-        "Dynamic obstacles and occlusion are not in the map and remain a visual judgement.",
+        "Dynamic obstacles and occlusion are not represented by the map and remain unknown.",
     ]
-    branches = len(junction_rows[target]["branches"])
+    branches = len(cluster_branches)
     if branches == 0:
         reasons.append(f"The first recorded-route junction {target} has no measured physical road "
                        "segments, so road stays unknown rather than being called incompatible.")
@@ -314,45 +500,150 @@ def main():
         # required approach and lane movements are present; the extra arm may stay empty.
         if branches >= 3:
             checks["road"] = "pass"
-            reasons.append(f"First recorded-route junction {target} has {branches} physical road "
+            reasons.append(f"Route junction {target} has {branches} physical road "
                            f"segments; it provides at least the three arms a t_junction needs "
                            "(a cross intersection may supply the extra arm).")
         else:
             checks["road"] = "fail"
-            reasons.append(f"First recorded-route junction {target} has only {branches} physical "
+            reasons.append(f"Route junction {target} has only {branches} physical "
                            "road segments; a t_junction target needs at least three.")
     else:
         if branches >= 4:
             checks["road"] = "pass"
-            reasons.append(f"First recorded-route junction {target} has {branches} physical road "
+            reasons.append(f"Route junction {target} has {branches} physical road "
                            "segments, supporting a cross_intersection.")
         else:
             checks["road"] = "fail"
-            reasons.append(f"First recorded-route junction {target} has only {branches} physical "
+            reasons.append(f"Route junction {target} has only {branches} physical "
                            "road segments; a cross_intersection target needs at least four.")
 
     want_ego = {"turn_left": "left", "turn_right": "right", "straight": "straight"}.get(ego_action)
     want_side = origin if origin in {"left_arm", "right_arm", "oncoming",
                                      "ahead_same_lane", "behind_same_lane"} else None
+    same_lane_target = origin in {"ahead_same_lane", "behind_same_lane"}
     want_other = {"turn_left": "left", "turn_right": "right", "straight": "straight"}.get(other_action)
     if target is not None:
-        rows = [row for row in connector_rows if row["intersection_fid"] == target]
+        rows = connector_rows
         complete = complete_junction(target)
-        ego_ok, other_ok = lane_fit(approach_groups, rows,
-                                    want_ego, want_side, want_other, complete)
-        if complete and (ego_ok is False or other_ok is False):
-            checks["lanes"] = "fail"
-            missing = ([f"no {want_ego} connector from the recorded approach"] if ego_ok is False else []) + \
-                      ([f"no {want_side} approach supporting {want_other or 'the motion'}"] if other_ok is False else [])
-            reasons.append(f"First recorded-route junction {target}: " + "; ".join(missing) + ".")
-        elif complete and ego_ok is True and (origin == "none" or other_ok is True):
-            checks["lanes"] = "pass"
-            reasons.append(f"The selected junction {target} supports the required lane movements.")
-        else:
-            reasons.append(f"Lane movement evidence for the fixed junction {target} is incomplete; "
+        approach_rows = [row for row in rows if row["exit_lane_group_fid"] in approach_groups]
+        approach_lane_ids = sorted({row["exit_lane_fid"] for row in approach_rows})
+        actual_rows = [row for row in approach_rows if row["connector_fid"] in actual_connectors]
+        other_rows = ([] if same_lane_target else
+                      [row for row in rows
+                       if row["arm_origin"] == want_side and row["turn"] == want_other])
+        official_connectors = (connector_polygons.geometry.unary_union
+                               if len(connector_polygons) else None)
+        official_lanes = lanes.geometry.unary_union if len(lanes) else None
+        pairs = []
+        approach_paths = [(f"approach_straight:{lane}", lane_baseline.get(lane))
+                          for lane in approach_lane_ids]
+        turn_paths = [(f"turn:{row['turn']}:{row['connector_fid']}",
+                       connector_geometry.get(row["connector_fid"])) for row in actual_rows]
+        ego_paths = (approach_paths + turn_paths if want_ego == "straight"
+                     else turn_paths + approach_paths)
+        for ego_kind, ego_line in ego_paths:
+            for other_row in other_rows:
+                other_line = connector_geometry.get(other_row["connector_fid"])
+                paths_cross = connector_paths_cross(ego_line, other_line)
+                path_distance = (round(ego_line.distance(other_line), 3)
+                                 if ego_line is not None and other_line is not None else None)
+                ego_uses_lane = ego_kind.startswith("approach_straight:")
+                on_official_network = None if official_connectors is None else bool(
+                    ego_line is not None and other_line is not None
+                    and (ego_uses_lane is False or official_lanes is not None)
+                    and (ego_line.intersects(official_lanes.buffer(0.25)) if ego_uses_lane
+                         else ego_line.intersects(official_connectors.buffer(0.25)))
+                    and other_line.intersects(official_connectors.buffer(0.25)))
+                interaction_compatible = bool(
+                    on_official_network is True
+                    and (paths_cross is True
+                         or (path_distance is not None and path_distance <= CONFLICT_PROXIMITY_M)))
+                pairs.append(dict(ego_path_kind=ego_kind,
+                                  other_connector_fid=other_row["connector_fid"],
+                                  other_turn=other_row["turn"],
+                                  other_arm_origin=other_row["arm_origin"],
+                                  other_entry_lane_fid=other_row["entry_lane_fid"],
+                                  paths_cross=paths_cross,
+                                  path_distance_m=path_distance,
+                                  interaction_compatible=interaction_compatible,
+                                  on_official_network=on_official_network))
+        ego_movements = sorted({row["turn"] for row in approach_rows if row["turn"]})
+        exact_ego_match = want_ego in ego_movements
+        facts["ego_observed_movements"] = ego_movements
+        facts["ego_exact_action_match"] = exact_ego_match
+        facts["ego_approach_lane_fids"] = approach_lane_ids
+        facts["ego_path_options"] = [
+            {name: row[name] for name in ("connector_fid", "turn", "entry_lane_fid",
+                                           "entry_lane_group_fid")}
+            for row in actual_rows
+        ]
+        facts["ego_lane_sequence"] = ego_lane_sequence
+        facts["ego_actual_connector_fids"] = actual_connectors
+        facts["ego_unused_approach_connectors"] = [
+            row["connector_fid"] for row in approach_rows if row["connector_fid"] not in actual_connectors]
+        facts["target_other_connectors"] = [
+            {name: row[name] for name in ("connector_fid", "turn", "arm_origin",
+                                           "exit_lane_fid", "entry_lane_fid")}
+            for row in other_rows
+        ]
+        facts["interaction_path_pairs"] = pairs
+        interaction_pairs = [pair for pair in pairs if pair["interaction_compatible"]]
+        unknown_pairs = [pair for pair in pairs if pair["paths_cross"] is None]
+        if not approach_groups:
+            reasons.append("The recorded-route ego approach could not be bound uniquely to one lane group; "
+                           "lane feasibility stays unknown.")
+        elif not complete:
+            reasons.append(f"Lane movement evidence for physical junction {region_fids} is incomplete; "
                            "lanes stays unknown.")
+        elif not approach_rows:
+            checks["lanes"] = "fail"
+            reasons.append(f"Complete connector data provides no traversable path from the recorded "
+                           f"ego approach group(s) {sorted(approach_groups)}.")
+        elif same_lane_target and approach_rows:
+            checks["lanes"] = "pass"
+            reasons.append(f"Target vehicle is {origin} on the ego approach lane; no junction-arm "
+                           "connector is required. The lead edit uses the existing approach path.")
+        elif origin != "none" and not other_rows:
+            checks["lanes"] = "fail"
+            reasons.append(f"Complete connector data has no {want_side} approach supporting "
+                           f"{want_other or 'the target motion'} in physical junction {region_fids}.")
+        elif origin == "none" and approach_rows:
+            checks["lanes"] = "pass"
+            reasons.append(f"The ego approach has an editable connected path through junction {region_fids}.")
+        elif interaction_pairs:
+            checks["lanes"] = "pass"
+            chosen = interaction_pairs[0]
+            relation = ("crossing" if chosen["paths_cross"] else
+                        f"same conflict area ({chosen['path_distance_m']:.2f}m apart, editable lane offset)")
+            reasons.append(
+                f"Recorded ego path {chosen['ego_path_kind']} and target other connector "
+                f"{chosen['other_connector_fid']} ({chosen['other_turn']}, {want_side}) form a "
+                f"{relation}. The target interaction may occur before the ego follows its normal turn.")
+        elif unknown_pairs:
+            reasons.append("Connector paths exist but their pairwise crossing cannot be measured; "
+                           "lanes stays unknown.")
+        else:
+            reasons.append("Connectors exist, but no ego/other path pair was proven to form the "
+                           "target interaction from map geometry; lanes stays unknown.")
 
-    target_geometry = junction_rows.get(target, {}).get("geometry")
+        space_lane_ids = set()
+        for row in (other_rows or approach_rows):
+            space_lane_ids.update(value for value in (row["exit_lane_fid"], row["entry_lane_fid"])
+                                  if value is not None)
+        widths = [width for lane in space_lane_ids
+                  for width in lane_rows.get(lane, {}).get("widths", [])]
+        if not space_lane_ids or not widths:
+            reasons.append("No measured lane width is available for placement; space stays unknown.")
+        elif min(widths) < MIN_PLACEMENT_WIDTH_M:
+            checks["space"] = "fail"
+            reasons.append(f"The narrowest candidate placement lane is {min(widths):.2f}m, below "
+                           f"the {MIN_PLACEMENT_WIDTH_M:.2f}m minimum for a vehicle and clearance.")
+        else:
+            checks["space"] = "pass"
+            reasons.append(f"Official drivable lane geometry provides at least {min(widths):.2f}m "
+                           "placement width for the target interaction.")
+
+    target_geometry = cluster_geometry
     frame_rows = []
     for index, point in enumerate(ego_path):
         distance = round(target_geometry.distance(Point(point)), 1) if target_geometry is not None else None

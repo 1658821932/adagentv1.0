@@ -1,32 +1,30 @@
-"""The visual check must describe the frames it really sends and keep them on disk."""
+"""The visual check only supplements weather and environment text."""
 import json
-import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from uuid import uuid4
 from unittest import mock
+from uuid import uuid4
 
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tools.tool01_failure_analyzer import evidence, real, visual_check  # noqa: E402
+from tools.tool01_failure_analyzer import visual_check  # noqa: E402
 
 CAMERA_TMP = tempfile.TemporaryDirectory(prefix="t01cam-")
 RUN_TMP = tempfile.TemporaryDirectory(prefix="t01run-")
-
-FACTS = {"failure": {"outcome": "collision", "interaction": "opposite_direction"},
-         "attack": {"map_context": "straight_road", "ego_action": "straight",
-                    "ego_lane_keeping": "left_offset", "other_origin": "oncoming",
-                    "other_action": "straight", "other_lane_keeping": "keep"}}
+FACTS = {
+    "failure": {"outcome": "collision", "interaction": "crossing"},
+    "attack": {"map_context": "t_junction", "ego_action": "turn_right",
+               "ego_lane_keeping": "keep", "other_origin": "right_arm",
+               "other_action": "turn_left", "other_lane_keeping": "keep"},
+}
 
 
 class StubClient:
-    """Stands in for the model client; the answer is set per test."""
-
     answer = ""
     calls = []
 
@@ -35,63 +33,48 @@ class StubClient:
 
     def chat(self, messages):
         StubClient.calls.append(messages)
-        if isinstance(self.answer, BaseException):
-            raise self.answer
         return self.answer
-
-
-def answer(**overrides):
-    payload = {"map_context": "straight_road", "ego_action": "straight",
-               "ego_lane_keeping": "left_offset", "other_origin": "oncoming",
-               "other_action": "straight", "other_lane_keeping": "keep",
-               "interaction": "opposite_direction", "notes": [],
-               "weather": "cloudy", "extra": "白天，路面干燥"}
-    payload.update(overrides)
-    for name in [key for key, value in overrides.items() if value is _MISSING]:
-        payload.pop(name)
-    return json.dumps(payload, ensure_ascii=False)
 
 
 class _Missing:
     pass
 
 
-_MISSING = _Missing()
-_DEFAULT = object()
+MISSING = _Missing()
 
 
-def tearDownModule():
-    CAMERA_TMP.cleanup()
-    RUN_TMP.cleanup()
+def answer(**overrides):
+    payload = {"weather": "cloudy", "extra": "白天，路面干燥", "notes": []}
+    payload.update(overrides)
+    for key in [key for key, value in overrides.items() if value is MISSING]:
+        payload.pop(key)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def camera_frames(count):
-    """Real, valid JPEG files for all eight cameras, removed when the module ends."""
     root = Path(CAMERA_TMP.name) / f"scene-{count}" / "sensor_blobs" / "scene"
-    images = {}
-    for camera in visual_check.CAMERAS:
-        (root / camera).mkdir(parents=True, exist_ok=True)
-        images[camera] = []
-        for index in range(count):
-            path = root / camera / f"{index:02d}.jpg"
-            Image.new("RGB", (64, 36), (index * 11 % 256, 60, 120)).save(path, format="JPEG", quality=90)
-            images[camera].append(path)
-    return [{"index": index, "time_s": index * 0.5,
-             "images": {camera: str(images[camera][index]) for camera in visual_check.CAMERAS}}
-            for index in range(count)]
+    rows = []
+    for index in range(count):
+        images = {}
+        for camera in visual_check.CAMERAS:
+            folder = root / camera
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"{index:02d}.jpg"
+            Image.new("RGB", (64, 36), (index * 11 % 256, 60, 120)).save(path, format="JPEG")
+            images[camera] = str(path)
+        rows.append({"index": index, "time_s": index * 0.5, "images": images})
+    return rows
 
 
-def run_check(payload, count=12, violation=_DEFAULT, run_dir=None, facts_override=None):
+def run_check(payload, count=12, violation=7):
     StubClient.answer = payload
     StubClient.calls = []
-    frames = camera_frames(count)
-    facts = dict(FACTS, violation_step=7 if violation is _DEFAULT else violation, frame_images=frames)
-    facts.update(facts_override or {})
-    directory = Path(run_dir) if run_dir else Path(RUN_TMP.name) / f"run-{uuid4().hex[:8]}"
-    directory.mkdir(parents=True, exist_ok=True)
+    facts = dict(FACTS, violation_step=violation, frame_images=camera_frames(count))
+    directory = Path(RUN_TMP.name) / f"run-{uuid4().hex[:8]}"
+    directory.mkdir(parents=True)
     with mock.patch("agent.llm_client.LLMClient", StubClient):
         result = visual_check.check("archive", "token", facts, run_dir=directory)
-    return result, directory
+    return result
 
 
 def last_prompt():
@@ -99,124 +82,65 @@ def last_prompt():
     return content[0]["text"], [part for part in content if part["type"] == "image_url"]
 
 
-def listed_frames(text):
-    return [int(value) for value in re.findall(r"- 第 \d+ 张：帧 (\d+)，", text)]
+class VisualEnvironmentTests(unittest.TestCase):
+    @classmethod
+    def tearDownClass(cls):
+        CAMERA_TMP.cleanup()
+        RUN_TMP.cleanup()
 
-
-class SampledFrameTests(unittest.TestCase):
-    def test_three_images_around_violation(self):
-        _, directory = run_check(answer())
+    def test_only_violation_frame_is_sent_for_environment(self):
+        run_check(answer())
         text, images = last_prompt()
-        self.assertEqual(listed_frames(text), [5, 7, 9])
-        self.assertEqual(len(images), 3)
+        self.assertEqual(len(images), 1)
         self.assertIn("首次违规帧为第 7 帧", text)
-        self.assertIn("你会收到 3 张", text)
-        self.assertIn("- 第 1 张：帧 5，2.5s", text)
-        self.assertIn("首次违规前二帧", text)
-        self.assertIn("首次违规帧", text)
-        self.assertIn("首次违规后二帧", text)
-        self.assertNotIn("事故前", text)
-        self.assertNotIn("事故后", text)
+        self.assertIn("你会收到 1 张", text)
 
-    def test_boundary_violations_keep_the_real_frames(self):
-        cases = {(0, 12): [0, 2], (1, 12): [0, 1, 3], (10, 12): [8, 10, 11],
-                 (11, 12): [9, 11], (0, 1): [0], (1, 2): [0, 1]}
-        for (violation, count), expected in cases.items():
-            with self.subTest(violation=violation, count=count):
-                run_check(answer(), count=count, violation=violation)
-                text, images = last_prompt()
-                self.assertEqual(listed_frames(text), expected)
-                self.assertEqual(len(images), len(expected))
-                self.assertIn(f"你会收到 {len(expected)} 张", text)
+    def test_valid_environment_answer_has_no_corrections(self):
+        result = run_check(answer())
+        self.assertEqual(result["sample_frames"], [7])
+        self.assertEqual(result["corrections"], [])
+        self.assertEqual(result["weather"], "cloudy")
+        self.assertEqual(result["extra"], "白天，路面干燥")
+        self.assertNotIn("decision", result)
 
-    def test_sent_images_match_the_listing(self):
-        for count, violation in ((12, 7), (12, 0), (12, 11), (1, 0), (2, 1), (3, 1)):
-            with self.subTest(count=count, violation=violation):
-                run_check(answer(), count=count, violation=violation)
-                text, images = last_prompt()
-                expected = visual_check.sheet_indices(count, violation)
-                self.assertEqual(listed_frames(text), expected)
-                self.assertEqual(len(images), len(expected))
+    def test_weather_is_normalized_and_unknown_is_allowed(self):
+        self.assertEqual(run_check(answer(weather=" Cloudy "))["weather"], "cloudy")
+        result = run_check(answer(weather="unknown", extra=""))
+        self.assertEqual((result["weather"], result["extra"]), ("unknown", ""))
 
-    def test_bad_frames_are_rejected(self):
+    def test_bad_violation_frames_are_rejected(self):
         for violation in (-1, 12, 7.5, 0.0, True, "7", None):
             with self.subTest(violation=violation):
                 with self.assertRaises(visual_check.VisualCheckError):
                     run_check(answer(), violation=violation)
+
     def test_bad_counts_are_rejected(self):
         for count in (0, -1, 2.5, True):
             with self.subTest(count=count):
                 with self.assertRaises(visual_check.VisualCheckError):
                     visual_check.sheet_indices(count, 0)
 
+    def test_missing_environment_fields_are_rejected(self):
+        for name in ("weather", "extra", "notes"):
+            with self.subTest(name=name):
+                with self.assertRaises(visual_check.VisualCheckError):
+                    run_check(answer(**{name: MISSING}))
 
-class AcceptedAnswers(unittest.TestCase):
-    def test_complete_answer_passes(self):
-        result, _ = run_check(answer())
-        self.assertEqual(result["sample_frames"], [5, 7, 9])
-        self.assertEqual(result["corrections"], [])
-        self.assertEqual(result["notes"], [])
-        self.assertEqual(result["weather"], "cloudy")
-        self.assertEqual(result["extra"], "白天，路面干燥")
-        self.assertEqual(result["decision"]["ego_lane_keeping"], "left_offset")
+    def test_key_data_fields_are_rejected(self):
+        for name in ("map_context", "ego_action", "other_origin", "other_action", "interaction"):
+            with self.subTest(name=name):
+                payload = json.loads(answer())
+                payload[name] = "x"
+                with self.assertRaises(visual_check.VisualCheckError):
+                    run_check(json.dumps(payload))
 
-    def test_explicit_unknown_and_empties_pass(self):
-        result, _ = run_check(answer(weather="unknown", extra="", notes=[]))
-        self.assertEqual((result["weather"], result["extra"], result["notes"]), ("unknown", "", []))
-
-    def test_weather_is_normalized(self):
-        self.assertEqual(run_check(answer(weather=" Cloudy "))[0]["weather"], "cloudy")
-
-    def test_visual_model_can_correct_the_initial_analysis(self):
-        initial = {
-            "failure": {"outcome": "collision", "interaction": "crossing"},
-            "attack": {"map_context": "curve", "ego_action": "turn_right",
-                       "ego_lane_keeping": "keep", "other_origin": "right_arm",
-                       "other_action": "turn_left", "other_lane_keeping": "keep"},
-        }
-        result, directory = run_check(answer(
-            notes=["画面为直路，自车直行并向左偏离，来车在对向车道"]), facts_override=initial)
-        self.assertEqual(result["decision"]["ego_action"], "straight")
-        self.assertEqual({item["field"] for item in result["corrections"]},
-                         {"map_context", "ego_action", "ego_lane_keeping",
-                          "other_origin", "other_action", "interaction"})
-        self.assertEqual(evidence.read_manifest(directory)["verification"]["sample_frames"], [5, 7, 9])
-
-
-class RejectedAnswers(unittest.TestCase):
-    def assert_rejected(self, payload, *expected):
-        with self.assertRaises(visual_check.VisualCheckError) as caught:
-            run_check(payload)
-        for text in expected:
-            self.assertIn(text, str(caught.exception))
-        self.assertEqual(caught.exception.stage, "vlm")
-
-    def test_missing_fields_are_reported(self):
-        for name in ("map_context", "ego_action", "ego_lane_keeping", "other_origin",
-                     "other_action", "other_lane_keeping", "interaction", "notes",
-                     "weather", "extra"):
-            with self.subTest(name):
-                self.assert_rejected(answer(**{name: _MISSING}), name)
-
-    def test_bad_notes_are_rejected(self):
-        for value in (False, None, "no notes", [1, None], [""], ["  "]):
-            with self.subTest(value=value):
-                self.assert_rejected(answer(notes=value), "notes")
-
-    def test_unexpected_fields_are_rejected(self):
-        payload = json.loads(answer())
-        payload["reasoning"] = "not part of the contract"
-        self.assert_rejected(json.dumps(payload), "unexpected fields", "reasoning")
-
-    def test_bad_weather_is_rejected(self):
-        for value in (None, 3, "", "sunny"):
-            with self.subTest(value=value):
-                self.assert_rejected(answer(weather=value), "weather")
-
-    def test_non_string_extra_is_rejected(self):
-        for value in (None, 1, {"text": "白天"}):
-            with self.subTest(value=value):
-                self.assert_rejected(answer(extra=value), "extra")
+    def test_invalid_notes_weather_and_extra_are_rejected(self):
+        for payload in (answer(notes=False), answer(notes=[1]), answer(notes=[""]),
+                        answer(weather=None), answer(weather="sunny"),
+                        answer(extra=None), answer(extra=3)):
+            with self.subTest(payload=payload):
+                with self.assertRaises(visual_check.VisualCheckError):
+                    run_check(payload)
 
 
 if __name__ == "__main__":

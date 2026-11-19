@@ -24,7 +24,7 @@ class Output(OutputModel):
     simulation: str | None = Field(default=None, description='Closed-loop simulation record that produced the official metrics.')
     map_location: str | None = Field(default=None, description='nuPlan map name for this scene; used when a map lookup is needed.')
     evidence_dir: str = Field(default="", description='Directory holding the evidence used for the analysis, for optional inspection.')
-    failure: dict[str, Any] = Field(description='Final failure facts: outcome, interaction (rear_end / opposite_direction / cut_in / crossing / side_swipe / single_vehicle) and ego_cause.')
+    failure: dict[str, Any] = Field(description='Final failure facts: outcome, collision_confirmed, interaction (rear_end / opposite_direction / cut_in / crossing / side_swipe / near_miss / single_vehicle) and ego_cause. near_miss means a mapped nearby vehicle exists without an official collision.')
     attack: dict[str, Any] = Field(description='Final two-vehicle structure: map_context, ego_action, ego_lane_keeping, other_origin, other_action and other_lane_keeping.')
     environment: dict[str, Any] = Field(description='Environment: time (from the scene timestamp), weather (clear / cloudy / rainy / foggy / snowy / unknown) and extra (one sentence of visual context).')
     verification: dict[str, Any] = Field(description='Three-frame eight-camera verification: sample_frames, corrections from measured to final values, and notes.')

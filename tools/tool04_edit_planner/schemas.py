@@ -1,6 +1,6 @@
 """Tool04: road/space suitability review of a retrieved scene for one tool02 candidate."""
 from typing import Any, Literal
-from pydantic import Field, RootModel, model_validator
+from pydantic import Field, model_validator
 from common.artifacts import load_tool_result
 from common.models import OutputModel
 from common.scene_refs import SceneReference
@@ -132,7 +132,7 @@ class AdaptedPlan(ToolModel):
     attack_edit_strategy: NonEmptyStr | None = Field(
         description="Adjusted other-vehicle edit for this real scene, or null when no other-vehicle edit is used.")
     ego_input_edit_strategy: NonEmptyStr | None = Field(
-        description="Adjust ego approach speed and timing to meet the edited attack vehicle at the conflict while preserving meaningful speed and task difficulty; null only when the recorded input already produces that synchronized conflict.")
+        description="Adjust the ego path, direction, speed and timing as needed so the attack vehicle meets the ego during the target interaction phase, including straight approach or the start of a normal turn, while preserving meaningful speed and task difficulty; null only when the recorded input already produces that conflict.")
     ego_correct_trajectory_strategy: NonEmptyStr = Field(
         description="How the ego should drive to handle the danger safely in this scene.")
 
@@ -178,13 +178,3 @@ class Output(Response):
             if self.adapted_plan.attack_edit_strategy is not None:
                 raise ValueError("no target vehicle in the target scene: attack_edit_strategy must be null")
         return self
-
-
-class ViewRequest(ToolModel):
-    action: Literal["request_views"]
-    cameras: list[NonEmptyStr] = Field(min_length=1, max_length=2, description="Actual camera names from the source scene, e.g. CAM_L0 or CAM_R0.")
-    purpose: NonEmptyStr = Field(description="What scene uncertainty needs these additional views.")
-
-
-class Decision(RootModel[Response | ViewRequest]):
-    """Internal visual request or final review; the public Output stays unchanged."""

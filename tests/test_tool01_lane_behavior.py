@@ -46,8 +46,29 @@ def test_ego_lane_change_does_not_turn_the_other_vehicle_into_a_cut_in():
     assert classify_interaction("left_adjacent", True, True, True, True) == "side_swipe"
 
 
+def test_no_target_stays_single_vehicle_without_a_collision():
+    assert classify_interaction(None, None, None, None, None, collision_confirmed=False) == "single_vehicle"
+    assert classify_interaction("none", None, None, None, None, collision_confirmed=False) == "single_vehicle"
+
+
+def test_nearby_vehicle_without_official_collision_is_a_near_miss():
+    assert classify_interaction(
+        "right_adjacent", True, False, False, True, collision_confirmed=False
+    ) == "near_miss"
+
+
 def test_no_target_cause_keeps_ego_motion_lane_state_and_outcome():
     attack = {"map_context": "straight_road", "ego_action": "straight", "ego_lane_keeping": "left_offset",
               "other_origin": "none", "other_action": "none", "other_lane_keeping": "none"}
     text = ego_cause("single_vehicle", attack, "straight", "left_offset", "road_departure")
     assert "直行" in text and "向左偏离" in text and "驶出可行驶道路" in text
+
+
+def test_near_miss_wording_does_not_claim_rear_end_or_collision():
+    attack = {"map_context": "t_junction", "ego_action": "straight", "ego_lane_keeping": "keep",
+              "other_origin": "right_adjacent", "other_action": "straight",
+              "other_lane_keeping": "unknown"}
+    text = ego_cause("near_miss", attack, "straight", "keep", "road_departure")
+    assert "驶出可行驶道路" in text
+    assert "右相邻车道" in text
+    assert "追尾" not in text and "碰撞" not in text

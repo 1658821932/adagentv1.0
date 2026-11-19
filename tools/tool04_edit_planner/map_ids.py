@@ -110,3 +110,63 @@ def lane_fit(approach_groups, rows, want_ego, want_side, want_other, complete):
         other_ok = (any(row.get("turn") == want_other for row in side_rows)
                     if want_other else bool(side_rows))
     return (ego_ok, other_ok)
+
+
+def connected_intersection_regions(target_fid, geometries, max_radius_m=30.0,
+                                   touch_tolerance_m=0.25):
+    """Return the topology-connected regions of one physical intersection.
+
+    nuPlan can split a junction into many lane-region polygons. Starting at the
+    recorded-route junction, include touching/near-touching regions within one
+    bounded junction neighbourhood; do not walk into unrelated later junctions.
+    """
+    if target_fid not in geometries or geometries[target_fid] is None:
+        return [target_fid]
+    target = geometries[target_fid]
+    centre = target.representative_point()
+    eligible = {
+        fid for fid, geometry in geometries.items()
+        if geometry is not None and not geometry.is_empty
+        and centre.distance(geometry.representative_point()) <= max_radius_m
+    }
+    selected = {target_fid}
+    frontier = [target_fid]
+    while frontier:
+        current = frontier.pop()
+        geometry = geometries[current]
+        for fid in eligible - selected:
+            if geometry.distance(geometries[fid]) <= touch_tolerance_m:
+                selected.add(fid)
+                frontier.append(fid)
+    return sorted(selected)
+
+
+def connector_paths_cross(first, second, endpoint_extension_m=6.0):
+    """Whether two official connector centrelines form a crossing path pair.
+
+    Connector baselines can end at their entry lanes before the centre of a large
+    junction. Extend both endpoints along their terminal tangent by a bounded
+    distance, then test for a proper crossing. Missing/invalid geometry is unknown.
+    """
+    from shapely.geometry import LineString
+
+    if first is None or second is None or first.is_empty or second.is_empty:
+        return None
+
+    def extended(line):
+        coords = list(line.coords)
+        if len(coords) < 2 or endpoint_extension_m <= 0:
+            return line
+
+        def move(point, other):
+            dx, dy = point[0] - other[0], point[1] - other[1]
+            length = math.hypot(dx, dy)
+            if length == 0:
+                return point
+            return (point[0] + dx / length * endpoint_extension_m,
+                    point[1] + dy / length * endpoint_extension_m)
+
+        return LineString([move(coords[0], coords[1]), *coords,
+                           move(coords[-1], coords[-2])])
+
+    return bool(extended(first).crosses(extended(second)))

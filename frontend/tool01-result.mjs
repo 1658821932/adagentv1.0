@@ -3,7 +3,7 @@
 const OUTCOME = { collision: '碰撞', road_departure: '出界', collision_and_departure: '碰撞且出界' };
 const INTERACTION = {
   rear_end: '追尾', crossing: '交叉冲突', side_swipe: '侧向刮擦',
-  opposite_direction: '对向碰撞', cut_in: '切入冲突', single_vehicle: '单方事故',
+  opposite_direction: '对向碰撞', cut_in: '切入冲突', near_miss: '近距冲突', single_vehicle: '单方事故',
 };
 const MAP = {
   straight_road: '直路', curve: '弯道', t_junction: '丁字路口',
@@ -47,10 +47,14 @@ export function failureSummary(result) {
 function failureGroup(result) {
   const failure = result.failure;
   if (failure && typeof failure === 'object') {
+    const collision = typeof failure.collision_confirmed === 'boolean'
+      ? [['碰撞确认', failure.collision_confirmed ? '是' : '否']]
+      : [];
     return {
       title: '失败判定',
       rows: [
         ['判定', named(OUTCOME, failure.outcome)],
+        ...collision,
         ['首次违规帧', Number.isInteger(result.violation_step) ? String(result.violation_step) : ''],
         ['交互类型', named(INTERACTION, failure.interaction)],
         ['自车原因', text(failure.ego_cause)],

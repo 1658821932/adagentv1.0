@@ -29,33 +29,22 @@ LANE_KEEPING = ("left_offset", "keep", "right_offset")
 OTHER_ORIGINS = ("ahead_same_lane", "behind_same_lane", "oncoming", "left_adjacent",
                  "right_adjacent", "left_arm", "right_arm", "none")
 OTHER_ACTIONS = ("straight", "turn_left", "turn_right", "none")
-INTERACTIONS = ("rear_end", "opposite_direction", "cut_in", "crossing", "side_swipe", "single_vehicle")
-REQUIRED_FIELDS = ("map_context", "ego_action", "ego_lane_keeping", "other_origin",
-                   "other_action", "other_lane_keeping", "interaction", "notes", "weather", "extra")
+INTERACTIONS = ("rear_end", "opposite_direction", "cut_in", "crossing", "side_swipe", "near_miss", "single_vehicle")
+REQUIRED_FIELDS = ("weather", "extra", "notes")
 
-PROMPT = """结合地图初始分析和八相机画面，给出可修正的最终结论，并补充环境：
+PROMPT = """你的唯一任务是根据违规帧八相机总览补充天气和环境描述。不要判断或修改道路、车辆动作、车道保持、他车来向或交互类型。
 {facts}
 
-首次违规帧为第 {violation} 帧。你会收到 {images_count} 张八相机3×3总览图（中央留白），按时间排序，标有相机名、帧号和相对时间：
+首次违规帧为第 {violation} 帧。你会收到 {images_count} 张八相机3×3总览图：
 {images}
-固定选取违规前二帧、违规帧、违规后二帧，越界截断并去重。
+只填写：
+- weather：clear / cloudy / rainy / foggy / snowy / unknown
+- extra：一句可见环境描述，不推测
+- notes：可选补充说明；没有补充时为空数组
 
-道路形态根据完整道路和车道判断，不能把车辆横向偏移当成道路弯曲。没有进入路口连接路段时不得输出左转或右转。
-自车和他车的动作只表示行驶方向；左偏移、保持、右偏移单独描述车辆相对自己所在车道的横向位置。他车的左右以他车自己的行驶方向为参考。
-同向相邻车辆进入自车车道为切入；方向相反的车辆进入自车路径为对向碰撞。前视看不到侧碰时必须检查左右相机，不能据此断言未碰撞。
-你可以修改初始分析中的道路形态、自车动作、自车车道保持、他车来向、他车动作、他车车道保持和冲突方式。不要修改 token、违规帧或官方指标。
-notes 必须逐条说明每次修改的理由；没有修改时为空数组。
-字段只能使用以下固定值：
-- map_context: straight_road, curve, t_junction, cross_intersection, merge
-- ego_action: straight, turn_left, turn_right
-- ego_lane_keeping: left_offset, keep, right_offset
-- other_origin: ahead_same_lane, behind_same_lane, oncoming, left_adjacent, right_adjacent, left_arm, right_arm, none
-- other_action: straight, turn_left, turn_right, none
-- other_lane_keeping: left_offset, keep, right_offset, none
-- interaction: rear_end, opposite_direction, cut_in, crossing, side_swipe, single_vehicle
-补充 weather（clear/cloudy/rainy/foggy/snowy/unknown）和一句环境描述 extra；无法判断时分别填 unknown、空字符串，不猜测。
+看不清天气时 weather 填 unknown，extra 可为空。不要返回任何其他字段。
 必须返回 JSON：
-{{"map_context":"straight_road","ego_action":"straight","ego_lane_keeping":"keep","other_origin":"none","other_action":"none","other_lane_keeping":"none","interaction":"single_vehicle","notes":[],"weather":"unknown","extra":""}}
+{{"weather":"unknown","extra":"","notes":[]}}
 """
 
 
@@ -168,7 +157,8 @@ def check(archive, token, facts, run_dir=None):
     try:
         images, rows = camera_images(facts)
         violation = facts["violation_step"]
-        indices = sheet_indices(len(rows), violation)
+        sheet_indices(len(rows), violation)
+        indices = [violation]
         evidence.write_manifest(run_dir, violation_step=violation, selected=[
             {"index": index, "time_s": frame_time(rows, index),
              "sources": {camera: str(images[camera][index]) for camera in CAMERAS}}
@@ -244,37 +234,6 @@ def check(archive, token, facts, run_dir=None):
         notes = [note.strip() for note in notes]
         if any(not note for note in notes):
             raise VisualCheckError("visual check notes must be non-empty text", stage="vlm")
-        allowed = {
-            "map_context": MAP_CONTEXTS,
-            "ego_action": EGO_ACTIONS,
-            "ego_lane_keeping": LANE_KEEPING,
-            "other_origin": OTHER_ORIGINS,
-            "other_action": OTHER_ACTIONS,
-            "other_lane_keeping": ("left_offset", "keep", "right_offset", "none"),
-            "interaction": INTERACTIONS,
-        }
-        for field, values in allowed.items():
-            if not isinstance(answer[field], str) or answer[field] not in values:
-                raise VisualCheckError(
-                    f"visual check {field!r} must be one of {', '.join(values)}, got {answer[field]!r}",
-                    stage="vlm")
-        if answer["other_origin"] == "none":
-            if answer["other_action"] != "none" or answer["other_lane_keeping"] != "none":
-                raise VisualCheckError("other_action and other_lane_keeping must both be none when no target exists",
-                                       stage="vlm")
-        elif answer["other_action"] == "none" or answer["other_lane_keeping"] == "none":
-            raise VisualCheckError("a target vehicle requires an action and a lane-keeping value",
-                                   stage="vlm")
-        measured = {
-            **(facts.get("attack") or {}),
-            "interaction": (facts.get("failure") or {}).get("interaction"),
-        }
-        corrections = [
-            {"field": field, "measured": measured.get(field), "final": answer[field]}
-            for field in allowed if measured.get(field) != answer[field]
-        ]
-        if corrections and not notes:
-            raise VisualCheckError("visual check must explain each correction in notes", stage="vlm")
         report = answer["weather"]
         if not isinstance(report, str):
             raise VisualCheckError(f"visual check 'weather' must be a string, got {report!r}", stage="vlm")
@@ -294,9 +253,8 @@ def check(archive, token, facts, run_dir=None):
         raise
 
     result = {
-        "decision": {field: answer[field] for field in allowed},
         "sample_frames": indices,
-        "corrections": corrections,
+        "corrections": [],
         "notes": notes,
         "weather": weather,
         "extra": extra.strip(),
