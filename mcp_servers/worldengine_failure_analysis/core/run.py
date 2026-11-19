@@ -1,6 +1,7 @@
 """Official outcome -> VLM image investigation -> VLM numeric verification -> summary."""
 import argparse,csv,json,pickle,sys,time
 import os
+from importlib import import_module
 from collections import Counter
 from pathlib import Path
 
@@ -59,6 +60,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('command',choices=['scene','batch','report']);p.add_argument('--config',type=Path,default=PROJECT/'configs/complete.json')
     p.add_argument('--api-config',type=Path,help='Standalone API profile JSON')
+    p.add_argument('--request-audit', help='Optional request audit factory as module:attribute')
     p.add_argument('--token');p.add_argument('--tokens',nargs='+');p.add_argument('--run-name',default='vlm_behavior_v3')
     p.add_argument('--run-dir',type=Path,help='Explicit existing task output for report/resume; default: a fresh runtime task')
     p.add_argument('--resume',action='store_true');p.add_argument('--attempts',type=int,default=1)
@@ -83,6 +85,12 @@ def main():
     if any(r['token'] not in cfg['vlm_allowed_tokens'] for r in selected):p.error('Selected token is outside configured external-image authorization')
     from api_settings import vlm_settings
     secret = vlm_settings(args.api_config)
+    audit_factory = None
+    if args.request_audit:
+        module, separator, attribute = args.request_audit.partition(':')
+        if not separator or not module or not attribute:
+            p.error('--request-audit expects module:attribute')
+        audit_factory = getattr(import_module(module), attribute)
     for row in selected:
         out=prepare_attempt(directory,row['token'],args.resume,args.attempts)
         if out is None:continue
@@ -97,7 +105,7 @@ def main():
             evidence=Evidence(PROJECT,cfg,row,frames,out);evidence.prepare_images();evidence.numbers()
             prepared=time.monotonic()
             print('PREPARED',row['token'],flush=True)
-            result=run(Client(secret,out),evidence,official,out,cfg.get('max_turns',6),cfg.get('workers',4))
+            result=run(Client(secret,out,audit_factory),evidence,official,out,cfg.get('max_turns',6),cfg.get('workers',4))
             result['official_metrics']=official['metrics']
             # 结果直接回传 stdout，不再落盘一份单独的 result.json
             print('RESULT '+json.dumps(result,ensure_ascii=False),flush=True)

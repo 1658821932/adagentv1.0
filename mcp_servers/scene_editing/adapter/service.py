@@ -184,6 +184,7 @@ def backend_api_env(command, environment, component="attack_editor"):
     result = dict(environment)
     backend = Path(__file__).resolve().parents[1] / 'core/adversarial/editing_backend.py'
     if any(Path(part).resolve() == backend for part in command):
+        result['ADVERSARIAL_HOST_HOOKS'] = 'mcp_servers.scene_editing.adapter.core_hooks'
         result.pop('ADVERSARIAL_ATTACK_SESSION', None)
         job_dir = os.getenv('ADAGENT_JOB_DIR')
         if component == 'attack_editor' and job_dir:
@@ -197,12 +198,13 @@ def backend_api_env(command, environment, component="attack_editor"):
         result.pop('ADVERSARIAL_FULL_PIPELINE_ROOT', None)
         if public_root is not None:
             result['ADVERSARIAL_FULL_PIPELINE_ROOT'] = str(public_root)
-        from common.api_profiles import effort_for, profile_argument
+        from common.api_profiles import effort_for, profile_argument, reasoning_effort_level
         profile = get_profile(profile_argument(component), require_key=True)
         # A tool-level thinking level pins this editor; otherwise the global value applies.
-        tool_effort = effort_for(component)
+        tool_effort = effort_for(component) or reasoning_effort_level()
+        if tool_effort:
+            result['LLM_REASONING_EFFORT'] = tool_effort
         if tool_effort and profile.get('request_dialect'):
-            from common.api_profiles import DEFAULT as _follow
             level_to_effort = {'thinking': {'low': 'low', 'medium': 'high', 'high': 'max'},
                                'qwen': {'low': 'low', 'medium': 'medium', 'high': 'xhigh'},
                                'kimi': {'low': 'low', 'medium': 'high', 'high': 'max'}}

@@ -13,7 +13,7 @@ import os
 import subprocess
 import numpy as np
 from experiment_runtime import atomic_json
-from mcp_servers.scene_editing.shared_history import (
+from shared_history import (
     MAX_NATIVE_GRID_JITTER_S, WE_TICK_S, native_sample_rate, shared_history_end_index,
 )
 from run_ego_reference import ego_path_from_frames,observed_objects_from_frames,EGO_FRONT,EGO_REAR,EGO_WIDTH

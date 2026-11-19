@@ -74,7 +74,7 @@ def plot(editor,collision,view,folder):
     extent=np.vstack([reference,actual,*([points] if observed else [])]);axis.set_xlim(extent[:,0].min()-8,extent[:,0].max()+8)
     axis.set_ylim(extent[:,1].min()-8,extent[:,1].max()+8);axis.set_aspect('equal');axis.legend(fontsize=8);axis.grid(alpha=.2)
     axis.set(xlabel='initial ego forward x (m)',ylabel='initial ego left y (m)',title='Same fixed coordinates as vehicle editing')
-    from mcp_servers.worldengine.adapter.collision_report import body_contact
+    from box_geometry import body_contact
     from run_ego_reference import EGO_WIDTH
     times=[];gaps=[];speeds=[]
     for row in observed:

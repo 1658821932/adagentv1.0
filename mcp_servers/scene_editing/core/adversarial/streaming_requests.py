@@ -8,7 +8,7 @@ import threading
 from experiment_runtime import RequestArchive, atomic_json, redact, utc
 from kimi_request_parameters import normalize_kimi_parameters
 from model_context import input_metrics
-from common.llm_audit import RequestAudit
+from backend_hooks import request_audit as RequestAudit
 
 
 class RequestDeadlineExceeded(TimeoutError):

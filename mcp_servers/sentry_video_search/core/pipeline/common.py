@@ -99,8 +99,7 @@ def chat_completion(
     retries: int = 2,
     retry_delays: tuple[float, ...] = (2.0, 2.0),
 ) -> dict[str, Any]:
-    from common.llm_audit import audited_json_call
-    from ..api_settings import get_profile
+    from ..api_settings import get_profile, request_json
     profile = get_profile("kimi")
     timeout = profile["timeout"]
     payload = {**payload, "max_tokens": profile["max_tokens"]}
@@ -108,12 +107,12 @@ def chat_completion(
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            response, body = audited_json_call(lambda: requests.post(
+            response, body = request_json(lambda: requests.post(
                 url,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 data=json.dumps(payload, ensure_ascii=False),
                 timeout=timeout,
-            ), payload, endpoint=url, label=f'retrieval_chat/attempt_{attempt+1}', secrets=[api_key], return_response=True)
+            ), payload, endpoint=url, label=f'retrieval_chat/attempt_{attempt+1}', secrets=[api_key])
             if response.status_code != 200 or body.get("error"):
                 raise RuntimeError(f"Model API error: status={response.status_code}; see request archive")
             return body

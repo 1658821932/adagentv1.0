@@ -13,6 +13,7 @@ CORE=Path(__file__).resolve().parents[1]/'mcp_servers/scene_editing/core/adversa
 
 def make_probe(tmp_path,monkeypatch,root=None):
     monkeypatch.syspath_prepend(str(CORE))
+    monkeypatch.setenv('ADVERSARIAL_HOST_HOOKS', 'mcp_servers.scene_editing.adapter.core_hooks')
     from attack_policy_probe import VADProbe
     editor=SimpleNamespace(constraints=dict(vadv2_probe_root=str(root or tmp_path/'probes'),
         vadv2_probe_budget=3,policy_source_scene_ref={},vadv2_policy_config=dict(python=sys.executable,

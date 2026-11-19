@@ -157,7 +157,7 @@ def attack_output(arguments, output_dir):
     if result.get('vadv2_probe_result_path'):
         policy_probe=json.loads(Path(result['vadv2_probe_result_path']).read_text())
         import hashlib
-        from mcp_servers.scene_editing.policy_evidence import has_policy_failure
+        from policy_evidence import has_policy_failure
         if (not has_policy_failure(policy_probe, frozen/'metadata/map_drivable_official.json') or
                 policy_probe['frozen_frames_sha256']!=hashlib.sha256((frozen/'metadata/frames.json').read_bytes()).hexdigest()):
             raise RuntimeError('Submitted scene differs from its successful VADv2 policy test')
@@ -188,7 +188,7 @@ def ego_output(arguments, output_dir):
     # Follow the submitted object revision rather than the first search directory.
     attack_run_dir = Path(attack['submission_path']).parent.parent
     target_track = attack['target_track']
-    from mcp_servers.scene_editing.shared_history import shared_history_end_index
+    from shared_history import shared_history_end_index
     frames = json.loads((scene/'metadata/frames.json').read_text())
     times, rec_xy, rec_yaw = ego_path_from_frames(frames)
     visual_frame = shared_history_end_index(times)
@@ -217,7 +217,7 @@ def ego_output(arguments, output_dir):
         try:
             from business_outcome import bounded_outcome
         except ImportError:
-            from mcp_servers.scene_editing.core.adversarial.business_outcome import bounded_outcome
+            from business_outcome import bounded_outcome
         return bounded_outcome('ego_editing', detail, stage_dir)
     reuse_source = arguments.get('reuse_completed_from')
     reused_understanding = restore_stage('defense_understanding', reuse_source, arguments,

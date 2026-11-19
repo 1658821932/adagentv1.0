@@ -318,7 +318,7 @@ def _undecoded_call(turn):
 
 
 def archive_exchange(folder, turn, call, result, *, started=None):
-    from common.llm_audit import record_tool_exchange
+    from backend_hooks import record_tool_exchange
     path = folder / 'tool_calls' / f'turn_{turn:02d}'
     atomic_json(path / 'call.json', call)
     atomic_json(path / 'result.json', result)
@@ -1111,7 +1111,7 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
             atomic_json(output/stage/'output.json',dict(summary))
             return summary
         if config.get('vadv2_self_test'):
-            from mcp_servers.worldengine.adapter.planner_prewarm import start as start_prewarm
+            from backend_hooks import start_prewarm
             start_prewarm(config['vadv2_policy_config'],output/'vad-prewarm.json')
         preparation=None
         if 'prepare_ego_history' in config:

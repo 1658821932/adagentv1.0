@@ -315,7 +315,7 @@ class RequestArchive:
             raise ValueError('LLM endpoint must use HTTPS without embedded credentials/query')
 
     def complete(self,label,messages,**parameters):
-        from common.llm_audit import audited_json_call
+        from backend_hooks import audited_json_call
         parameters = dict(parameters)
         for field in ('timeout', 'max_tokens'):
             if field in self.profile:

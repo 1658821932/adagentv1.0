@@ -9,15 +9,15 @@ from concurrent.futures import ThreadPoolExecutor
 
 from evidence import POSITIONS, save
 from prompt_utils import load_prompt
-from common.llm_audit import RequestAudit
 
 SYSTEM = load_prompt("forensic_analysis.md")
 IMAGE_SYSTEM = load_prompt("image_review.md")
 
 
 class Client:
-    def __init__(self,secret,out):
+    def __init__(self,secret,out, audit_factory=None):
         self.secret,self.out=secret,out
+        self.audit_factory = audit_factory
 
     def ask(self,messages,name):
         payload={'model':self.secret['model'],'max_tokens':self.secret['max_tokens'],'messages':messages}
@@ -35,16 +35,18 @@ class Client:
         encoded=json.dumps(payload,ensure_ascii=False).encode()
         for attempt in range(3):
             started=time.monotonic()
-            audit=RequestAudit(payload,endpoint=self.secret['endpoint'],label=f'{name}/attempt_{attempt+1}',
-                               secrets=[self.secret['api_key']])
+            audit = self.audit_factory(payload, endpoint=self.secret['endpoint'], label=f'{name}/attempt_{attempt+1}',
+                                       secrets=[self.secret['api_key']]) if self.audit_factory else None
             raw=None
             try:
                 request=urllib.request.Request(self.secret['endpoint'],data=encoded,
                     headers={'Authorization':'Bearer '+self.secret['api_key'],'Content-Type':'application/json'})
                 with urllib.request.urlopen(request,timeout=self.secret['timeout']) as response:
-                    audit.first_response()
+                    if audit is not None:
+                        audit.first_response()
                     raw=json.load(response)
-                audit.finish(response=raw,usage=raw.get('usage'))
+                if audit is not None:
+                    audit.finish(response=raw, usage=raw.get('usage'))
                 choice=raw['choices'][0]
                 if choice.get('finish_reason')=='length':raise ValueError('Truncated model response')
                 text=choice['message']['content'].strip()
@@ -54,13 +56,13 @@ class Client:
                 print('VLM',name,round(time.monotonic()-started,2),'seconds',flush=True)
                 return answer
             except (TimeoutError,socket.timeout,urllib.error.URLError) as exc:
-                if raw is None:
+                if raw is None and audit is not None:
                     audit.finish(error=exc,http_status=getattr(exc,'code',None))
                 retryable=not isinstance(exc,urllib.error.HTTPError) or exc.code in (429,500,502,503,504)
                 if attempt==2 or not retryable:raise
                 time.sleep(2*(attempt+1))
             except BaseException as exc:
-                if raw is None:
+                if raw is None and audit is not None:
                     audit.finish(error=exc)
                 raise
 

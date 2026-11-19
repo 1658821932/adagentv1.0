@@ -171,6 +171,7 @@ def test_edit_events_are_deduplicated_and_operation_times_are_not_added(tmp_path
 
 def test_existing_editor_stream_archive_also_links_to_main_run(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(CORE))
+    monkeypatch.setenv('ADVERSARIAL_HOST_HOOKS', 'mcp_servers.scene_editing.adapter.core_hooks')
     module = importlib.import_module('streaming_requests')
     sdk = Mock()
     stream = Stream()
@@ -259,7 +260,8 @@ def test_failure_analysis_retries_are_archived_without_real_network(tmp_path, mo
     secret = dict(model='fixture', endpoint='https://example.invalid/chat/completions',
                   api_key='fixture-wfa-key', max_tokens=128, timeout=2)
     with trace_context(agent_log_dir=str(tmp_path), stage='failure_analyzer'):
-        result = review.Client(secret, tmp_path).ask([dict(role='user',content='fixture')], 'turn_01')
+        result = review.Client(secret, tmp_path, audit_factory=RequestAudit).ask(
+            [dict(role='user', content='fixture')], 'turn_01')
     assert result['action']=='fixture' and open_request.call_count==2
     rows = records(tmp_path)
     assert len(rows)==2 and sorted(r['status'] for r in rows)==['error','success']

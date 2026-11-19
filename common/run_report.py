@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime, timezone
 
 from common.llm_audit import Sanitizer, utc
-from mcp_servers.runtime import write_json
+from common.trace_io import write_json
 
 EDIT_TOOLS = {
     'construct_attack_candidates', 'construct_trajectory', 'construct_defense_candidates',

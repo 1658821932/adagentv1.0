@@ -19,6 +19,7 @@ from pathlib import Path
 import requests
 
 from .base_embedder import BaseEmbedder
+from ...api_settings import request_json
 
 
 DEFAULT_RPM = 55
@@ -143,10 +144,9 @@ class QwenAPIEmbedder(BaseEmbedder):
         def send():
             nonlocal audit_attempt
             audit_attempt += 1
-            from common.llm_audit import audited_json_call
-            response, body = audited_json_call(
+            response, body = request_json(
                 lambda: requests.post(self._api_url, headers=headers, data=json.dumps(payload), timeout=self._timeout),
-                payload, endpoint=self._api_url, label=f'retrieval_embedding/attempt_{audit_attempt}', secrets=[self._api_key], return_response=True)
+                payload, endpoint=self._api_url, label=f'retrieval_embedding/attempt_{audit_attempt}', secrets=[self._api_key])
             if response.status_code != 200 or body.get("code"):
                 raise QwenAPIError(
                     f"DashScope embedding error: status={response.status_code}; see request archive"

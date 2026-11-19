@@ -2,15 +2,12 @@
 from copy import deepcopy
 import hashlib
 import json
-import os
 from pathlib import Path
-import sys
 import time
 
-PROJECT_ROOT=Path(__file__).resolve().parents[4]
-if str(PROJECT_ROOT) not in sys.path:sys.path.insert(0,str(PROJECT_ROOT))
-from mcp_servers.runtime import write_json as atomic_json
-from mcp_servers.worldengine.adapter.evaluation_horizon import DEFAULT_NATIVE_HISTORY, DEFAULT_NATIVE_FRAMES
+from backend_hooks import native_policy_horizon, native_policy_probe, start_prewarm
+from box_geometry import corners
+from experiment_runtime import atomic_json
 
 
 class VADProbe:
@@ -20,7 +17,6 @@ class VADProbe:
         self.root.mkdir(parents=True,exist_ok=True)
         self.limit=editor.constraints.get('vadv2_probe_budget',3)
         self.policy=editor.constraints['vadv2_policy_config']
-        from mcp_servers.worldengine.adapter.planner_prewarm import start as start_prewarm
         self.prewarm=start_prewarm(self.policy,self.root/'prewarm.json')
         self.state_path=self.root/'budget.json'
         if not self.state_path.exists():atomic_json(self.state_path,dict(calls=0,latest_feedback=None))
@@ -86,8 +82,6 @@ class VADProbe:
         editor=self.editor
         if not self._eligible(editor.nodes[candidate_id]):
             raise ValueError('VADv2 testing requires passing trajectory and task checks first')
-        if len(editor.times) < DEFAULT_NATIVE_FRAMES:
-            raise ValueError('VADv2 attack self-test needs 16 source frames for the 1.5–7.5s window; do not silently shorten it')
         if candidate_id in self.results:
             result=self.results[candidate_id]
             if result['candidate_snapshot']!=self.snapshot(candidate_id):
@@ -96,6 +90,9 @@ class VADProbe:
         state=json.loads(self.state_path.read_text())
         if state['calls']>=self.limit:
             return dict(status='budget_exhausted',candidate_id=candidate_id)
+        history_frames, rollout_frames = native_policy_horizon()
+        if len(editor.times) < rollout_frames:
+            raise ValueError(f'VADv2 self-test needs {rollout_frames} source frames for the 1.5–7.5s window')
         state['calls']+=1;atomic_json(self.state_path,state)
         folder=self.root/f"probe_{state['calls']:03d}";folder.mkdir(exist_ok=False)
         started=time.perf_counter()
@@ -109,25 +106,12 @@ class VADProbe:
             policy=self.policy
             request=dict(execution_mode='native',config_path=policy['config_path'],checkpoint_path=policy['checkpoint_path'],
                 model_name=policy.get('model_name','attack_vadv2'),data_type='nuplan_openscene',react_type='NR',
-                collision_target_track=editor.target['track_id'],num_scenarios=1,num_history=DEFAULT_NATIVE_HISTORY,
-                max_frame_per_scene=DEFAULT_NATIVE_FRAMES,num_future=DEFAULT_NATIVE_FRAMES-DEFAULT_NATIVE_HISTORY,
+                collision_target_track=editor.target['track_id'],num_scenarios=1,num_history=history_frames,
+                max_frame_per_scene=rollout_frames,num_future=rollout_frames-history_frames,
                 collision_only=True,visualize_video=False,visualize_BEV=False,
                 with_dense_reward_manager=False,timeout=policy.get('timeout_seconds',600),**simulation)
             atomic_json(folder/'input.json',request)
-            root=Path(__file__).resolve().parents[4]
-            import sys
-            if str(root) not in sys.path:sys.path.insert(0,str(root))
-            from mcp_servers.process import run_logged
-            env=dict(os.environ,WORLDENGINE_ROOT=policy['worldengine_root'])
-            from mcp_servers.worldengine.adapter.planner_prewarm import locate
-            warm=locate(policy)
-            if warm is not None:env['ADAGENT_VAD_PREWARM_SOCKET']=warm['socket_path']
-            completed=run_logged([policy['python'],'-m','mcp_servers.worldengine.adapter.policy_probe_runner'],
-                input=json.dumps(request),cwd=root,env=env,log_path=folder/'native-policy.log',
-                json_stdout=True,timeout=request['timeout']+60)
-            if completed.returncode:
-                raise RuntimeError('Native VADv2 self-test failed; inspect '+str(folder/'native-policy.log'))
-            response=json.loads(completed.stdout)
+            response = native_policy_probe(policy, request, folder/'native-policy.log')
             if response.get('status')!='success':raise RuntimeError('Native self-test returned no successful result')
             native=response['result'];collision=native.get('collision_report')
             if collision is None or collision['status']!='completed' or collision['target_collision_detected'] is None:
@@ -186,10 +170,6 @@ class VADProbe:
         closest=collision.get('closest_approach')
         if closest:
             frame=next(f for f in frames if f['step']==closest['step'])
-            import sys
-            root=Path(__file__).resolve().parents[4]
-            if str(root) not in sys.path:sys.path.insert(0,str(root))
-            from mcp_servers.worldengine.adapter.collision_report import corners
             for track in ('ego',target):
                 points=corners(frame['actors'][track]['box']);points.append(points[0])
                 axis.plot([p[0] for p in points],[p[1] for p in points],color='black')

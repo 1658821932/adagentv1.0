@@ -7,16 +7,27 @@ import os
 from pathlib import Path
 
 _PROVIDER = ContextVar("api_profile_provider", default=None)
+_REQUEST_AUDIT = ContextVar('request_audit', default=None)
 ENV_NAME = "SENTRY_API_CONFIG"
 DEFAULT_CONFIG = Path(__file__).resolve().parent / "api.example.json"
 
 @contextmanager
-def bind_profiles(provider):
+def bind_profiles(provider, *, request_audit=None):
     token = _PROVIDER.set(provider)
+    audit_token = _REQUEST_AUDIT.set(request_audit)
     try:
         yield
     finally:
+        _REQUEST_AUDIT.reset(audit_token)
         _PROVIDER.reset(token)
+
+
+def request_json(call, payload, *, endpoint, label, secrets):
+    audit = _REQUEST_AUDIT.get()
+    if audit is not None:
+        return audit(call, payload, endpoint=endpoint, label=label, secrets=secrets, return_response=True)
+    response = call()
+    return response, response.json()
 
 def get_profile(name="kimi", *, require_key=False, environ=None, config_path=None):
     provider = _PROVIDER.get()

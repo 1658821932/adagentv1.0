@@ -1,6 +1,6 @@
 """Raw annotation diagnostics and the backend's generator initial-state check."""
 import math
-from mcp_servers.scene_editing.core.adversarial import acceptance_policy as policy
+import acceptance_policy as policy
 
 
 def initial_ego_box(frame, box, first_frame):

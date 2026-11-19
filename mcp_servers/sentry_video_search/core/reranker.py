@@ -20,6 +20,7 @@ from .vendor.sentrysearch.chunker import preprocess_chunk
 from .vendor.sentrysearch.trimmer import trim_clip
 
 from .config import SearchConfig
+from .api_settings import request_json
 
 
 MAX_VIDEO_CANDIDATES = 4
@@ -156,13 +157,12 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                 },
             }
             api_start = time.perf_counter()
-            from common.llm_audit import audited_json_call
-            response, body = audited_json_call(lambda: requests.post(
+            response, body = request_json(lambda: requests.post(
                 profile["rerank_url"],
                 headers={"Authorization": f"Bearer {profile['api_key']}", "Content-Type": "application/json"},
                 json=payload,
                 timeout=profile["rerank_timeout"],
-            ), payload, endpoint=profile["rerank_url"], label='retrieval_rerank', secrets=[profile['api_key']], return_response=True)
+            ), payload, endpoint=profile["rerank_url"], label='retrieval_rerank', secrets=[profile['api_key']])
             details.setdefault("timings", {})["rerank_api_seconds"] = round(time.perf_counter() - api_start, 3)
             if response.status_code != 200 or body.get("code"):
                 raise RuntimeError(f"qwen3-vl-rerank failed ({response.status_code}); see request archive")

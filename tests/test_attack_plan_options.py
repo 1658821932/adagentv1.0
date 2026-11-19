@@ -199,6 +199,7 @@ def test_exhausted_new_selection_stops_without_preparation_or_api(offline_workfl
 
 def test_vad_framework_prewarm_starts_before_selection(offline_workflow,tmp_path,monkeypatch):
     from mcp_servers.worldengine.adapter import planner_prewarm
+    monkeypatch.setenv('ADVERSARIAL_HOST_HOOKS', 'mcp_servers.scene_editing.adapter.core_hooks')
     offline_workflow.precheck=False
     events=[]
     select=workflow.select_object

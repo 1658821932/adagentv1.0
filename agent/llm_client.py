@@ -26,12 +26,13 @@ class LLMClient:
         # A tool may pin its own profile and thinking level; anything unpinned
         # follows active_profile / the global reasoning_effort.
         profile_name, effort = "kimi", None
+        from common.api_profiles import ENV, effort_for, profile_argument, reasoning_effort_level
         if component:
-            from common.api_profiles import ENV, effort_for, profile_argument
             if component in ENV:
                 profile_name, effort = profile_argument(component), effort_for(component)
         file_config = self._load_llm_config(profile_name)
         self.request_profile = dict(file_config)
+        effort = effort or reasoning_effort_level()
         if effort:
             self.request_profile["reasoning_level_override"] = effort
         self.component = component

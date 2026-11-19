@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from experiment_runtime import atomic_json
-from common.llm_audit import record_operation
+from backend_hooks import record_operation
 
 _CURRENT = contextvars.ContextVar('workflow_timing_parent', default=None)
 _ROOT = contextvars.ContextVar('workflow_timing_root', default=None)

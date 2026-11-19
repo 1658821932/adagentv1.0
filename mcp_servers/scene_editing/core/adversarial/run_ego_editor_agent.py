@@ -353,7 +353,7 @@ def run(input_dir, constructor_run, run_dir, timeout_seconds=240, max_turns=12,
                 result = {'status':'invalid','error':str(error)[:300]}
             folder = run_dir/'tool-exchanges'/f'turn_{turn:02d}'; folder.mkdir(parents=True, exist_ok=False)
             atomic_json(folder/'call.json', call); atomic_json(folder/'result.json', result)
-            from common.llm_audit import record_tool_exchange
+            from backend_hooks import record_tool_exchange
             record_tool_exchange(call, result, folder, elapsed_seconds=time.perf_counter()-tool_started)
             last_feedback = result
             print('Tool', name, 'returned', result['status'], flush=True)

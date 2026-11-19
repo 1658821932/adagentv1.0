@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.config import AgentConfig, PROJECT_ROOT
+from agent.config import AgentConfig, DEFAULT_CONFIG_PATH, PROJECT_ROOT
 from agent.executor import ToolExecutor
 
 
@@ -28,13 +28,14 @@ class AgentConfigTests(unittest.TestCase):
             json.dump(data, file)
         return temp_dir, path
 
-    def test_default_config_loads(self):
+    def test_default_path_loads_current_runtime_settings(self):
+        expected = json.loads(DEFAULT_CONFIG_PATH.read_text())
         config = AgentConfig.load()
 
-        self.assertEqual(config.max_steps, 20)
-        self.assertEqual(config.decision_correction_attempts, 1)
-        self.assertEqual(config.tool_modes, DEFAULT_MODES)
-        self.assertEqual(config.logs_root, PROJECT_ROOT / "logs")
+        self.assertEqual(config.max_steps, expected['agent']['max_steps'])
+        self.assertEqual(config.decision_correction_attempts, expected['orchestrator']['decision_correction_attempts'])
+        self.assertEqual(config.tool_modes, expected['tools']['modes'])
+        self.assertEqual(config.logs_root, PROJECT_ROOT / expected['logging']['root_dir'])
 
     def test_custom_config_loads(self):
         custom_modes = dict(DEFAULT_MODES)

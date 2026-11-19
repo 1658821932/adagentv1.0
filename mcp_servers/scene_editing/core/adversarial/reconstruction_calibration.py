@@ -5,7 +5,7 @@ import pickle
 from pathlib import Path
 
 import numpy as np
-from mcp_servers.worldengine.adapter.prepare_scenarios import SceneDataUnpickler
+from native_pickle import SceneDataUnpickler
 
 
 class ReconstructionUnpickler(SceneDataUnpickler):

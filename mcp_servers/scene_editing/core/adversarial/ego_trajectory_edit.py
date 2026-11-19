@@ -353,7 +353,7 @@ def inherited_brake_state(times,xy,yaw,time,parent_curve=None):
 def modern_edit(times, lookup, operation, boundary, *, parent_curve=None, acceptance=None, parent_context=None):
     if acceptance is not None and 'edit_start_s' in acceptance:
         boundary=float(acceptance['edit_start_s'])
-    from mcp_servers.scene_editing.shared_history import (
+    from shared_history import (
         MAX_NATIVE_GRID_JITTER_S, TAKEOVER_TIME_S, shared_history_end_index,
     )
     if (operation.get('start_time_s') == TAKEOVER_TIME_S

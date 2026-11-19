@@ -415,7 +415,7 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                 folder.mkdir(parents=True,exist_ok=False)
                 atomic_json(folder/'call.json',call)
                 atomic_json(folder/'result.json',dict(status='execution_failed',error_type=type(error).__name__))
-                from common.llm_audit import record_tool_exchange
+                from backend_hooks import record_tool_exchange
                 record_tool_exchange(call, dict(status='execution_failed',error_type=type(error).__name__), folder,
                                      elapsed_seconds=time.perf_counter()-tool_started)
                 raise
@@ -424,7 +424,7 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             folder = run_dir/'tool-exchanges'/f'turn_{turn:02d}'; folder.mkdir(parents=True, exist_ok=False)
             result['archive_ref'] = str(folder)
             atomic_json(folder/'call.json', call); atomic_json(folder/'result.json', result)
-            from common.llm_audit import record_tool_exchange
+            from backend_hooks import record_tool_exchange
             record_tool_exchange(call, result, folder, elapsed_seconds=time.perf_counter()-tool_started)
             from agent_tool_view import compact_action_feedback
             feedback = compact_action_feedback(result)

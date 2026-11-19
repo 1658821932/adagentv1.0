@@ -6,11 +6,11 @@ import math
 from shapely.geometry import Point
 
 from ego_road_checks import load_official_drivable
-from mcp_servers.scene_editing.policy_evidence import (
+from policy_evidence import (
     EVALUATION_WINDOW, POLICY_EVALUATION_VERSION, confirmed_road_failure,
     in_policy_window, sampled_target_collision,
 )
-from mcp_servers.worldengine.adapter.collision_report import corners
+from box_geometry import corners
 
 
 def road_compliance(feedback, road_map):
