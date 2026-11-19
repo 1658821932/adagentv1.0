@@ -78,10 +78,13 @@ def run(src,parent,out,worldengine,indices=None,target_track=DEFAULT_TARGET_TRAC
     if target_key not in models:raise ValueError('Target target missing from MTGS asset')
     target_model=models[target_key]
     from road_height import RoadHeightMap, ego_height_reference
+    from reconstruction_calibration import load_reconstruction_calibration, recorded_pose_at
+    calibration = load_reconstruction_calibration(src, frames, asset_id=checkpoint[0].stem)
+    calibration.verify_origin(recon)
     road_map = RoadHeightMap.load(src)
-    height_ref = ego_height_reference(frames, road_map, recon)
+    height_ref = ego_height_reference(frames, road_map, recon, calibration=calibration)
     out.mkdir(parents=True);(out/'input').mkdir();shutil.copyfile(path,out/'input/candidate-trajectory.csv')
-    atomic_json(out/'config.json',dict(version='target_attack_mtgs.v1',input_dir=str(src),parent_run=str(parent),candidate_id=selected,checkpoint=str(checkpoint[0]),checkpoint_globals=globals_found,cameras=list(CAMERAS),target_track=target_track,frame_indices=chosen,actor_policy='recorded MTGS target pose plus candidate minus recorded annotation planar delta; original checkpoint residual preserved; other models unchanged',physical_execution='not_run'))
+    atomic_json(out/'config.json',dict(version='target_attack_mtgs.v2',input_dir=str(src),parent_run=str(parent),candidate_id=selected,checkpoint=str(checkpoint[0]),checkpoint_globals=globals_found,cameras=list(CAMERAS),target_track=target_track,frame_indices=chosen,actor_policy='recorded MTGS target pose plus candidate minus recorded annotation planar delta; original checkpoint residual preserved; other models unchanged',physical_execution='not_run',reconstruction_calibration=calibration.provenance,camera_height_reference_m=height_ref['reference_m']))
     writers={c:imageio.get_writer(out/f'new-camera-{c}.mp4',fps=2.,codec='libx264',macro_block_size=2) for c in CAMERAS}; entries=[];maxerr=0.
     try:
         for i in chosen:
@@ -94,8 +97,8 @@ def run(src,parent,out,worldengine,indices=None,target_track=DEFAULT_TARGET_TRAC
             delta = grounded_displacement_in_asset(xy, [obj['x'],obj['y']], asset_from_plan,
                 road_map, log_translation.detach().cpu().numpy(), height, height_diagnostic)
             override=TargetOverride(target_model,delta,yaw_delta,int(frame['timestamp']));models[target_key]=override
-            ego_matrix=np.asarray(frame['ego2global'],float).copy();ego_matrix[:3,3]-=recon
-            ego_matrix[2,3] = road_map.height_at(*ego_matrix[:2,3]) + height_ref['reference_m']
+            raw=np.asarray(frame['ego2global'],float)
+            ego_matrix, camera_ground=recorded_pose_at(calibration,raw[:2,3]-recon[:2],np.arctan2(raw[1,0],raw[0,0]),road_map)
             cameras={}
             for c in CAMERAS:
                 info=frame['cams'][c]; image=src/'original_images'/info['data_path']

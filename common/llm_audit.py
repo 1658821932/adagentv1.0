@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
-from mcp_servers.runtime import _TRACE, write_json
+from common.trace_io import TRACE, write_json
 
 
 def utc():
@@ -27,7 +27,7 @@ def trace():
     fields = ("agent_log_dir", "agent_run_id", "tool_call_id", "stage", "step", "decision_attempt", "llm_attempt")
     inherited = {key: os.environ["ADAGENT_" + key.upper()] for key in fields
                  if os.getenv("ADAGENT_" + key.upper())}
-    return {**inherited, **_TRACE.get()}
+    return {**inherited, **TRACE.get()}
 
 
 class Sanitizer:

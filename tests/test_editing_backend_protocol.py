@@ -167,7 +167,7 @@ def test_stage_command_creates_parent_and_preserves_existing_log(tmp_path):
 
 def test_revision_feedback_reaches_attack_without_changing_contract(backend, monkeypatch, tmp_path):
     feedback=dict(stage='pdm',outcome='pdm_defense_succeeded',evidence=dict(min_target_gap_m=.425))
-    contract=dict(schema_version='attack_task.v2',objective=dict(interaction='allowed'))
+    contract=dict(schema_version='attack_task.v2',objective=dict(keyframes=[]))
     captured={}
     from attack_configuration import policy as actual_policy
     monkeypatch.setattr(backend.policy,'for_new_run',actual_policy.for_new_run,raising=False)
@@ -188,3 +188,36 @@ def test_revision_feedback_reaches_attack_without_changing_contract(backend, mon
     assert captured['stationary_target'] is True
     assert captured['observation_end_s']==1.5
     assert captured['attack_prefix_lock_s']==0.
+
+
+def test_auto_options_reach_backend_without_a_fixed_operation_or_stationary_contract(backend,monkeypatch,tmp_path):
+    from attack_configuration import policy as actual_policy
+    monkeypatch.setattr(backend.policy,'for_new_run',actual_policy.for_new_run,raising=False)
+    captured={}
+    def attack(scene,folder,instruction,assets,constraints,**kwargs):
+        captured.update(constraints=constraints,kwargs=kwargs,assets=assets,instruction=instruction)
+        archive=folder/'trajectory_editing/output.json';archive.parent.mkdir(parents=True)
+        archive.write_text(json.dumps(dict(status='not_submitted',stop_reason='finished_without_submission')))
+        return dict(status='not_submitted')
+    monkeypatch.setattr(backend,'run_attack',attack)
+    options=[dict(option_id='new',operation='add_vehicle',maneuver='stationary',instruction='A possible stationary lead.')]
+    vehicle=dict(asset_path=str(tmp_path/'vehicle.ply'),size_m=[4.2,1.8,1.6])
+    arguments=dict(scene_ref=dict(sample_root=str(tmp_path)),instruction='Create a braking conflict.',
+        operation='auto',plan_options=options,vehicle=vehicle,timeout=3600,vadv2_self_test=False)
+    result=backend.attack_output(arguments,tmp_path)
+    assert result['status']=='unable_to_complete'
+    assert captured['constraints']['plan_options']==options
+    assert not captured['constraints'].get('stationary_target')
+    assert captured['kwargs']['required_operation'] is None
+    assert captured['kwargs']['required_track'] is None
+    assert captured['assets'][0]['path']==vehicle['asset_path']
+    assert captured['instruction']==arguments['instruction']
+
+
+def test_new_public_attack_rejects_removed_class_before_any_search(backend,monkeypatch,tmp_path):
+    observed=[]
+    monkeypatch.setattr(backend,'run_attack',lambda *a,**kw:observed.append(True))
+    with pytest.raises(ValueError,match='categories are removed'):
+        backend.attack_output(dict(scene_ref={'sample_root':str(tmp_path)},timeout=3600,operation='edit_existing',
+            task_contract={'objective':{'interaction':'either'}}),tmp_path)
+    assert observed==[]

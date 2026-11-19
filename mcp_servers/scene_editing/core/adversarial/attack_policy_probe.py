@@ -2,14 +2,12 @@
 from copy import deepcopy
 import hashlib
 import json
-import os
 from pathlib import Path
-import sys
 import time
 
-PROJECT_ROOT=Path(__file__).resolve().parents[4]
-if str(PROJECT_ROOT) not in sys.path:sys.path.insert(0,str(PROJECT_ROOT))
-from mcp_servers.runtime import write_json as atomic_json
+from backend_hooks import native_policy_horizon, native_policy_probe, start_prewarm
+from box_geometry import corners
+from experiment_runtime import atomic_json
 
 
 class VADProbe:
@@ -19,6 +17,7 @@ class VADProbe:
         self.root.mkdir(parents=True,exist_ok=True)
         self.limit=editor.constraints.get('vadv2_probe_budget',3)
         self.policy=editor.constraints['vadv2_policy_config']
+        self.prewarm=start_prewarm(self.policy,self.root/'prewarm.json')
         self.state_path=self.root/'budget.json'
         if not self.state_path.exists():atomic_json(self.state_path,dict(calls=0,latest_feedback=None))
         self.results={}
@@ -39,9 +38,9 @@ class VADProbe:
     @staticmethod
     def public(value):
         return {key:deepcopy(value[key]) for key in ('status','candidate_id','candidate_scope',
-            'target_collision_detected','policy_attack_success','first_target_collision_time_s','min_target_clearance_m',
+            'target_collision_detected','policy_attack_success','policy_evaluation','first_target_collision_time_s','min_target_clearance_m',
             'closest_approach','initial_history_target_contact','possible_interpolated_target_contact',
-            'policy_behavior_summary','pdm_subscores',
+            'policy_behavior_summary','evaluation_window_s','scene_feedback',
             'elapsed_s','overlay_path','result_path','scope') if key in value}
 
     def snapshot(self,candidate_id):
@@ -53,7 +52,7 @@ class VADProbe:
         if result is None or result.get('status')!='completed':
             raise ValueError('Call probe_vadv2 on this exact candidate before submission')
         if result.get('policy_attack_success') is not True:
-            raise ValueError('VADv2 has not hit the attack target in this candidate; edit within budget or finish_search')
+            raise ValueError('VADv2 test has no confirmed target collision or drivable-area violation for this candidate')
         if result['candidate_snapshot']!=self.snapshot(candidate_id):
             raise ValueError('VADv2 test belongs to a different candidate version')
         return result
@@ -74,7 +73,10 @@ class VADProbe:
         else:
             from freeze_attack_scene import freeze
             freeze(editor.scene,editor.run_dir,candidate_id,editor.target['track_id'],folder/'materialized/frozen_scene')
-        return folder/'materialized/frozen_scene'
+        from ego_history import attach
+        frozen=folder/'materialized/frozen_scene'
+        attach(editor.scene,frozen)
+        return frozen
 
     def probe(self,candidate_id):
         editor=self.editor
@@ -88,6 +90,9 @@ class VADProbe:
         state=json.loads(self.state_path.read_text())
         if state['calls']>=self.limit:
             return dict(status='budget_exhausted',candidate_id=candidate_id)
+        history_frames, rollout_frames = native_policy_horizon()
+        if len(editor.times) < rollout_frames:
+            raise ValueError(f'VADv2 self-test needs {rollout_frames} source frames for the 1.5–7.5s window')
         state['calls']+=1;atomic_json(self.state_path,state)
         folder=self.root/f"probe_{state['calls']:03d}";folder.mkdir(exist_ok=False)
         started=time.perf_counter()
@@ -101,30 +106,29 @@ class VADProbe:
             policy=self.policy
             request=dict(execution_mode='native',config_path=policy['config_path'],checkpoint_path=policy['checkpoint_path'],
                 model_name=policy.get('model_name','attack_vadv2'),data_type='nuplan_openscene',react_type='NR',
-                collision_target_track=editor.target['track_id'],num_scenarios=1,num_history=policy.get('num_history',4),
-                max_frame_per_scene=len(editor.times),num_future=len(editor.times)-policy.get('num_history',4),
+                collision_target_track=editor.target['track_id'],num_scenarios=1,num_history=history_frames,
+                max_frame_per_scene=rollout_frames,num_future=rollout_frames-history_frames,
+                collision_only=True,visualize_video=False,visualize_BEV=False,
                 with_dense_reward_manager=False,timeout=policy.get('timeout_seconds',600),**simulation)
             atomic_json(folder/'input.json',request)
-            root=Path(__file__).resolve().parents[4]
-            import sys
-            if str(root) not in sys.path:sys.path.insert(0,str(root))
-            from mcp_servers.process import run_logged
-            env=dict(os.environ,WORLDENGINE_ROOT=policy['worldengine_root'])
-            completed=run_logged([policy['python'],'-m','mcp_servers.worldengine.adapter.policy_probe_runner'],
-                input=json.dumps(request),cwd=root,env=env,log_path=folder/'native-policy.log',
-                json_stdout=True,timeout=request['timeout']+60)
-            if completed.returncode:
-                raise RuntimeError('Native VADv2 self-test failed; inspect '+str(folder/'native-policy.log'))
-            response=json.loads(completed.stdout)
+            response = native_policy_probe(policy, request, folder/'native-policy.log')
             if response.get('status')!='success':raise RuntimeError('Native self-test returned no successful result')
             native=response['result'];collision=native.get('collision_report')
             if collision is None or collision['status']!='completed' or collision['target_collision_detected'] is None:
                 raise RuntimeError('Native self-test collision evidence is incomplete; inspect '+str(folder/'native-policy.log'))
+            from vad_scene_feedback import feedback as scene_feedback
+            from vad_policy_evaluation import evaluate_policy, compact_policy_evaluation
+            fixed=scene_feedback(editor,collision)
+            atomic_json(folder/'scene-feedback.json',fixed)
+            evaluation=evaluate_policy(collision,fixed,frozen/'metadata/map_drivable_official.json')
+            atomic_json(folder/'policy-evaluation.json',evaluation)
             overlay=self._plot(collision,folder)
             result=dict(self.public(collision),status='completed',candidate_id=candidate_id,
-                policy_attack_success=collision['target_collision_detected'] is True and not collision['initial_history_target_contact'],
-                policy_behavior_summary=native.get('policy_behavior_summary'),
-                pdm_subscores=native.get('pdm_subscores'),
+                policy_attack_success=evaluation['policy_attack_success'],
+                policy_evaluation=compact_policy_evaluation(evaluation),
+                policy_behavior_summary=self._compact_behavior(native.get('policy_behavior_summary')),
+                scene_feedback={key:value for key,value in fixed.items() if key!='full_precision_states'},
+                evaluation_window_s=[1.5,7.5],
                 candidate_scope=str(editor.run_dir/'candidates'/candidate_id),
                 candidate_snapshot=self.snapshot(candidate_id),frozen_scene_path=str(frozen),
                 frozen_frames_sha256=hashlib.sha256((frozen/'metadata/frames.json').read_bytes()).hexdigest(),
@@ -139,7 +143,18 @@ class VADProbe:
                 error=str(error)[:600],elapsed_s=time.perf_counter()-started))
             raise RuntimeError('VADv2 self-test execution failed; inspect '+str(folder/'error.json')) from error
 
+    @staticmethod
+    def _compact_behavior(value):
+        if value is None:return None
+        keys=('status','behavior_classification','absolute_progress_m','progress_ratio_vs_recorded',
+              'initial_speed_mps','final_speed_mps','stopped_detected','stopped_from_time_s',
+              'signed_yaw_change_deg')
+        return {key:deepcopy(value[key]) for key in keys if key in value}
+
     def _plot(self,collision,folder):
+        from vad_scene_feedback import feedback,plot
+        fixed=feedback(self.editor,collision)
+        if fixed['status']=='measured':return plot(self.editor,collision,fixed,folder)
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
@@ -155,10 +170,6 @@ class VADProbe:
         closest=collision.get('closest_approach')
         if closest:
             frame=next(f for f in frames if f['step']==closest['step'])
-            import sys
-            root=Path(__file__).resolve().parents[4]
-            if str(root) not in sys.path:sys.path.insert(0,str(root))
-            from mcp_servers.worldengine.adapter.collision_report import corners
             for track in ('ego',target):
                 points=corners(frame['actors'][track]['box']);points.append(points[0])
                 axis.plot([p[0] for p in points],[p[1] for p in points],color='black')

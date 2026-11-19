@@ -36,6 +36,13 @@ class TrajectoryNavigation:
         self.agent = agent
 
         self.full_traj, self.valid_indicator = parse_full_trajectory(self.agent.object_track)
+        # Edited ego/expert motion and the driving task are separate. Both
+        # branches use the route frozen by attack editing.
+        if getattr(agent,'name',None)=='ego':
+            reference=get_engine().current_scene.get('metadata',{}).get('native_export',{}).get('navigation_reference_body_xy_m')
+            if reference is not None:
+                self.full_traj=np.asarray(reference,dtype=float)
+                self.valid_indicator=np.ones(len(self.full_traj),dtype=bool)
         self.reference_route = CenterLane(self.full_traj, width=self.ROUTE_WIDTH)
 
         # agent trajectory information.

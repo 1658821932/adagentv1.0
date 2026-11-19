@@ -167,7 +167,7 @@ def test_invalid_tool_configuration_fails_without_network(tmp_path):
     assert not client.messages
 
 
-def test_tools_use_shared_client_without_parameter_overrides():
+def test_tool02_uses_shared_client_with_its_component_profile():
     from tools.tool02_scene_instance_generator.real import run
     client=ScriptedClient(response_for(CASES[0][0],CASES[0][2]))
     with patch("agent.llm_client.LLMClient",return_value=client) as factory:

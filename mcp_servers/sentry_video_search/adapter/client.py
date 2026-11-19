@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from mcp_servers.runtime import runtime_task, current_run
 import json
+import subprocess
 from mcp_servers.process import run_logged
+from pathlib import Path
 
 
 from .config import DEFAULT_RETRIEVAL_TIMEOUT_S, PROJECT_ROOT, VIDEO_RETRIEVER_PYTHON

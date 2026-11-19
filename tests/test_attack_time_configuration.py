@@ -19,7 +19,7 @@ def test_default_lock_history_and_event_window_remain_distinct():
     result=normalize_constraints(supplied)
     assert result['observation_end_s']==1.5
     assert result['attack_prefix_lock_s']==0.
-    assert result['event_window_s']==[2.,7.]
+    assert result['event_window_s']==[1.5,7.5]
     assert result['acceptance_policy']['observation_end_s']==1.5
     assert result==normalize_constraints(result)
     assert supplied['acceptance_policy']==effective
@@ -80,6 +80,6 @@ def test_real_backend_to_workflow_reaches_request_preparation_without_an_api(tmp
     request=json.loads((output/'attack/input.json').read_text())
     assert request['constraints']['observation_end_s']==1.5
     assert request['constraints']['attack_prefix_lock_s']==0.
-    assert request['constraints']['event_window_s']==[2.,7.]
+    assert request['constraints']['event_window_s']==[1.5,7.5]
     assert request['required_operation']==operation
     assert not (output/'attack/object_selection').exists()

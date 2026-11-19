@@ -30,7 +30,7 @@ def test_prompt_compression_is_bounded_and_keeps_recovery_and_contracts():
     assert "revise the earliest affected retrieval or editing step" in messages[0]["content"]
     parameters = next(t["function"]["parameters"] for t in planner.functions if t["function"]["name"] == "attack_vehicle_editor")
     schema = parameters["properties"]["arguments"]
-    assert schema["properties"]["operation"]["enum"] == ["edit_existing", "add_vehicle"]
+    assert schema["properties"]["operation"]["enum"] == ["auto", "edit_existing", "add_vehicle"]
     assert "VehicleAsset" in parameters["$defs"]
     assert "available_tools" not in json.loads(messages[1]["content"])
 

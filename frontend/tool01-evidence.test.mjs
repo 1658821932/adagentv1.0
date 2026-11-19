@@ -66,19 +66,19 @@ test('manifest sheets become reachable image evidence', async t => {
 
   const manifest = JSON.parse(await readFile(join(evidenceDir, 'manifest.json'), 'utf8'));
   assert.deepEqual(Object.keys(manifest.frames[0]).sort(), ['index', 'sheet', 'sheet_sha256']);
-  assert.equal(manifest.selected[0].time_s, 2.5);
-  assert.equal(manifest.frames.length, 3);
-  assert.equal(manifest.selected.length, 3);
+  assert.equal(manifest.selected[0].time_s, 3.5);
+  assert.equal(manifest.frames.length, 1);
+  assert.equal(manifest.selected.length, 1);
 
   const { summary, items } = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
-  assert.equal(items.length, 3);
-  assert.deepEqual(items.map(item => item.kind), ['image', 'image', 'image']);
+  assert.equal(items.length, 1);
+  assert.deepEqual(items.map(item => item.kind), ['image']);
   assert.equal(items[0].src, '/api/file?path=' + encodeURIComponent(manifest.frames[0].sheet));
-  assert.deepEqual(items.map(item => item.note), ['帧 5 · 2.5s', '帧 7 · 3.5s', '帧 9 · 4.5s']);
+  assert.deepEqual(items.map(item => item.note), ['帧 7 · 3.5s']);
   assert.equal(items[0].primary, true);
-  assert.equal(summary.images, 3);
-  assert.equal(summary.manifest.frames, 3);
+  assert.equal(summary.images, 1);
+  assert.equal(summary.manifest.frames, 1);
   assert.equal(summary.manifest.stage, 'done');
   assert.equal(summary.stage, 'done');
 });
@@ -94,7 +94,7 @@ test('time comes from selected, even when frames carries none', async t => {
   await writeFile(path, JSON.stringify(manifest));
   const { items } = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
-  assert.equal(items[1].note, '帧 7 · 3.5s');
+  assert.equal(items[0].note, '帧 7 · 3.5s');
 });
 
 test('sheets still show when the manifest is missing or damaged', async t => {
@@ -107,14 +107,14 @@ test('sheets still show when the manifest is missing or damaged', async t => {
   await rm(path);
   let result = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
-  assert.equal(result.items.length, 3);
+  assert.equal(result.items.length, 1);
   assert.equal(result.items[0].note, '本次分析的八相机总览');
   assert.equal(result.summary.manifest, null);
 
   await writeFile(path, '{ not json');
   result = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
-  assert.equal(result.items.length, 3);
+  assert.equal(result.items.length, 1);
 });
 
 test('an unreadable sheets directory never fails the run view', async t => {
@@ -127,7 +127,7 @@ test('an unreadable sheets directory never fails the run view', async t => {
   const { items, summary } = failureAnalyzerEvidence(
     { status: 'success', result: { evidence_dir: evidenceDir } }, { projectRoot: root });
   assert.deepEqual(items, []);
-  assert.equal(summary.manifest.frames, 3);
+  assert.equal(summary.manifest.frames, 1);
 });
 
 test('failed runs keep their stage and images', async t => {
@@ -138,7 +138,7 @@ test('failed runs keep their stage and images', async t => {
   const { summary, items } = failureAnalyzerEvidence(
     { status: 'error', error: { type: 'timeout', stage: 'vlm', evidence_dir: evidenceDir } },
     { projectRoot: root });
-  assert.equal(items.length, 3);
+  assert.equal(items.length, 1);
   assert.equal(summary.error_type, 'timeout');
   assert.equal(summary.stage, 'vlm');
 });

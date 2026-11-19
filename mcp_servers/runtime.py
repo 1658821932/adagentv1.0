@@ -1,53 +1,19 @@
 """Per-task workspaces shared by service adapters (no model dependencies)."""
 from __future__ import annotations
-from contextlib import contextmanager
 import contextvars
 import subprocess
 import functools
 import json
 import os
-from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-_TRACE = contextvars.ContextVar("execution_trace", default={})
-
-@contextmanager
-def trace_context(**fields):
-    token = _TRACE.set({**_TRACE.get(), **fields})
-    try:
-        yield
-    finally:
-        _TRACE.reset(token)
+from common.trace_io import TRACE as _TRACE, safe as _safe, trace_context, write_json
 
 
 _ACTIVE = contextvars.ContextVar("service_runs", default={})
 ROOT = Path(__file__).resolve().parent
-
-
-def _safe(value):
-    if is_dataclass(value):
-        value = asdict(value)
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(k): ("[REDACTED]" if any(s in str(k).lower() for s in
-                ("api_key", "access_key", "secret", "password", "credential", "authorization")) else _safe(v))
-                for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_safe(v) for v in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return type(value).__name__
-
-
-def write_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + "." + uuid4().hex + ".tmp")
-    temp.write_text(json.dumps(_safe(value), ensure_ascii=False, indent=2) + "\n")
-    temp.replace(path)
 
 
 class Run:

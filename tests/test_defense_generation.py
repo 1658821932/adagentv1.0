@@ -49,16 +49,18 @@ def generator(monkeypatch,tmp_path,invalid_first=False,**options):
     spec=importlib.util.spec_from_file_location('generation_budget_test',CORE/'defense_generation.py')
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     cls=module.DefenseGeneration
-    xy=np.array([[0.,0.],[1.,0.],[2.,0.]])
+    times=np.arange(0.,12.,.5)
+    xy=np.column_stack((4.*times,np.zeros_like(times)))
     editor=types.SimpleNamespace(run_dir=tmp_path,input_dir=tmp_path,target_track='target',
-        baseline_xy=xy,baseline_yaw=np.zeros(3),times=np.array([0.,3.,11.5]),edit_count=0,
+        baseline_xy=xy,baseline_yaw=np.zeros_like(times),times=times,edit_count=0,
         effective_policy=dict(observation_end_s=3.,max_speed_mps=15.,max_acceleration_mps2=6.),
-        nodes={'baseline':dict(xy=xy,yaw=np.zeros(3))})
+        nodes={'baseline':dict(xy=xy,yaw=np.zeros_like(times),result={})})
+    editor._reference_arrays=lambda key:(editor.nodes[key]['xy'],editor.nodes[key]['yaw'])
     calls=[]
     def edit(args):
         calls.append(args)
         if invalid_first and len(calls)==1:
-            return dict(status='invalid',error='Requested transition exceeds scene duration')
+            return dict(status='not_feasible',error='Requested transition exceeds scene duration')
         editor.edit_count+=1;cid=f'edit_{editor.edit_count:03d}'
         editor.nodes[cid]=dict(xy=xy,yaw=np.zeros(3))
         return dict(status='reference_screen_failed',candidate_id=cid)
@@ -86,11 +88,26 @@ def test_failure_candidates_and_rejected_attempts_are_retained_and_charged(monke
     assert len(result['construction_failures'])==1 and len(calls)==2
     assert gen.remaining()==0 and gen.tools()==[]
     assert all(c['generation_source']=='constructor' for c in calls)
+    assert all(c['edit_mode']=='speed_schedule' and c['operation']=='set_speed_targets' for c in calls)
+    assert calls[0]['targets']==[dict(time_s=pytest.approx(6.),speed_mps=2.)]
+    assert calls[1]['targets']==[dict(time_s=pytest.approx(5.+2./3.),speed_mps=2.)]
     saved=json.loads(gen.path.read_text())
     assert saved['rejected_attempts']==1 and saved['calls'][0]['status']=='completed'
     restored=type(gen)(gen.editor,2)
     assert restored.context()==gen.context()
     with pytest.raises(ValueError):restored.execute('construct_defense_candidates',request(max_candidates=1))
+
+
+def test_braking_construction_passes_through_the_real_speed_editor(monkeypatch,tmp_path):
+    gen,_=generator(monkeypatch,tmp_path)
+    from ego_editor import EgoEditor
+    editor=gen.editor
+    operation=gen._braking_operation('baseline',4.,2.,0.)
+    xy,_,curve=EgoEditor._point_edit_arrays(editor,operation)
+    np.testing.assert_array_equal(xy[editor.times<=4.],editor.baseline_xy[editor.times<=4.])
+    assert curve['hold_starts_at_s']==pytest.approx(6.)
+    assert curve['speed_edit_summary']['peak_tangential_acceleration_mps2']==pytest.approx(2.)
+    np.testing.assert_allclose(xy[editor.times>=6.,0],20.)
 
 
 def test_regular_edits_consume_the_same_candidate_budget(monkeypatch,tmp_path):

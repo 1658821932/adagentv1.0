@@ -8,7 +8,9 @@ stages themselves.
 from __future__ import annotations
 
 import json
+import os
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime
@@ -205,40 +207,6 @@ def _export_reranked_hits(
     return Path(ranked[0]["lossless_video_path"])
 
 
-def _alternative_hits(details: dict[str, Any], limit: int = 2) -> list[dict[str, Any]]:
-    """Return the next distinct scenes after the rerank winner."""
-    candidates = {item["candidate_index"]: item for item in details.get("candidates", [])}
-    ranked = sorted(details.get("ranked_results", []),
-                    key=lambda item: float(item["relevance_score"]), reverse=True)
-    out: list[dict[str, Any]] = []
-    seen_sources: set[str] = set()
-    next_rank = 2
-    for rank, result in enumerate(ranked, start=1):
-        if rank == 1:
-            hit = candidates.get(int(result["candidate_index"]), {})
-            if hit.get("source_file"):
-                seen_sources.add(str(hit["source_file"]))
-            continue
-        hit = candidates.get(int(result["candidate_index"]))
-        if not hit or not hit.get("source_file") or not result.get("video_path"):
-            continue
-        source = str(hit["source_file"])
-        if source in seen_sources:
-            continue
-        seen_sources.add(source)
-        out.append({
-            "rank": next_rank,
-            "video_path": str(result["video_path"]),
-            "match_score": round(float(result["relevance_score"]), 6),
-            "source_file": source,
-            "source_segment": {key: float(hit[key]) for key in ("start_time", "end_time") if key in hit},
-        })
-        next_rank += 1
-        if len(out) == limit:
-            break
-    return out
-
-
 def _finish(
     *,
     requirement: str,
@@ -248,7 +216,7 @@ def _finish(
     video_path: Path,
     timings: dict[str, float],
     total_start: float,
-    alternatives: list[dict[str, Any]] | None = None,
+    scene_ref: dict[str, Any] | None = None,
 ) -> VideoSearchResult:
     timings["total_seconds"] = round(time.perf_counter() - total_start, 3)
     result = VideoSearchResult(
@@ -260,7 +228,7 @@ def _finish(
         timings=timings,
         source_file=hit.get("source_file"),
         source_segment={key: float(hit[key]) for key in ("start_time", "end_time") if key in hit},
-        alternatives=list(alternatives or []),
+        scene_ref=scene_ref,
     )
     _write_json(current_run("sentry_video_search").output / RESULT_LOG, {"status": "success", **result.to_dict()})
     return result
@@ -326,8 +294,10 @@ def index_local(
 def search_local(
     requirement: str,
     config: SearchConfig | None = None,
+    *,
+    bind_source: Callable[[str], dict[str, Any]] | None = None,
 ) -> VideoSearchResult:
-    """Search only the existing local index. Never fall back to the internet."""
+    """Search the local index, optionally requiring a binding for the selected source."""
     requirement = requirement.strip()
     if not requirement:
         raise ValueError("requirement must not be empty")
@@ -369,9 +339,32 @@ def search_local(
         timings["rerank_seconds"] = round(time.perf_counter() - stage_start, 3)
         timings.update(rerank_details.get("timings") or {})
 
+        scene_ref = None
+        if bind_source is not None:
+            stage_start = time.perf_counter()
+            candidates = {item["candidate_index"]: item for item in rerank_details["candidates"]}
+            ranked = sorted(rerank_details["ranked_results"], key=lambda item: item["relevance_score"], reverse=True)
+            rejected = []
+            for index, match in enumerate(ranked):
+                candidate = candidates[match["candidate_index"]]
+                source = candidate["source_file"]
+                try:
+                    scene_ref = bind_source(source)
+                except (FileNotFoundError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                    rejected.append({**match, "source_file": source, "reason": str(exc)})
+                else:
+                    best = {**candidate, "similarity_score": match["relevance_score"]}
+                    rerank_details["ranked_results"] = ranked[index:]
+                    break
+            timings["scene_binding_seconds"] = round(time.perf_counter() - stage_start, 3)
+            rerank_details["scene_binding_rejections"] = rejected
+            if scene_ref is None:
+                _write_json(run_dir / RERANK_LOG, rerank_details)
+                reason = f"; first rejection: {rejected[0]['reason']}" if rejected else ""
+                raise ValueError(f"No scene binding could be resolved for the {len(ranked)} reranked local matches{reason}")
+
         stage_start = time.perf_counter()
         video_path = _export_reranked_hits(rerank_details, requirement, config, run_dir)
-        alternatives = _alternative_hits(rerank_details)
         timings["export_seconds"] = round(time.perf_counter() - stage_start, 3)
         _write_json(run_dir / RERANK_LOG, rerank_details)
         return _finish(
@@ -382,7 +375,7 @@ def search_local(
             video_path=video_path,
             timings=timings,
             total_start=total_start,
-            alternatives=alternatives,
+            scene_ref=scene_ref,
         )
     except Exception as exc:
         timings["total_seconds"] = round(time.perf_counter() - total_start, 3)

@@ -59,9 +59,10 @@ def planar_matrix(x, y, yaw, z=0.):
 
 
 def asset_from_first_ego(first, recon_translation):
-    ego0 = np.asarray(first['ego2global_translation'], float)-recon_translation
+    # This transform locates the planar editing frame; it is not a height anchor.
+    ego0 = np.asarray(first['ego2global'], float)[:2, 3]-np.asarray(recon_translation)[:2]
     yaw0 = math.atan2(first['ego2global'][1][0], first['ego2global'][0][0])
-    return planar_matrix(ego0[0], ego0[1], yaw0, ego0[2])
+    return planar_matrix(ego0[0], ego0[1], yaw0)
 
 
 def matrix_from_rotation_translation(rotation, translation):
@@ -181,25 +182,27 @@ def run(input_dir, parent_run, candidate_id, output, worldengine_dir, selected_f
         raise ValueError('Frames must be unique, sorted and covered by the recording')
     asset, checkpoint_globals = load_checkpoint(checkpoint)
     recon_translation = np.asarray(asset['background']['config']['recon2world_translation'], float)
+    from reconstruction_calibration import load_reconstruction_calibration, recorded_pose_at
+    calibration = load_reconstruction_calibration(input_dir, frames, asset_id=checkpoint.stem)
+    calibration.verify_origin(recon_translation)
     first = frames[0]
     asset_from_plan = asset_from_first_ego(first, recon_translation)
     output.mkdir(parents=True)
     (output/'input').mkdir()
     shutil.copyfile(candidate_track, output/'input/candidate-trajectory.csv')
-    config = dict(version='target_ego_mtgs_render.v1', input_dir=str(input_dir), parent_run=str(parent_run),
+    config = dict(version='target_ego_mtgs_render.v2', input_dir=str(input_dir), parent_run=str(parent_run),
         candidate_id=candidate_id, checkpoint=str(checkpoint), checkpoint_globals=checkpoint_globals,
         worldengine_dir=str(worldengine_dir), frame_indices=indices, sample_count=len(frames), fps=2.,
-        camera_construction='asset_from_plan @ candidate_planar @ inverse(recorded_planar) @ inverse(asset_from_plan) @ recorded_ego @ cam_to_ego',
-        z_pitch_roll_policy=('Ego origin z re-anchored to the scene road_height_map plus the frame-0 '
-            'recorded height reference (UTM z drifts from the reconstructed road); recorded '
-            'pitch/roll retained'),
+        camera_construction='requested planar XY/yaw with nearest MTGS reconstruction tilt and road-relative height, then cam_to_ego',
+        z_pitch_roll_policy='MTGS reconstruction tilt and measured clearance above reconstructed road; UTM Z is not a height reference',
+        reconstruction_calibration=calibration.provenance,
         actor_policy='Background, skybox and all rigid actors use unmodified MTGS checkpoint log replay at exact timestamps',
         physical_execution='not_run', carla_executed=False)
     atomic_json(output/'config.json', config)
     models = instantiate_models(asset, worldengine_dir)
     from road_height import RoadHeightMap, ego_height_reference
     road_map = RoadHeightMap.load(input_dir)
-    height_ref = ego_height_reference(frames, road_map, recon_translation)
+    height_ref = ego_height_reference(frames, road_map, recon_translation, calibration=calibration)
     config['camera_height_reference_m'] = height_ref['reference_m']
     config['camera_offset_profile_m'] = height_ref['profile_m']
     atomic_json(output/'config.json', config)
@@ -211,14 +214,12 @@ def run(input_dir, parent_run, candidate_id, output, worldengine_dir, selected_f
     try:
         for i in indices:
             frame = frames[i]
-            recorded_ego = np.asarray(frame['ego2global'], float)
-            recorded_ego[:3, 3] -= recon_translation
-            recorded_ego[2, 3] = road_map.height_at(recorded_ego[0, 3], recorded_ego[1, 3]) \
-                + height_ref['reference_m']
-            new_ego = edited_ego_matrix(recorded_ego, recorded_xy[i], recorded_yaw[i],
-                candidate_xy[i], candidate_yaw[i], asset_from_plan)
+            raw = np.asarray(frame['ego2global'], float)
+            recorded_ego, recorded_ground = recorded_pose_at(calibration, raw[:2, 3]-recon_translation[:2],
+                np.arctan2(raw[1, 0], raw[0, 0]), road_map)
             candidate_asset_xy = (asset_from_plan @ np.array([*candidate_xy[i], 0., 1.]))[:2]
-            new_ego[2, 3] = road_map.height_at(*candidate_asset_xy) + height_ref['reference_m']
+            first_yaw = np.arctan2(first['ego2global'][1][0], first['ego2global'][0][0])
+            new_ego = calibration.pose_at(candidate_asset_xy, first_yaw+candidate_yaw[i], road_map)
             camera_info = frame['cams']['CAM_F0']
             sensor_to_lidar = matrix_from_rotation_translation(camera_info['sensor2lidar_rotation'],
                 camera_info['sensor2lidar_translation'])
@@ -257,7 +258,7 @@ def run(input_dir, parent_run, candidate_id, output, worldengine_dir, selected_f
             per_frame.append(dict(frame_index=i, time_s=float(times[i]), timestamp=timestamp,
                 candidate_camera_image=f'frames/frame{i:03d}.png', recorded_camera_image=f'recorded/frame{i:03d}.png',
                 candidate_ego_xy=candidate_xy[i].tolist(), candidate_ego_yaw=float(candidate_yaw[i]),
-                recorded_render_mae=mae))
+                recorded_render_mae=mae,recorded_camera_ground=recorded_ground))
             print(json.dumps(per_frame[-1]), flush=True)
     finally:
         writer.close(); recorded_writer.close()
@@ -272,7 +273,7 @@ def run(input_dir, parent_run, candidate_id, output, worldengine_dir, selected_f
     report = dict(status='passed', full_window=full_window, renderer='WorldEngine MTGS portable Gaussian models and gsplat',
         checkpoint=str(checkpoint), checkpoint_step=30000, candidate_id=candidate_id,
         rendered_frames=len(indices), rendered_frame_ids=indices, decoded_videos=decoded, fps=2.,
-        camera='CAM_F0; candidate planar ego x/y/yaw with recorded z/pitch/roll and per-frame camera extrinsics',
+        camera='CAM_F0; candidate planar ego x/y/yaw with MTGS reconstruction height/tilt and per-frame camera extrinsics',
         camera_readback_max_abs_error=max_camera_readback,
         actors='Unmodified MTGS log replay; no actor trajectory overrides',
         quality_evaluation='Recorded-camera MAE is a same-camera diagnostic only; no aligned ground truth or PSNR is claimed for the edited camera',

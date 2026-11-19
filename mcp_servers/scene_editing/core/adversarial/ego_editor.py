@@ -200,9 +200,9 @@ class EgoEditor:
             path = self.constructor_run/'reference_screen'/record['candidate_id']/'trajectory.csv'
             xy, yaw = _track(path, self.times); result = self._screen(xy, yaw, 'retime')
             if record.get('operation') is not None:
-                from ego_trajectory_edit import verify_braking_candidate
-                curve = verify_braking_candidate(self.times,self.baseline_xy,self.baseline_yaw,
-                    xy,yaw,record['operation'],policy.edit_start(self.effective_policy))
+                from adaptive_braking import verify_constructor
+                curve = verify_constructor(self.times,self.baseline_xy,self.baseline_yaw,
+                    xy,yaw,record['operation'],policy.edit_start(self.effective_policy),self.effective_policy)
                 if curve != record['generation_curve']:
                     raise ValueError('Constructor curve evidence differs from recomputation')
                 apply_curve_checks(result,curve)
@@ -466,6 +466,16 @@ class EgoEditor:
             curve=result.get('generation_curve') or {}
             public['behavior_action_summary']=dict(start_time_s=(curve.get('actual_start_state') or {}).get('time_s'),
                 exact_stop_time_s=curve.get('hold_starts_at_s'),sampled_terminal_speed_mps=terminal_interval_speed,terminal_speed_mps=terminal_speed,terminal_speed_source=terminal_source)
+        curve=result.get('generation_curve') or {}
+        stop_time=(curve.get('braking_segment') or {}).get('stop_time_s',curve.get('hold_starts_at_s'))
+        if stop_time is not None:
+            public['braking_summary']=dict(stop_time_s=round(float(stop_time),3),
+                stop_rear_axle_xy_m=np.round(node['xy'][-1],3).tolist(),
+                min_body_clearance_m=round(float(result['min_target_clearance_m']),3),
+                generated_peak_planar_acceleration_mps2=curve.get('max_acceleration_mps2'),
+                planar_acceleration_limit_mps2=self.effective_policy['max_acceleration_mps2'],
+                failed_checks=[key for key,value in result['checks'].items() if value is False],
+                scope='Actual generated stop and full-window body gap, not target centre distance')
         return public
 
     def _conflict_window(self, candidate_id, parent_id=None):
@@ -545,10 +555,11 @@ class EgoEditor:
 
     def _point_edit_arrays(self, arguments):
         arguments=dict(arguments)
+        internal_braking=arguments.get('generation_source')=='constructor' and arguments.get('edit_mode')=='brake_profile'
         arguments.pop('generation_source',None)
         parent = self.nodes[arguments['parent_candidate_id']]
         mode = arguments.get('edit_mode', 'delta_parent')
-        if mode != 'delta_parent':
+        if mode != 'delta_parent' and not internal_braking:
             from ego_edit_contract import validate_point_arguments
             validate_point_arguments({key:value for key,value in arguments.items() if key not in {'mode','path_geometry_version','curve_state_version','speed_schedule_version','route_edit_version'}})
         if mode == 'delta_parent':
@@ -848,4 +859,4 @@ class EgoEditor:
                     definition='reference_progress_percent = 100 * net advancement along the original route from edit_start_s / original route available from that time. New runs cover the whole scene from 0s, including the observation window. Same denominator for all candidates. Reverse/lateral travel earns no extra progress. No minimum percentage gate.')
         context['tool_semantics']={key:value for key,value in TOOL_SEMANTICS.items() if key != 'offset_bounds'}
         context['inspection_candidate_ids']=list(inspection_candidate_ids or [])
-        return compact_context(context)
+        return compact_context(context, focus_selected=getattr(self, 'focus_selected_context', False))

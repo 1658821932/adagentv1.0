@@ -1,4 +1,15 @@
 import os
+from contextlib import nullcontext
+
+_STARTUP = None
+if os.environ.get('ADAGENT_STARTUP_TIMING_DIR'):
+    from startup_timing import get_timing
+    _STARTUP = get_timing('planner')
+    _STARTUP.begin('framework_imports')
+
+def _startup_span(phase):
+    return _STARTUP.span(phase) if _STARTUP is not None else nullcontext()
+
 import argparse
 import warnings
 import time
@@ -22,6 +33,9 @@ from mmdet3d.utils.logger import get_root_logger
 
 from closed_loop.monitor import AsyncFileMonitor
 from closed_loop.post_processor import ScorePostProcessor
+
+if _STARTUP is not None:
+    _STARTUP.end('framework_imports')
 
 warnings.filterwarnings("ignore")
 WORLDENGINE_ROOT = os.getenv('WORLDENGINE_ROOT', os.path.abspath('.'))
@@ -108,16 +122,17 @@ async def run_inference_loop(model, cfg, logger):
     logger.info(f"STOP_FILE_PATH: {stop_file_path}")
 
     # initialize file monitor
-    file_monitor = AsyncFileMonitor(
-        folder_path=MONITORED_FOLDER,
-        check_interval=5,
-        max_history=cfg.queue_length,
-        max_frame_per_scene=getattr(cfg.sim, 'max_frame_per_scene', 12),
-        wait_for_files=True,
-        max_wait_time=99999,
-        logger=logger,
-        stop_file_path=stop_file_path
-    )
+    with _startup_span('initial_history_wait'):
+        file_monitor = AsyncFileMonitor(
+            folder_path=MONITORED_FOLDER,
+            check_interval=5,
+            max_history=cfg.queue_length,
+            max_frame_per_scene=getattr(cfg.sim, 'max_frame_per_scene', 12),
+            wait_for_files=True,
+            max_wait_time=99999,
+            logger=logger,
+            stop_file_path=stop_file_path
+        )
 
     # Create csv file to save plan_idx
     save_path = cfg.sim.plan_save_path
@@ -141,6 +156,8 @@ async def run_inference_loop(model, cfg, logger):
 
         while step <= MAX_STEP:
             retry_count = 0
+            if step == 0 and _STARTUP is not None:
+                _STARTUP.begin('first_plan_total')
             logger.info(f"processing {os.path.basename(current_queue[-1])}")
             ann_file = merge_ann_files(cfg, current_queue, scene_step + cfg.queue_length)
             # model inference
@@ -156,7 +173,8 @@ async def run_inference_loop(model, cfg, logger):
                 nonshuffler_sampler=cfg.data.nonshuffler_sampler,
             )
 
-            result_list = model_inference(model, data_loader)
+            with _startup_span('first_model_inference') if step == 0 else nullcontext():
+                result_list = model_inference(model, data_loader)
             result = result_list[0] # TODO: need to save reward_dict, especially values
             if 'value' in result.keys():
                 value = result['value']
@@ -189,6 +207,9 @@ async def run_inference_loop(model, cfg, logger):
             })
             new_row.to_csv(csv_path, mode='a', header=False, index=False)
             logger.info(f"Saved traj at step {cfg.queue_length + scene_step}")
+            if step == 0 and _STARTUP is not None:
+                _STARTUP.end('first_plan_total')
+                _STARTUP.mark('first_plan_ready')
 
             step += 1
             scene_step += 1
@@ -225,7 +246,8 @@ async def run_inference_loop(model, cfg, logger):
 def main():
     args = parse_args()
 
-    cfg = Config.fromfile(args.config)
+    with _startup_span('configuration_load'):
+        cfg = Config.fromfile(args.config)
     if args.log_dir:
         time_postfix = time.strftime("%Y-%m-%d_%H-%M-%S")
         log_file = os.path.join(args.log_dir, f'mmdet_client_{time_postfix}.log')
@@ -252,7 +274,8 @@ def main():
     # import modules from string list.
     if cfg.get('custom_imports', None):
         from mmcv.utils import import_modules_from_strings
-        import_modules_from_strings(**cfg['custom_imports'])
+        with _startup_span('custom_module_imports'):
+            import_modules_from_strings(**cfg['custom_imports'])
 
     # set cudnn_benchmark
     if cfg.get('cudnn_benchmark', False):
@@ -271,20 +294,26 @@ def main():
     if hasattr(cfg.model, 'img_backbone'):
         # let SyncBatchNorm switch into BatchNorm
         cfg.model.img_backbone.norm_cfg = dict(type='BN', requires_grad=True)
-    model = build_model(cfg.model, test_cfg=cfg.get('test_cfg'))
+    with _startup_span('model_build'):
+        model = build_model(cfg.model, test_cfg=cfg.get('test_cfg'))
 
     fp16_cfg = cfg.get('fp16', None)
     if fp16_cfg is not None:
-        wrap_fp16_model(model)
+        with _startup_span('fp16_setup'):
+            wrap_fp16_model(model)
 
-    load_checkpoint(model, args.checkpoint, map_location='cpu')
+    with _startup_span('checkpoint_load_cpu'):
+        load_checkpoint(model, args.checkpoint, map_location='cpu')
     if args.fuse_conv_bn:
         model = fuse_conv_bn(model)
 
-    model = MMDataParallel(
-        model.cuda(),
-        device_ids=[0])  # single gpu mode
-    model.eval()
+    with _startup_span('cuda_model_setup'):
+        model = MMDataParallel(
+            model.cuda(),
+            device_ids=[0])  # single gpu mode
+        model.eval()
+    if _STARTUP is not None:
+        _STARTUP.mark('model_ready')
 
     # After the model is ready, run the asynchronous inference loop
     try:

@@ -1,17 +1,34 @@
-"""Locate the official PDM score table for one simulation archive.
+"""Resolve official PDM score tables inside a simulation archive."""
+from __future__ import annotations
 
-The analysis core runs inside the WorldEngine failure-analysis tree, so this
-shim only makes the shared resolver importable there. All preference logic
-lives in common/pdm_scores.py so every reader agrees on the same table.
-"""
-import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+PREFIX = "all_scenes_pdm_averages"
+SUFFIX_PREFERENCE = ("_R", "_NR")
 
-from common.pdm_scores import score_file, score_files  # noqa: E402  (path bootstrap)
+
+def score_directory(rollout_dir) -> Path:
+    base = Path(rollout_dir).expanduser()
+    nested = base / "WE_output/openscene_format"
+    return nested if nested.is_dir() else base
+
+
+def score_files(rollout_dir) -> list[Path]:
+    """List reactive, non-reactive and then any additional tables."""
+    directory = score_directory(rollout_dir)
+    priority = {PREFIX + suffix + '.csv': i for i, suffix in enumerate(SUFFIX_PREFERENCE)}
+    return sorted(directory.glob(PREFIX + '_*.csv'), key=lambda path: (priority.get(path.name, len(priority)), path.name))
+
+
+def score_file(rollout_dir, *, require_unique=False) -> Path:
+    files = score_files(rollout_dir)
+    directory = score_directory(rollout_dir)
+    if not files:
+        raise FileNotFoundError(f'No official PDM table ({PREFIX}_*.csv) in {directory}; run the closed-loop simulation first')
+    if require_unique and len(files) != 1:
+        names = ', '.join(path.name for path in files)
+        raise ValueError(f'Multiple official PDM tables in {directory}: {names}. Provide a result directory with one official table.')
+    return files[0]
 
 
 def official_metrics_csv(root):

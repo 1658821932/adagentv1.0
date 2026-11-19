@@ -147,6 +147,10 @@ class Agent:
                 )
 
                 if decision.get("action") == "finish":
+                    if self.state.background_jobs:
+                        self.state.error='Collect the existing background jobs before finishing; use their job_id without retry.'
+                        self.logger.save_state(self.state.to_dict())
+                        continue
                     self.state.mark_finished()
                     final_state = self.state.to_dict()
                     self.logger.finalize(final_state)
@@ -199,7 +203,9 @@ class Agent:
                     )
                     raise
 
-                while result.get("status") == "running":
+                background=arguments.get('_execution',{}).get('background',False)
+                while (result.get("status") == "running" and not background
+                       and (result.get('job') or {}).get('state') != 'orphaned'):
                     self.state.pending_job = result["job"]
                     self.logger.save_state(self.state.to_dict())
                     print("Tool still running; waiting for existing job:", result["job"]["job_id"])
@@ -207,7 +213,23 @@ class Agent:
                         result["job"]["job_id"],
                         wait_timeout=self.executor.execution_timeout,
                     )
+                orphaned = (result.get('job') or {}).get('state') == 'orphaned'
+                if orphaned:
+                    job = result['job']
+                    message = f"Tool job {job['job_id']} lost its worker; a registered child remains. "
+                    message += "Inspect the saved job before retrying."
+                    result = dict(result, status='error', error=dict(type='job_orphaned', message=message))
                 self.state.pending_job = None
+                job_id = (result.get('job') or {}).get('job_id')
+                if job_id:
+                    requested_job_id = arguments.get('_execution', {}).get('job_id')
+                    if requested_job_id and requested_job_id != job_id:
+                        self.state.background_jobs.pop(requested_job_id, None)
+                    if result.get('status') == 'running':
+                        self.state.background_jobs[job_id] = dict(tool_name=tool_name, job_id=job_id,
+                            arguments={k: v for k, v in arguments.items() if k != '_execution'})
+                    else:
+                        self.state.background_jobs.pop(job_id, None)
 
                 result_ref = self.logger.finish_tool_call(
                     step,
@@ -220,6 +242,11 @@ class Agent:
 
                 self.state.add_tool_result(tool_name, result, result_ref=result_ref)
                 self.logger.save_state(self.state.to_dict())
+                if orphaned:
+                    self.state.mark_error(message)
+                    final_state = self.state.to_dict()
+                    self.logger.finalize(final_state)
+                    return final_state
 
             self.state.mark_error("Maximum agent steps reached")
             final_state = self.state.to_dict()

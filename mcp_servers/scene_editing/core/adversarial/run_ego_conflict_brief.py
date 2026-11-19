@@ -170,6 +170,13 @@ def run(scene_dir, attack_run, candidate_id, target_track, run_dir, timeout_seco
     context['acceptance_policy'] = model_policy(policy.resolve(context['acceptance_policy']))
     actual_frames = json.loads((Path(scene_dir)/'metadata/frames.json').read_text())
     actual_times,actual_xy,actual_yaw,actual_actors = scene_from_frames(actual_frames,target_track)
+    from decision_scene_view import render_overview, actor_view, GUIDANCE
+    official_path=Path(scene_dir)/'metadata/map_drivable_official.json'
+    layout_path=render_overview(actual_times,actual_xy,actual_yaw,actual_actors,
+        load_official_drivable(official_path) if official_path.is_file() else None,
+        run_dir/'scene-overview.png',target_track)
+    context['scene_layout']=actor_view(actual_times,actual_xy,actual_actors,target_track)
+    context['visual_guidance']=GUIDANCE
     context['actual_start_facts'] = braking_diagnostic(actual_times,actual_xy,actual_yaw,
         actual_actors,target_track,context['acceptance_policy'])
     context['defense_constraints'] = ('Use only acceptance_policy for required checks and progress rules. '
@@ -181,6 +188,7 @@ def run(scene_dir, attack_run, candidate_id, target_track, run_dir, timeout_seco
         target_track=target_track, timeout_seconds=timeout_seconds, max_tokens=max_tokens,
         allow_safe_stop=allow_safe_stop, acceptance_policy=context['acceptance_policy'],
         visual_input=images,
+        scene_bev_path=str(layout_path),
         role='analysis input only; downstream constructor/FOCI/agent search is not gated by this brief'))
     atomic_json(run_dir / 'context.json', context)
     profile = load_llm_profile()
@@ -188,10 +196,15 @@ def run(scene_dir, attack_run, candidate_id, target_track, run_dir, timeout_seco
                     http_client=httpx.Client(trust_env=False, follow_redirects=False,
                                              timeout=float(timeout_seconds)))
     archive = StreamingRequestArchive(run_dir / 'requests', client, profile)
-    prompt = PROMPT + ('\n' + VISUAL_PROMPT if images else '') + '\nScene state:\n' + json.dumps(compact_model_context(context), ensure_ascii=False, separators=(',', ':'))
-    content = prompt
+    decision_context=dict(context)
+    timeline=context.get('timeline')
+    if isinstance(timeline,list) and len(timeline)>8:
+        indices=sorted(set(np.linspace(0,len(timeline)-1,6,dtype=int).tolist()))
+        decision_context['timeline']=[timeline[index] for index in indices]
+        decision_context['timeline_scope']='Decision samples only; full native evidence is retained in context.json and deterministic checks'
+    prompt = PROMPT + ('\n' + VISUAL_PROMPT if images else '') + '\nScene state:\n' + json.dumps(compact_model_context(decision_context), ensure_ascii=False, separators=(',', ':'))
+    content = [{'type':'text','text':prompt},{'type':'text','text':'BEV of the frozen attack scene, not an original camera or simulated policy rollout.'},image_part(layout_path)]
     if images:
-        content = [{'type': 'text', 'text': prompt}]
         for index, item in enumerate(images):
             content.extend([{'type': 'text', 'text': f"Image {index}: {item['camera']}, recorded frame {item['frame_index']}"}, image_part(item['path'])])
     messages = [{'role': 'user', 'content': content}]

@@ -11,6 +11,7 @@ import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from email.utils import formatdate
+import importlib
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -21,6 +22,7 @@ from .vendor.sentrysearch.chunker import preprocess_chunk
 from .vendor.sentrysearch.trimmer import trim_clip
 
 from .config import SearchConfig
+from .api_settings import request_json
 
 
 MAX_VIDEO_CANDIDATES = 4
@@ -134,8 +136,6 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                     raise RuntimeError(f"Rerank video exceeds API size limits: {upload_clip}")
                 key = f"{settings[4]}/run-{run_label}-{index:02d}-{int(time.time())}.mp4"
                 signed_url = _upload(upload_clip, key, settings)
-                # Register in the worker: an earlier future may fail before this
-                # successful result is consumed by the ordered result loop.
                 with uploaded_lock:
                     uploaded.append(signed_url)
                 return signed_url
@@ -158,17 +158,27 @@ def rerank_hits(requirement: str, hits: list[dict[str, Any]], *, run_dir: Path) 
                     "top_n": len(documents),
                     "return_documents": True,
                     "fps": 1.0,
-                    "instruct": "按查询明确要求的环境、道路和车辆状态排序，只评估源视频可见条件；不推测编辑效果，不额外要求冲突、碰撞或失败已经发生；看不清的条件不视为满足。",
+                    "instruct": "按照查询判断视频整体场景和关键交通行为的相关性，并对候选视频排序。",
                 },
             }
             api_start = time.perf_counter()
-            from common.llm_audit import audited_json_call
-            response, body = audited_json_call(lambda: requests.post(
-                profile["rerank_url"],
-                headers={"Authorization": f"Bearer {profile['api_key']}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=profile["rerank_timeout"],
-            ), payload, endpoint=profile["rerank_url"], label='retrieval_rerank', secrets=[profile['api_key']], return_response=True)
+            try:
+                audit = importlib.import_module("common.llm_audit")
+                response, body = audit.audited_json_call(lambda: requests.post(
+                    profile["rerank_url"],
+                    headers={"Authorization": f"Bearer {profile['api_key']}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=profile["rerank_timeout"],
+                ), payload, endpoint=profile["rerank_url"], label='retrieval_rerank',
+                    secrets=[profile['api_key']], return_response=True)
+            except ImportError:
+                response, body = request_json(lambda: requests.post(
+                    profile["rerank_url"],
+                    headers={"Authorization": f"Bearer {profile['api_key']}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=profile["rerank_timeout"],
+                ), payload, endpoint=profile["rerank_url"], label='retrieval_rerank',
+                    secrets=[profile['api_key']])
             details.setdefault("timings", {})["rerank_api_seconds"] = round(time.perf_counter() - api_start, 3)
             if response.status_code != 200 or body.get("code"):
                 raise RuntimeError(f"qwen3-vl-rerank failed ({response.status_code}); see request archive")

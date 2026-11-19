@@ -5,12 +5,12 @@ Optimization targets and official evaluator scores are separate from acceptance.
 POLICY_VERSION = 'reference_acceptance.v2'
 OBSERVATION_END_S = 1.5
 EDIT_START_S = 0.
-ATTACK_DANGER_START_S = 2.
+ATTACK_DANGER_START_S = 1.5
 # 攻击车不需要沿原路径行驶：只锁 t=0 的起点，之后自由编辑
 ATTACK_PREFIX_LOCK_S = 0.
 # 危险必须出现在这个区间（秒），超出即判攻击不成立
-ATTACK_WINDOW_START_S = 2.
-ATTACK_WINDOW_END_S = 7.
+ATTACK_WINDOW_START_S = 1.5
+ATTACK_WINDOW_END_S = 7.5
 MAX_CHECK_STEP_S = .1
 TIME_ROUNDING_S = .001
 POSE_TOLERANCE = 1e-6

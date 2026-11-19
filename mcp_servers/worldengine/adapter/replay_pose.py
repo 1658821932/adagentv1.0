@@ -15,12 +15,16 @@ def add_static_calibration(renderer, calibration):
 
 
 def shift_ego_calibration(renderer,calibration):
-    """Our exported original ego matrices are global; MTGS pose queries are local."""
+    """New exports already carry reconstruction poses. Reject legacy UTM Z."""
     scene=getattr(getattr(renderer,'engine',None),'current_scene',{})
     exported=scene.get('metadata',{}).get('native_export')
-    if exported and exported.get('ego_calibration_frame','global')=='global':
-        translation=calibration['ego']['translation']
-        calibration['ego']['translation']=translation-translation.new_tensor(renderer.recon2global_translation)
+    if exported:
+        if exported.get('ego_calibration_frame') != 'reconstruction':
+            raise ValueError('Legacy exported UTM ego calibration is unsafe for MTGS rendering; re-export the scene with reconstruction reference poses')
+        import numpy as np
+        origin=exported.get('reconstruction_calibration',{}).get('recon2world_translation')
+        if origin is None or not np.allclose(origin,renderer.recon2global_translation,atol=1e-6,rtol=0):
+            raise ValueError('Exported reconstruction calibration does not match the Gaussian asset origin')
     return calibration
 
 
@@ -58,9 +62,13 @@ def rasterize_cameras_sequentially(rasterization, **kwargs):
 
 
 def install(renderer_only=False):
+    try:
+        from .startup_timing import get_timing
+    except ImportError:
+        from startup_timing import get_timing
     if not renderer_only:
         from worldengine.manager.agent_manager import BaseAgentManager
-    from worldengine.render.mtgs.mtgs import MTGSRenderEngine
+    from worldengine.render.mtgs.mtgs import MTGSRenderEngine, MTGSAssetManager
     import importlib
     mtgs=importlib.import_module('worldengine.render.mtgs.mtgs')
     from worldengine.render.mtgs.gaussian_model.rigid_object import RigidPortableSubModel
@@ -69,10 +77,25 @@ def install(renderer_only=False):
     mtgs.rasterization=lambda **kwargs:rasterize_cameras_sequentially(original_raster,**kwargs)
     original_asset=MTGSRenderEngine.set_asset
     def set_asset(renderer,asset):
-        original_asset(renderer,asset)
+        with get_timing('simulator').span('gaussian_model_setup'):
+            original_asset(renderer,asset)
         scene=renderer.engine.current_scene
         bind_added_tokens(renderer,scene.get('metadata',{}).get('native_export',{}).get('added_vehicle_assets',[]))
     MTGSRenderEngine.set_asset=set_asset
+    original_load=MTGSAssetManager.load_asset
+    def load_asset(manager):
+        with get_timing('simulator').span('gaussian_checkpoint_load'):
+            return original_load(manager)
+    MTGSAssetManager.load_asset=load_asset
+    original_render=MTGSRenderEngine.render
+    def render(renderer,state):
+        if getattr(renderer,'_startup_first_render_done',False):
+            return original_render(renderer,state)
+        with get_timing('simulator').span('first_frame_render'):
+            result=original_render(renderer,state)
+        renderer._startup_first_render_done=True
+        return result
+    MTGSRenderEngine.render=render
     original=MTGSRenderEngine.calibrate_agent_state
     def calibrate(renderer):
         calibration=shift_ego_calibration(renderer,original(renderer))

@@ -3,6 +3,13 @@ import argparse
 from pathlib import Path
 import runpy
 import sys
+try:
+    from .startup_timing import get_timing
+except ImportError:
+    from startup_timing import get_timing
+
+_STARTUP = get_timing('planner')
+_STARTUP.mark('wrapper_entered')
 
 
 def configure_monitor(frame_count):
@@ -26,10 +33,12 @@ def main():
     args, forwarded = parser.parse_known_args()
     if not forwarded:
         parser.error('Missing native AlgEngine entry point')
-    configure_monitor(args.scene_frames)
+    with _STARTUP.span('monitor_import_and_configuration'):
+        configure_monitor(args.scene_frames)
     entry = Path(forwarded[0]).resolve()
     sys.argv = [str(entry),*forwarded[1:]]
-    runpy.run_path(str(entry),run_name='__main__')
+    with _STARTUP.span('native_entry_total'):
+        runpy.run_path(str(entry),run_name='__main__')
 
 
 if __name__ == '__main__':

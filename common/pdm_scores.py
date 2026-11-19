@@ -36,13 +36,16 @@ def score_files(rollout_dir) -> list[Path]:
     return ordered
 
 
-def score_file(rollout_dir) -> Path:
+def score_file(rollout_dir, *, require_unique=False) -> Path:
     """The single table a reader should use for this rollout."""
     files = score_files(rollout_dir)
     if not files:
-        raise FileNotFoundError(
-            f"No {PREFIX}_*.csv in {score_directory(rollout_dir)}; "
-            "run the closed-loop simulation first")
+        raise FileNotFoundError(f'No official PDM table ({PREFIX}_*.csv) in {score_directory(rollout_dir)}; '
+                                'run the closed-loop simulation first')
+    if require_unique and len(files) != 1:
+        names = ', '.join(path.name for path in files)
+        raise ValueError(f'Multiple official PDM tables in {score_directory(rollout_dir)}: {names}. '
+                         'Provide a result directory with one official table.')
     return files[0]
 
 

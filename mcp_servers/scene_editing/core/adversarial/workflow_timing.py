@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from experiment_runtime import atomic_json
-from common.llm_audit import record_operation
+from backend_hooks import record_operation
 
 _CURRENT = contextvars.ContextVar('workflow_timing_parent', default=None)
 _ROOT = contextvars.ContextVar('workflow_timing_root', default=None)
@@ -45,6 +45,7 @@ def timed_operation(name, output_argument=None):
             token = _CURRENT.set(event_id)
             root_token = _ROOT.set(root)
             started = time.perf_counter()
+            record_operation(record, root/'timing'/f'{event_id}.json')
             try:
                 result = function(*args, **kwargs)
                 record['status'] = 'returned'
@@ -62,6 +63,6 @@ def timed_operation(name, output_argument=None):
                 _ROOT.reset(root_token)
                 if root.is_dir():
                     atomic_json(root/'timing'/f'{event_id}.json', record)
-                    record_operation(record, root/'timing'/f'{event_id}.json')
+                record_operation(record, root/'timing'/f'{event_id}.json')
         return wrapped
     return decorate

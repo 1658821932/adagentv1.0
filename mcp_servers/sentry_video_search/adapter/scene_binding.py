@@ -21,7 +21,7 @@ def _existing(path):
     return str(path.absolute()) if path.exists() else None
 
 
-def bind_scene(source_file, output_dir, *, manifest_name="scene_binding.json"):
+def bind_scene(source_file, output_dir):
     """Require a scene binding; write ordered image paths to a manifest.
 
     Binding is explicit: never infer scene identity from a renamed search clip.
@@ -71,7 +71,12 @@ def bind_scene(source_file, output_dir, *, manifest_name="scene_binding.json"):
         video = None
         for folder in dict.fromkeys((sample / "preview", sidecar.parent)):
             for candidate in sorted(folder.glob("*.scene.json")):
-                other = json.loads(candidate.read_text())
+                try:
+                    other = json.loads(candidate.read_text())
+                except (FileNotFoundError, ValueError):
+                    continue
+                if not isinstance(other, dict):
+                    continue
                 other_root = Path(other.get("sample_root", ".")).expanduser()
                 if not other_root.is_absolute():
                     other_root = candidate.parent / other_root
@@ -110,9 +115,7 @@ def bind_scene(source_file, output_dir, *, manifest_name="scene_binding.json"):
         "cameras": camera_summary,
         "images_complete": all(c["images_complete"] for c in camera_summary.values()),
     }
-    if Path(manifest_name).name != manifest_name:
-        raise ValueError("manifest_name must be a plain filename")
-    path = Path(output_dir) / manifest_name
+    path = Path(output_dir) / "scene_binding.json"
     reference["manifest_path"] = str(path.absolute())
     write_json(path, {**reference, "source_file": str(Path(source_file).absolute()),
                       "timestamps_us": timestamps, "cameras": all_cameras})

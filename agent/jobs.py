@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from uuid import uuid4
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -27,18 +28,108 @@ def locked(path):
         fcntl.flock(handle, fcntl.LOCK_EX)
         yield
 
-def process_identity(pid):
+@dataclass(frozen=True)
+class ProcessState:
+    pid: int
+    session: int
+    start: str
+    live: bool
+
+
+def _process_state(pid):
     try:
-        # Linux start-time distinguishes a reused PID from the original worker.
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        return None if fields[0] == "Z" else fields[19]
-    except (OSError, IndexError):
+        return ProcessState(pid, int(fields[3]), fields[19], fields[0] not in {'Z', 'X', 'x'})
+    except (OSError, IndexError, ValueError):
         return None
+
+
+def process_identity(pid):
+    state = _process_state(pid)
+    return state.start if state and state.live else None
+
+
+def _boot_id():
+    return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+
+
+def process_record(pid):
+    return dict(pid=pid, process_start=process_identity(pid), boot_id=_boot_id())
+
 
 def alive(manifest):
     pid = manifest.get("pid")
-    return bool(pid and manifest.get("process_start") and
+    return bool(type(pid) is int and pid > 0 and manifest.get("process_start") and
+                ('boot_id' not in manifest or manifest['boot_id'] == _boot_id()) and
                 process_identity(pid) == manifest["process_start"])
+
+
+def _has_job_marker(process, marker):
+    try:
+        values = Path(f'/proc/{process.pid}/environ').read_bytes().split(b'\0')
+        return marker in values and process_identity(process.pid) == process.start
+    except OSError:
+        return False
+
+
+def _session_members(records, job_id, known):
+    """Return observed members and the subset backed by a live ownership anchor."""
+    states = {}
+    sessions = {}
+    for entry in Path('/proc').iterdir():
+        if entry.name.isdecimal() and (state := _process_state(int(entry.name))) is not None:
+            states[state.pid] = state
+            if state.live:
+                sessions.setdefault(state.session, []).append(state)
+    boot = _boot_id()
+    marker = f'ADAGENT_JOB_ID={job_id}'.encode()
+    observed, verified = set(), set()
+    for record in records:
+        leader_pid = record.get('pid')
+        start = str(record.get('process_start') or '')
+        if type(leader_pid) is not int or leader_pid <= 0 or not start.isdecimal() or record.get('boot_id', boot) != boot:
+            continue
+        leader = states.get(leader_pid)
+        if leader is not None and (leader.session != leader_pid or leader.start != start):
+            continue
+        members = {state for state in sessions.get(leader_pid, ()) if int(state.start) >= int(start)}
+        observed.update(members)
+        current_leader = _process_state(leader_pid) if leader is not None else None
+        anchored = current_leader is not None and current_leader.start == start and current_leader.session == leader_pid
+        if anchored or members & known or any(_has_job_marker(state, marker) for state in members):
+            verified.update(members)
+    known.update(verified)
+    return observed, verified
+
+
+def _signal_member(member, sig):
+    """A pidfd addresses the same process even if the numeric PID is reused."""
+    try:
+        fd = os.pidfd_open(member.pid)
+        try:
+            if _process_state(member.pid) == member:
+                signal.pidfd_send_signal(fd, sig)
+        finally:
+            os.close(fd)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def terminate_sessions(records, job_id, grace=2):
+    """Terminate owned members and return any observed PID still present."""
+    known = set()
+    for sig, seconds in ((signal.SIGTERM, grace), (signal.SIGKILL, 2)):
+        deadline = time.monotonic() + seconds
+        signalled = set()
+        while True:
+            remaining, owned = _session_members(records(), job_id, known)
+            if not remaining or time.monotonic() >= deadline:
+                break
+            for member in owned - signalled:
+                _signal_member(member, sig)
+            signalled.update(owned)
+            time.sleep(.05)
+    return sorted(state.pid for state in remaining)
 
 
 def preparation_run_dir(manifest):
@@ -129,12 +220,17 @@ class JobStore:
                         [sys.executable, "-m", "agent.job_worker", str(folder)],
                         cwd=PROJECT_ROOT, stdin=subprocess.DEVNULL, stdout=log,
                         stderr=subprocess.STDOUT, start_new_session=True,
-                        env={**os.environ, **trace_env, "PYTHONUNBUFFERED": "1"})
-                manifest.update(pid=process.pid, process_start=process_identity(process.pid))
+                        env={**os.environ, **trace_env, "ADAGENT_JOB_ID": job_id, "PYTHONUNBUFFERED": "1"})
+                manifest.update(process_record(process.pid))
                 write(folder / "manifest.json", manifest)
             index[key] = job_id
             write(index_path, index)
             return job_id
+
+    def _records(self, folder, manifest):
+        path = folder / 'children.json'
+        with locked(folder / 'children.lock'):
+            return [manifest, *(json.loads(path.read_text()) if path.exists() else [])]
 
     def query(self, job_id):
         folder = self._folder(job_id)
@@ -143,20 +239,16 @@ class JobStore:
             result_file = folder / "result.json"
             if result_file.exists():
                 return {**json.loads(result_file.read_text()),
-                        "job": dict(job_id=job_id, state=manifest["status"], manifest_path=str(folder / "manifest.json"))}
+                        "job": dict(job_id=job_id, state=manifest["status"], manifest_path=str(folder / "manifest.json"),
+                                    elapsed_seconds=(round(manifest['finished_at']-manifest['started_at'],3)
+                                        if manifest.get('finished_at') is not None else None))}
             if not alive(manifest):
                 # The worker may have died while its external processes survive.
-                children_path = folder / "children.json"
-                with locked(folder / "children.lock"):
-                    children = json.loads(children_path.read_text()) if children_path.exists() else []
-                for child in children:
-                    try:
-                        os.killpg(child["pid"], 0)
-                    except ProcessLookupError:
-                        continue
+                remaining, _ = _session_members(self._records(folder, manifest), job_id, set())
+                if remaining:
                     return dict(status="running", tool=manifest["tool"],
                                 job=dict(job_id=job_id, state="orphaned",
-                                         message="Worker exited but a child process group remains; no replacement will be started.",
+                                         message="Worker exited but descendants remain; no replacement will be started.",
                                          manifest_path=str(folder / "manifest.json")))
                 manifest.update(status="interrupted", finished_at=time.time())
                 write(folder / "manifest.json", manifest)
@@ -177,40 +269,12 @@ class JobStore:
             manifest = json.loads((folder / "manifest.json").read_text())
             if manifest.get("status") not in {"queued", "running"}:
                 return manifest
-            records = [dict(pid=manifest.get("pid"), process_start=manifest.get("process_start"))]
-            with locked(folder / "children.lock"):
-                path = folder / "children.json"
-                records.extend(json.loads(path.read_text()) if path.exists() else [])
-            groups = []
-            for record in records:
-                pid = record.get("pid")
-                if type(pid) is not int or pid <= 0:
-                    continue
-                try:
-                    os.killpg(pid, 0)
-                except (ProcessLookupError, PermissionError):
-                    continue
-                groups.append(pid)
-            for pid in groups:
-                try:
-                    os.killpg(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-            deadline = time.monotonic() + 2
-            while time.monotonic() < deadline:
-                live = []
-                for record in records:
-                    pid = record.get("pid")
-                    if type(pid) is int and pid in groups and process_identity(pid) == record.get("process_start"):
-                        live.append(pid)
-                if not live:
-                    break
-                time.sleep(.05)
-            for pid in groups:
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            remaining = terminate_sessions(lambda: self._records(folder, manifest), job_id)
+            if remaining:
+                manifest['cleanup_pending_pids'] = remaining
+                write(folder / 'manifest.json', manifest)
+                return manifest
+            manifest.pop('cleanup_pending_pids', None)
             result = dict(status="error", tool=manifest["tool"],
                           error=dict(type="job_interrupted", message="Job stopped by user"))
             manifest.update(status="interrupted", finished_at=time.time())
@@ -228,15 +292,16 @@ class JobStore:
             except (OSError, ValueError):
                 continue
             if manifest.get("scope") == scope and manifest.get("status") in {"queued", "running"}:
-                self.stop(folder.name)
-                stopped.append(folder.name)
+                if self.stop(folder.name)['status'] == 'interrupted':
+                    stopped.append(folder.name)
         return stopped
 
     def wait(self, job_id, timeout):
         started = time.monotonic()
         while True:
             result = self.query(job_id)
-            if result["status"] != "running" or (timeout is not None and time.monotonic()-started >= timeout):
+            if (result["status"] != "running" or (result.get('job') or {}).get('state') == 'orphaned'
+                    or (timeout is not None and time.monotonic()-started >= timeout)):
                 return result
             time.sleep(min(.2, max(.001, timeout-(time.monotonic()-started))) if timeout is not None else .2)
 

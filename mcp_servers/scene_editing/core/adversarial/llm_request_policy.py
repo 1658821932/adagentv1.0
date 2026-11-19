@@ -1,5 +1,6 @@
 """Pure request-policy translation shared by the host and bundled editors."""
 from copy import deepcopy
+from os import getenv
 
 DIALECTS = {'thinking', 'qwen', 'kimi'}
 # 界面上只有低/中/高三档，这里翻译成各 dialect 自己的刻度
@@ -33,20 +34,13 @@ def validate_request_policy(profile):
         raise ValueError('Enabled thinking conflicts with required_tool_thinking=disabled')
 
 
-def _global_effort_level():
-    try:
-        from common.api_profiles import reasoning_effort_level
-        return reasoning_effort_level()
-    except Exception:
-        return None
-
-
 def _effort_level(profile):
     """Per-call override wins over the global setting."""
     override = profile.get('reasoning_level_override')
-    if override in LEVEL_TO_EFFORT['thinking'] or override in ('low', 'medium', 'high'):
+    if override in LEVEL_TO_EFFORT['thinking']:
         return override
-    return _global_effort_level()
+    level = getenv('LLM_REASONING_EFFORT')
+    return level if level in LEVEL_TO_EFFORT['thinking'] else None
 
 
 def effective_reasoning_effort(profile):

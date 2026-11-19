@@ -7,18 +7,29 @@ import os
 from pathlib import Path
 
 _PROVIDER = ContextVar("api_profile_provider", default=None)
+_REQUEST_AUDIT = ContextVar('request_audit', default=None)
 ENV_NAME = "SENTRY_API_CONFIG"
 DEFAULT_CONFIG = Path(__file__).resolve().parent / "api.example.json"
 
 @contextmanager
-def bind_profiles(provider):
+def bind_profiles(provider, *, request_audit=None):
     token = _PROVIDER.set(provider)
+    audit_token = _REQUEST_AUDIT.set(request_audit)
     try:
         yield
     finally:
+        _REQUEST_AUDIT.reset(audit_token)
         _PROVIDER.reset(token)
 
-def get_profile(name=None, *, require_key=False, environ=None, config_path=None):
+
+def request_json(call, payload, *, endpoint, label, secrets):
+    audit = _REQUEST_AUDIT.get()
+    if audit is not None:
+        return audit(call, payload, endpoint=endpoint, label=label, secrets=secrets, return_response=True)
+    response = call()
+    return response, response.json()
+
+def get_profile(name="kimi", *, require_key=False, environ=None, config_path=None):
     provider = _PROVIDER.get()
     if provider is not None and config_path is None:
         return provider(name, require_key=require_key, environ=environ)
@@ -26,12 +37,11 @@ def get_profile(name=None, *, require_key=False, environ=None, config_path=None)
     path = Path(config_path or env.get(ENV_NAME) or DEFAULT_CONFIG).expanduser()
     profiles = json.loads(path.read_text())
     unified = "active_profile" in profiles
-    request_active = name in (None, "", "active_profile")
-    selected = profiles.get("active_profile") if request_active else name
-    if not isinstance(selected, str) or selected in ("", "active_profile") or selected not in profiles:
+    selected = profiles.get("active_profile", "kimi") if name == "kimi" else name
+    if not isinstance(selected, str) or selected == "active_profile" or selected not in profiles:
         raise ValueError("Unknown API profile selection")
     profile = deepcopy(profiles[selected])
-    if request_active and not unified:
+    if name == "kimi" and not unified:
         profile["base_url"] = env.get("OPENAI_BASE_URL") or env.get("LLM_BASE_URL") or profile["base_url"]
         profile["model"] = env.get("OPENAI_MODEL") or env.get("LLM_MODEL") or profile["model"]
     if require_key:

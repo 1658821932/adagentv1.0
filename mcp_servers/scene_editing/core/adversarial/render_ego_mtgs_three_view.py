@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 
 from experiment_runtime import atomic_json, experiments_root, full_pipeline_root
-from render_ego_mtgs import (ROOT, asset_from_first_ego, camera_intrinsics, edited_ego_matrix,
+from render_ego_mtgs import (ROOT, asset_from_first_ego, camera_intrinsics,
     instantiate_models, load_checkpoint, matrix_from_rotation_translation, render_frame)
 from run_ego_foci_probe import read_track
 from run_ego_reference import DEFAULT_TARGET_TRACK, scene_from_frames
@@ -80,17 +80,19 @@ def run(input_dir, parent_run, candidate_id, output, worldengine_dir, selected_f
     if attack is not None:
         shutil.copyfile(attack['csv'], output/'input/attack-trajectory.csv')
     from road_height import RoadHeightMap, ego_height_reference
+    from reconstruction_calibration import load_reconstruction_calibration, recorded_pose_at
+    calibration = load_reconstruction_calibration(input_dir, frames, asset_id=checkpoint.stem)
+    calibration.verify_origin(recon_translation)
     road_map = RoadHeightMap.load(input_dir)
-    height_ref = ego_height_reference(frames, road_map, recon_translation)
-    config = dict(version='target_ego_mtgs_three_view_render.v1', input_dir=str(input_dir),
+    height_ref = ego_height_reference(frames, road_map, recon_translation, calibration=calibration)
+    config = dict(version='target_ego_mtgs_three_view_render.v2', input_dir=str(input_dir),
         parent_run=str(parent_run), candidate_id=candidate_id, target_track=target_track,
         checkpoint=str(checkpoint),
         checkpoint_globals=checkpoint_globals, worldengine_dir=str(worldengine_dir), cameras=list(CAMERAS),
         frame_indices=indices, sample_count=len(frames), fps=2.,
-        camera_construction='Corrected first-ego transform; candidate planar x/y/yaw delta applied to recorded full ego pose, then cam_to_ego',
-        z_pitch_roll_policy=('Ego origin z re-anchored to the scene road_height_map plus the frame-0 '
-            'recorded height reference (UTM z drifts from the reconstructed road); recorded '
-            'pitch/roll retained'),
+        camera_construction='requested planar XY/yaw with nearest MTGS reconstruction tilt and road-relative height, then cam_to_ego',
+        z_pitch_roll_policy='MTGS reconstruction tilt and measured clearance above reconstructed road; UTM Z is not a height reference',
+        reconstruction_calibration=calibration.provenance,
         camera_height_reference_m=height_ref['reference_m'],
         camera_offset_profile_m=height_ref['profile_m'],
         image_size_policy='Read width and height from each original JPEG',
@@ -150,15 +152,13 @@ def run(input_dir, parent_run, candidate_id, output, worldengine_dir, selected_f
                 current = next(obj for obj in objects[i] if obj['track'] == target_track)
                 models['added_vehicle'], added_placement = added_vehicle_model(
                     info, current, asset_from_plan, road_map, initial_yaw + current['yaw'])
-            recorded_ego = np.asarray(frame['ego2global'], float)
-            recorded_ego[:3, 3] -= recon_translation
-            recorded_ground = road_map.height_with_local_plane(recorded_ego[0,3],recorded_ego[1,3])
-            recorded_ego[2,3] = recorded_ground['height'] + height_ref['reference_m']
-            new_ego = edited_ego_matrix(recorded_ego, recorded_xy[i], recorded_yaw[i],
-                candidate_xy[i], candidate_yaw[i], asset_from_plan)
+            raw = np.asarray(frame['ego2global'], float)
+            recorded_ego, recorded_ground = recorded_pose_at(calibration, raw[:2, 3]-recon_translation[:2],
+                np.arctan2(raw[1, 0], raw[0, 0]), road_map)
             candidate_asset_xy = (asset_from_plan @ np.array([*candidate_xy[i], 0., 1.]))[:2]
+            new_ego = calibration.pose_at(candidate_asset_xy,
+                np.arctan2(asset_from_plan[1, 0], asset_from_plan[0, 0])+candidate_yaw[i], road_map)
             candidate_ground = road_map.height_with_local_plane(*candidate_asset_xy)
-            new_ego[2,3] = candidate_ground['height'] + height_ref['reference_m']
             recovered = np.linalg.inv(asset_from_plan) @ new_ego
             recovered_yaw = np.arctan2(recovered[1, 0], recovered[0, 0])
             if np.linalg.norm(recovered[:2, 3]-candidate_xy[i]) > 1e-8 \

@@ -62,13 +62,21 @@ class RoadHeightMap:
             raise ValueError(f'No road height data at ({x:.2f}, {y:.2f})')
         return float(z)
 
-    def height_with_local_plane(self, x, y, radius_m=.75, max_residual_m=.05):
+    def height_with_local_plane(self, x, y, radius_m=None, max_residual_m=.05):
         """Fill an enclosed small hole using nearby measured heights; never extrapolate."""
         direct = self.try_height_at(x, y)
         if direct is not None:
             return dict(height=direct, source='bilinear', sample_count=4, max_residual_m=0.)
         if not self.covers(x, y):
             raise ValueError('Target is outside the road height map')
+        radii = (.75, 1.5) if radius_m is None else (radius_m,)
+        for radius in radii:
+            fit = self._fit_local_height_plane(x, y, radius, max_residual_m)
+            if fit is not None:
+                return fit
+        raise ValueError(f'Missing road height at ({x:.2f}, {y:.2f}) has insufficient surrounding measurements')
+
+    def _fit_local_height_plane(self, x, y, radius_m, max_residual_m):
         from shapely.geometry import MultiPoint, Point
         samples = []
         for dx in np.linspace(-radius_m, radius_m, 7):
@@ -77,7 +85,7 @@ class RoadHeightMap:
                 if z is not None:
                     samples.append((dx, dy, z))
         if len(samples) < 6 or not MultiPoint([v[:2] for v in samples]).convex_hull.contains(Point(0., 0.)):
-            raise ValueError('Missing road height has insufficient surrounding measurements')
+            return None
         values = np.asarray(samples)
         design = np.column_stack([values[:, :2], np.ones(len(values))])
         coef, _, rank, _ = np.linalg.lstsq(design, values[:, 2], rcond=None)
@@ -139,20 +147,25 @@ def read_recon_translation(scene_dir):
     return translation
 
 
-def ego_height_reference(frames, road_map, recon_translation):
-    """Per-frame vertical offset of the recorded ego origin above the road map,
-    plus the frame-0 value as the calibration reference. The recon2world
-    alignment is anchored near the scene start, so frame 0 reflects the physical
-    mount height; later frames may drift with the reconstruction."""
+def ego_height_reference(frames, road_map, recon_translation, *, calibration):
+    """Measured reconstruction ego-to-road clearance; UTM Z is never an anchor."""
+    calibration.verify_origin(recon_translation)
     recon_translation = np.asarray(recon_translation, float)
     profile = []
-    for i, frame in enumerate(frames):
+    for frame in frames:
         ego = np.asarray(frame['ego2global'], float)
         ex, ey = ego[0, 3]-recon_translation[0], ego[1, 3]-recon_translation[1]
-        road_z = road_map.try_height_at(ex, ey)
-        profile.append(None if road_z is None else float(ego[2, 3]-recon_translation[2]-road_z))
+        reference = calibration.poses[calibration.nearest_index([ex, ey])]
+        try:
+            ground = road_map.height_with_local_plane(*reference[:2, 3])
+        except ValueError:
+            profile.append(None)
+        else:
+            profile.append(float(reference[2, 3]-ground['height']))
     covered = [v for v in profile if v is not None]
-    if not covered or profile[0] is None:
-        raise ValueError('Recorded ego start is outside the road height map')
-    return dict(reference_m=profile[0], profile_m=profile,
-                min_m=float(min(covered)), max_m=float(max(covered)))
+    if not covered:
+        raise ValueError('No recorded ego pose has supported reconstruction road height')
+    return dict(reference_m=float(np.median(covered)), profile_m=profile,
+                min_m=float(min(covered)), max_m=float(max(covered)),
+                source='MTGS reconstruction ego poses minus reconstructed road height',
+                calibration=calibration.provenance)

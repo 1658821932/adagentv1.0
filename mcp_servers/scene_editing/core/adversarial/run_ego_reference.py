@@ -210,6 +210,9 @@ def main():
     diagnostic = braking_diagnostic(times,xy,yaw,objects,args.target_track,effective)
     first_contact = diagnostic['baseline_first_contact']['time_s']
     decisions = conflict_decisions(times,first_contact,effective,allow_stop_seeds)
+    from adaptive_braking import proposals,braking_result
+    scene_braking=proposals(times,xy,yaw,diagnostic,effective,allow_stop_seeds)
+    decisions=decisions[:1]+scene_braking+decisions[1:]
     generated_decision_count=len(decisions)
     if args.max_candidates is not None: decisions=decisions[:args.max_candidates]
     from ego_lane_markings import load_no_cross_lines
@@ -227,12 +230,24 @@ def main():
         if idx in completed:
             continue
         adaptive=False
-        if idx>seed_count:
+        if idx>seed_count and mode!='speed_schedule':
             proposal=adaptive_spec(ledger,decisions,policy.edit_start(effective),float(times[-1]))
             if proposal is not None:
                 mode,start,parameter=proposal;decisions[idx-1]=proposal;adaptive=True
         curve = operation = None
-        if mode == 'brake_profile':
+        if mode=='speed_schedule':
+            from ego_trajectory_edit import modern_edit
+            operation=dict(parameter,edit_mode='speed_schedule',parent_candidate_id='recorded_baseline',
+                start_time_s=start,speed_schedule_version='state_continuity.v4',
+                reason='Scene-adaptive braking proposal; estimate is checked against full geometry and motion')
+            try:
+                lookup=lambda key:(xy,yaw) if key=='recorded_baseline' else (_ for _ in ()).throw(ValueError('Unknown reference'))
+                candidate_xy,candidate_yaw,curve=modern_edit(times,lookup,operation,policy.edit_start(effective),acceptance=effective)
+            except ValueError as error:
+                construction_failures.append(dict(candidate_index=idx,operation=operation,error=str(error),status='construction_rejected'))
+                completed.add(idx);checkpoint();continue
+            duration=operation['targets'][-1]['time_s']-start;delay=None;source_times=times.copy()
+        elif mode == 'brake_profile':
             from ego_trajectory_edit import brake_along_path
             from ego_trajectory_edit import start_state
             parameter = dict(parameter)
@@ -291,6 +306,8 @@ def main():
             road_official=official_result,
             reference_screen_passed=shared['status']=='reference_screen_passed',
             road_status='passed' if road_ok else 'failed',road=road_result,physical_execution='not_run')
+        if mode in ('speed_schedule','brake_profile'):
+            record['braking_summary']=braking_result(record)
         target=folder/record['candidate_id'];target.mkdir()
         if curve is not None:
             (target/'curve-check.json').write_text(json.dumps(curve,indent=2)+'\n')
@@ -302,7 +319,7 @@ def main():
     passing=[row['candidate_id'] for row in ledger if row['reference_screen_passed']]
     diagnostic['defense_search'].update(status='found_passing_candidate' if passing else 'searched_no_passing_candidate',verified_passing_candidate_ids=passing)
     (folder/'defense-difficulty.json').write_text(json.dumps(diagnostic,indent=2)+'\n')
-    summary={'candidate_budget':dict(max_candidates=args.max_candidates,available_decisions=generated_decision_count), 'version':'ego_constructor.v4','behavior_preferences':preferences(),'adaptive_proposal_count':sum(r.get('adaptive_proposal',False) for r in ledger),'construction_failures':construction_failures,'defense_difficulty':diagnostic,'status':'reference_screen_complete','carla':'disabled','image_render':'not_started','sample_rate':'observed 2 Hz; timestamps preserved','method':'Conflict-timed retiming plus dynamically consistent braking and steering along recorded reference geometry; interpolated ego poses are generated hypotheses, target and other actors use only observed frames',
+    summary={'candidate_budget':dict(max_candidates=args.max_candidates,available_decisions=generated_decision_count), 'version':'ego_constructor.v5','scene_braking_proposal_count':len(scene_braking),'behavior_preferences':preferences(),'adaptive_proposal_count':sum(r.get('adaptive_proposal',False) for r in ledger),'construction_failures':construction_failures,'defense_difficulty':diagnostic,'status':'reference_screen_complete','carla':'disabled','image_render':'not_started','sample_rate':'observed 2 Hz; timestamps preserved','method':'Conflict-timed retiming plus dynamically consistent braking and steering along recorded reference geometry; interpolated ego poses are generated hypotheses, target and other actors use only observed frames',
         'acceptance_policy':effective, 'target_track':args.target_track, 'allow_safe_stop':effective['allow_safe_stop'],
         'road_source':'official_union' if official is not None else 'scene_lane_union',
         'ego_geometry':'WorldEngine Pacifica rear axle, length 5.176 m width 2.297 m; assumption, not source-calibrated',

@@ -127,7 +127,7 @@ def evaluate_official_pdm(scenario_path, result_dir, index, selected):
     import csv
     from common.pdm_scores import score_file as resolve_score_file
     root = Path(result_dir)
-    score_file = resolve_score_file(root)
+    score_file = resolve_score_file(root, require_unique=True)
     rows = {}
     with score_file.open(newline="") as stream:
         for row in csv.DictReader(stream):

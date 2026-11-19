@@ -56,7 +56,23 @@ def test_agent_tools_use_only_canonical_adapter_service():
     for tool, service in expected.items():
         tree = ast.parse((ROOT / "tools" / tool / "real.py").read_text())
         modules = [n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("mcp_servers.")]
-        assert modules == [f"mcp_servers.{service}.adapter.service"]
+        expected_modules = [f"mcp_servers.{service}.adapter.service"]
+        if tool == "tool01_failure_analyzer":
+            expected_modules.insert(0, "mcp_servers.process")
+        assert modules == expected_modules
+
+
+def test_extracted_scene_editor_loads_without_host_packages(tmp_path, monkeypatch):
+    core = tmp_path / 'core'
+    shutil.copytree(ROOT / 'mcp_servers/scene_editing/core/adversarial', core,
+                    ignore=shutil.ignore_patterns('__pycache__', '.pytest_cache', 'experiments'))
+    monkeypatch.delenv('ADVERSARIAL_HOST_HOOKS', raising=False)
+    script = ('import sys; sys.path.insert(0, sys.argv[1]); '
+              'import editing_backend, streaming_requests, native_scene_export; '
+              "assert not {'common', 'agent', 'mcp_servers'}.intersection(sys.modules)")
+    result = subprocess.run([sys.executable, '-I', '-c', script, str(core)], cwd=tmp_path,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
 
 
 
@@ -77,10 +93,14 @@ def test_extracted_sentry_resolves_models_and_retrieval_credentials(tmp_path, mo
     script = (
         "import sys;sys.path.insert(0,sys.argv[1]);"
         "from core.service import _ensure_dashscope_key;"
+        "from core.api_settings import request_json;"
+        "from types import SimpleNamespace;"
         "from core.pipeline.common import model_settings;"
         "_ensure_dashscope_key();"
         "assert model_settings()==('extracted-test','https://standalone.invalid/v1','offline-kimi-key');"
-        "assert 'api_config' not in sys.modules"
+        "response=SimpleNamespace(json=lambda: {'score': 1});"
+        "assert request_json(lambda: response, {}, endpoint='offline', label='fixture', secrets=[]) == (response, {'score': 1});"
+        "assert not {'api_config','common'}.intersection(sys.modules)"
     )
     result=subprocess.run([sys.executable,"-I","-c",script,str(tmp_path)],
                           cwd=tmp_path,capture_output=True,text=True,timeout=30)

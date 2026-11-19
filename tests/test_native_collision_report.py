@@ -100,7 +100,9 @@ def test_client_requires_and_preserves_actual_collision_report(tmp_path,monkeypa
     monkeypatch.setenv('ADAGENT_RUNTIME_ROOT',str(tmp_path/'runtime'))
     monkeypatch.setattr(client,'AGENT_PYTHON',__import__('pathlib').Path(sys.executable))
     monkeypatch.setattr(client,'run_logged',Mock(return_value=CompletedProcess([],0,json.dumps(payload),'')))
-    args=dict(config_path='/cfg',checkpoint_path='/weights',model_name='policy',data_type='scene',
+    cfg=tmp_path/'cfg.py';cfg.touch()
+    weights=tmp_path/'weights.pth';weights.touch()
+    args=dict(config_path=str(cfg),checkpoint_path=str(weights),model_name='policy',data_type='scene',
         max_frame_per_scene=6,collision_target_track='target')
     assert client.run_policy(args)['collision_report']['target_collision_detected'] is True
     args['collision_target_track']='other'

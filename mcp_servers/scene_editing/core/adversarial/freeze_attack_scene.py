@@ -75,7 +75,8 @@ def freeze(scene_dir, attack_run, candidate_id, target_track, output):
     evaluation_path=attack_run/'candidates'/candidate_id/'evaluation.json'
     acceptance=json.loads(evaluation_path.read_text()).get('acceptance_policy',{}) if evaluation_path.is_file() else {}
     earliest_contact=float(acceptance.get('attack_danger_start_s',acceptance.get('observation_end_s',1.5)))
-    if not contact_after_observation(times, early_overlaps,earliest_contact):
+    tolerance=.001 if acceptance.get('policy_version')=='reference_acceptance.v2' else 0.
+    if not contact_after_observation(times, early_overlaps,earliest_contact,time_tolerance_s=tolerance):
         raise ValueError('Cannot freeze an attack with contact before its explicit event boundary')
 
     ego_world = np.array([f['ego2global'] for f in frames], dtype=float)

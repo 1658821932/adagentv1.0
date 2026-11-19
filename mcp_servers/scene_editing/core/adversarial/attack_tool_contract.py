@@ -22,16 +22,78 @@ def goal_diagnostics(goal):
                     interval_s=frame['evaluated_interval_s'],actual=frame['actual'],
                     max_constraint_error=frame['max_constraint_error'],
                     requested=frame.get('requested'),actual_ranges=frame.get('actual_ranges')))
+        for name in ('waypoints', 'requested_waypoints'):
+            for index, waypoint in enumerate(report.get(name, []), 1):
+                if not waypoint['passed']:
+                    measurements.append(dict(source=source, waypoint=index, waypoint_group=name,
+                        time_s=waypoint['evaluated_time_s'], requested=waypoint['requested'],
+                        actual=waypoint['actual'], errors=waypoint['errors'], tolerances=waypoint['tolerances']))
     return failures, measurements
 
 
 def candidate_eligibility(result):
     geometry = bool(result['reference_screen_passed'])
     goal = result.get('construction_goal')
-    task = goal is None or bool(goal['goal_met'])
+    task = (goal is None or bool(goal['goal_met'])) and not result.get('structured_objective_missing',False)
     failures,_ = goal_diagnostics(goal)
+    if result.get('structured_objective_missing'):
+        failures.append('declared_objective_missing')
     return dict(reference_geometry_passed=geometry,task_contract_passed=task,
                 pdm_probe_eligible=geometry and task,task_failed_checks=failures)
+
+
+def check_submission(editor, candidate_id):
+    """Validate the candidate and its exact-version policy evidence."""
+    result = editor.nodes[candidate_id]['result']
+    if not result['reference_screen_passed']:
+        raise ValueError('Submitted candidate must pass all configured reference checks')
+    declared = result.get('construction_goal_input', {})
+    constraints = editor.constraints
+    if (constraints.get('task_contract') or (constraints.get('require_structured_objective')
+            and not constraints.get('stationary_target'))) and 'objective' not in declared:
+        raise ValueError('Declare and pass a structured objective before submitting this run')
+    if constraints.get('behavior_contract') and declared.get('interaction_mode') == 'either':
+        raise ValueError('Declare near_miss/contact through active construction before submission')
+    goal = result.get('construction_goal')
+    if goal is not None and not goal['goal_met']:
+        raise ValueError('Active construction goal is not met; fallback cannot be submitted as goal completion')
+    for setting, probe, name in (
+        ('pdm_self_check', editor.pdm_probe, 'PDM'),
+        ('vadv2_self_test', editor.policy_probe, 'VADv2'),
+    ):
+        if constraints.get(setting):
+            if probe is None:
+                raise ValueError(name + ' self-check was enabled but its controller is unavailable')
+            probe.require_challenge(candidate_id)
+
+
+def submission_ready_candidates(editor, qualified, reviewed):
+    ready = []
+    for candidate_id in qualified:
+        if candidate_id not in reviewed:
+            continue
+        try:
+            check_submission(editor, candidate_id)
+        except ValueError:
+            continue
+        ready.append(candidate_id)
+    return ready
+
+
+def optimization_summary(goal):
+    reports=[(source,(goal or {}).get(source,{}).get('preferences')) for source in ('dense','native_replay')]
+    reports=[(source,report) for source,report in reports if isinstance(report,dict)]
+    if not reports: return None
+    missed=[source+'.'+check for source,report in reports for check in report.get('failed_checks',[])]
+    example=None
+    for source,report in reports:
+        frame=next((frame for frame in report.get('keyframes',[]) if not frame['passed']),None)
+        if frame is not None:
+            example=dict(source=source,requested=frame.get('requested'),
+                evaluated_interval_s=frame.get('evaluated_interval_s'),actual_ranges=frame.get('actual_ranges'))
+            break
+    return dict(met=all(report['goal_met'] for _,report in reports),missed_checks=missed,
+        first_missed_interval=example,scope='optimization preference; assess original instruction separately')
 
 
 def constructor_exhaustion(nodes, budget):
@@ -68,9 +130,15 @@ def trajectory_tools(tools, nodes, evaluated, tested, probes_remaining, *,
     available=[]
     for tool in deepcopy(tools):
         function=tool['function'];name=function['name']
+        if name in ('edit_speed_profile','edit_route','repair_candidate') and any(
+                'structured_objective_missing' in node['result'] for node in nodes.values()):
+            ids=[key for key,node in nodes.items() if not node['result'].get('structured_objective_missing')]
+            if not ids:
+                continue
+            function['parameters']['properties'].setdefault('parent_candidate_id',{'type':'string'})['enum']=ids
         if name=='construct_attack_candidates' and constructor_remaining is not None and constructor_remaining<=0:
             continue
-        if name=='request_object_reselection' and reselections_remaining is not None and reselections_remaining<=0:
+        if name in ('request_object_reselection','request_ego_history_revision') and reselections_remaining is not None and reselections_remaining<=0:
             continue
         if name in ('probe_pdm','probe_vadv2'):
             ids=[key for key,node in nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible'] and key not in tested]
@@ -78,12 +146,12 @@ def trajectory_tools(tools, nodes, evaluated, tested, probes_remaining, *,
                 continue
             function['parameters']['properties']['candidate_id']['enum']=ids
         elif name=='evaluate_candidate':
-            ids=[key for key in nodes if key not in evaluated]
+            ids=list(nodes)
             if not ids:
                 continue
             function['parameters']['properties']['candidate_id']['enum']=ids
         elif name=='inspect_trajectory' and inspected is not None:
-            ids=[key for key in nodes if key not in inspected]
+            ids=list(nodes)
             if not ids:
                 continue
             function['parameters']['properties']['candidate_id']['enum']=ids

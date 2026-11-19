@@ -15,6 +15,11 @@ def build_commands(args, environ):
     root = Path(env["WORLDENGINE_ROOT"]).expanduser().resolve()
     project = Path(__file__).resolve().parents[3]
     result = Path(env["WORLDENGINE_TEST_PATH"]).expanduser().resolve()
+    env['ADAGENT_STARTUP_TIMING_DIR'] = str(result / 'startup_timing')
+    env['ADAGENT_NATIVE_VIDEO_DIR'] = str(result / 'videos')
+    collision_only = env.get('ADAGENT_COLLISION_ONLY', 'false') == 'true'
+    if collision_only and (not env.get('ADAGENT_COLLISION_TARGET_TRACK') or env.get('WITH_DENSE_REWARD_MANAGER') == 'true'):
+        raise ValueError('Collision-only probes require a target and no dense rewards')
     simroot, algroot = root / "projects/SimEngine", root / "projects/AlgEngine"
     def interpreter(variable, default):
         path = Path(env.get(variable) or default).expanduser()
@@ -43,13 +48,13 @@ def build_commands(args, environ):
         "data_pkl_file_name": scenario_file.name, "asset_folder_path": str(assets),
         "output_dir": str(result / "WE_output"), "hydra.run.dir": str(result / "hydra"),
         "job_name": f"{args.data_type}_{args.react_type}_{args.model_name}",
-        "use_planner_actions": "true", "save_data": "true", "ego_controller": env.get("EGO_CONTROLLER", "log_play_controller"),
+        "use_planner_actions": "true", "save_data": "false" if collision_only else "true", "ego_controller": env.get("EGO_CONTROLLER", "log_play_controller"),
         "ego_policy": env.get("EGO_POLICY", "env_input_policy"),
         "ego_client": env.get("EGO_CLIENT", "navformer_client"),
         "ego_navigation": env.get("EGO_NAVIGATION", "trajectory_navigation"),
         "planner_data_path": str(result / "plan_traj"), "planner_client_folder": str(result / "frames"),
-        "with_metric_manager": "true", "with_dense_reward_manager": env.get("WITH_DENSE_REWARD_MANAGER", "false"),
-        "visualize_video": env.get("VISUALIZE_VIDEO", "false"), "visualize_BEV": env.get("VISUALIZE_BEV", "false"),
+        "with_metric_manager": "false" if collision_only else "true", "with_dense_reward_manager": env.get("WITH_DENSE_REWARD_MANAGER", "false"),
+        "visualize_video": "false" if collision_only else env.get("VISUALIZE_VIDEO", "false"), "visualize_BEV": "false" if collision_only else env.get("VISUALIZE_BEV", "false"),
         "distributed_mode": "SINGLE_NODE", "enable_resume": "false",
         "completed_scenarios_dir": str(result / "completed_scenarios"),
         "num_history": history, "num_future": future, "sampling_poses": horizon['sampling_poses'],
@@ -75,13 +80,20 @@ def build_commands(args, environ):
            str(algroot / "closed_loop/sim_test.py"), args.config, args.checkpoint,
            "--log-dir", str(result / "WE_output"), "--cfg-options",
            *[f"{k}={v}" for k,v in planner_options.items()]]
+    cold_alg=alg
+    if env.get('ADAGENT_VAD_PREWARM_SOCKET'):
+        alg=[alg_python,str(Path(__file__).with_name('planner_prewarm.py')),'client',
+             '--socket',env['ADAGENT_VAD_PREWARM_SOCKET'],'--',*cold_alg]
     env["PYTHONPATH"] = os.pathsep.join([str(simroot), str(algroot), str(project)])
     env["PYTHONUNBUFFERED"] = "1"
-    effective = {"scenario_file": str(scenario_file), "num_history": history, "num_future": future,
+    effective = {"collision_only": collision_only, "scenario_file": str(scenario_file), "num_history": history, "num_future": future,
                  "native_libraries": {"directory": env.get('WORLDENGINE_LIBRARY_DIR'),
                                       "search_path": env.get('LD_LIBRARY_PATH')},
                  "max_frame_per_scene": frames, "evaluation_horizon":horizon,"simulator": options, "planner": planner_options,
                  "commands": {"simulator": sim, "planner": alg}}
+    if alg is not cold_alg:
+        effective['planner_prewarm']=dict(socket_path=env['ADAGENT_VAD_PREWARM_SOCKET'],
+            scope='framework_imports_only_fresh_model_per_candidate',cold_command=cold_alg)
     return sim, alg, simroot, algroot, result, env, effective
 
 
@@ -104,8 +116,10 @@ def main():
         raise KeyboardInterrupt("WorldEngine job interrupted")
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        children.append(subprocess.Popen(sim, cwd=simroot, env=env))
-        children.append(subprocess.Popen(alg, cwd=algroot, env=env))
+        sim_env = dict(env, ADAGENT_SIMULATOR_LAUNCHED_AT=str(time.time()))
+        children.append(subprocess.Popen(sim, cwd=simroot, env=sim_env))
+        alg_env = dict(env, ADAGENT_PLANNER_LAUNCHED_AT=str(time.time()))
+        children.append(subprocess.Popen(alg, cwd=algroot, env=alg_env))
         while True:
             sim_rc, alg_rc = [p.poll() for p in children]
             if sim_rc not in (None, 0) or alg_rc not in (None, 0):
@@ -128,6 +142,12 @@ def main():
             except subprocess.TimeoutExpired:
                 p.kill()
                 p.wait()
+        from .startup_timing import summarize
+        try:
+            summarize(result / 'startup_timing')
+        except OSError:
+            import warnings
+            warnings.warn('Cold-start timing summary could not be saved', RuntimeWarning)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Stable AdAgent entry points; native retrieval remains framework-independent."""
 from mcp_servers.runtime import runtime_task, current_run
 from api_config import get_profile
+from common.llm_audit import audited_json_call
 from ..core.api_settings import bind_profiles
 
 def retrieve_video(input_data: dict) -> dict:
@@ -12,30 +13,18 @@ def search_local(requirement, config=None):
     from ..core.config import SearchConfig
     from ..core.service import search_local as search
     from ..core.workspace import bind_run
-    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile):
-        result = search(requirement, config or SearchConfig())
-        from .scene_binding import bind_scene
-        output = current_run("sentry_video_search").output
-        result.scene_ref = bind_scene(result.source_file, output, manifest_name="scene_binding_rank01.json")
-        bound = []
-        for item in result.alternatives:
-            try:
-                rank = int(item["rank"])
-                scene_ref = bind_scene(item["source_file"], output,
-                                       manifest_name=f"scene_binding_rank{rank:02d}.json")
-            except (KeyError, TypeError, ValueError):
-                # A malformed or unbound lower-ranked hit must not discard a valid winner.
-                continue
-            bound.append({**item, "scene_ref": scene_ref})
-        result.alternatives = bound
-        return result
+    from .scene_binding import bind_scene
+    run = current_run("sentry_video_search")
+    with bind_run(run), bind_profiles(get_profile, request_audit=audited_json_call):
+        return search(requirement, config or SearchConfig(),
+                      bind_source=lambda source: bind_scene(source, run.output))
 
 @runtime_task("sentry_video_search", "index_local")
 def index_local(path, config=None):
     from ..core.config import SearchConfig
     from ..core.service import index_local as index
     from ..core.workspace import bind_run
-    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile):
+    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile, request_audit=audited_json_call):
         return index(path, config or SearchConfig())
 
 @runtime_task("sentry_video_search", "search_internet")
@@ -43,5 +32,5 @@ def search_internet(requirement, config=None):
     from ..core.config import SearchConfig
     from ..core.service import search_internet as search
     from ..core.workspace import bind_run
-    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile):
+    with bind_run(current_run("sentry_video_search")), bind_profiles(get_profile, request_audit=audited_json_call):
         return search(requirement, config or SearchConfig())

@@ -26,7 +26,7 @@ python run.py scene --token <scene-token> --config /path/to/analysis.json   --ap
 scripts/summarize_edit_scenarios.py 对已完成案例归组，支持 --api-config 指定相同 API 配置，--run-dir 指定分析输出；--groups-from 可在不改变成员时更新描述。
 scripts/watch_batch.py 查看已有批次，具体参数见 --help。
 
-AdAgent 的 adapter 负责解释器、任务目录和主项目配置注入，tool01 返回 failure_analysis 与完整证据路径。独立 core 不导入根 api_config 或 agent/tools。
+AdAgent 的 adapter 负责解释器、任务目录和主项目配置注入，并通过 `--request-audit` 提供主运行的请求审计。tool01 返回 failure_analysis 与完整证据路径。直接运行 core 时可使用独立配置和输出目录。
 原因分析保留证据范围；候选几何接触不等于官方责任判定，专家行为建议不等于已经验证的驾驶轨迹。
 数据、密钥和运行产物不随源码提交。
 

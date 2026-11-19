@@ -5,18 +5,21 @@ import json
 
 # Fields needed for orchestration, completion, recovery and the next tool.
 FIELDS = {
-    "failure_analyzer": ("token","violation_step","simulation","map_location","evidence_dir","failure","attack",
+    "failure_analyzer": ("token","result_path","report_path","violation_step","simulation","map_location","evidence_dir","failure","attack",
                          "environment","verification"),
-    "scene_instance_generator": ("target_scene","attack","candidates"),
+    "scene_instance_generator": ("scene_requirement","target_effect","target_scene","attack","candidates"),
     "video_retriever": ("video_path","source_file","source_segment","match_score","mode","candidate_id"),
-    "edit_planner": ("suitability","reasons","scene_id","scene_token","candidate_id","target_scene",
-                     "attack","checks","adapted_plan","retrieval_suggestion"),
-    "attack_vehicle_editor": ("status","stage","mode","run_dir","scene_id","scene_token","operation","target_track","selected_candidate_id","frozen_scene_path","frames_path","trajectory_path","provenance_path","submission_path","simulation_input","rendered_videos","pdm_probe_result_path","vadv2_probe_result_path","policy_collision_report"),
-    "ego_trajectory_editor": ("status","stage","mode","run_dir","scene_id","scene_token","attack_run_dir","target_track","selected_candidate_id","selected_source","expert_trajectory_path","trajectory_metadata_path","conflict_brief_path","submission_path","simulation_input","expert_motion_summary","ilft_training_data","rendered_videos"),
-    "policy_runner": ("result_dir","policy_result","collision_report","evaluation_scope","pdm_subscores","policy_behavior_summary","rollout_dir","reward_dir","candidate_rewards_present","rlft_training_data","rlft_data_report","pdm_challenge"),
+    "edit_planner": ("suitability","reasons","edit_plan","edit_options","ego_history_plan","scene_id","scene_token","candidate_id","target_scene",
+                     "target_effect","attack","checks","adapted_plan","retrieval_suggestion","attack_input"),
+    "attack_vehicle_editor": ("status","stage","mode","run_dir","scene_id","scene_token","operation","plan_choice","shared_history","target_track","selected_candidate_id","frozen_scene_path","frames_path","trajectory_path","provenance_path","submission_path","simulation_input","native_export","rendered_videos","pdm_probe_result_path","vadv2_probe_result_path","policy_collision_report","policy_evaluation"),
+    "ego_trajectory_editor": ("status","stage","mode","run_dir","scene_id","scene_token","attack_run_dir","target_track","selected_candidate_id","selected_source","expert_trajectory_path","trajectory_metadata_path","conflict_brief_path","submission_path","simulation_input","native_export","expert_motion_summary","expert_feedback","ilft_training_data","rendered_videos","render_status"),
+    "policy_runner": ("result_dir","policy_result","collision_report","evaluation_scope","pdm_subscores","policy_behavior_summary","rollout_dir","reward_dir","candidate_rewards_present","rlft_training_data","rlft_data_report","pdm_challenge","startup_timing_report"),
     "failure_case_filter": ("is_failure_case","pdm_scores_file","scene_count","failure_cases","scene_results"),
     "policy_trainer": ("checkpoint","training_mode","log_path","work_dir","epochs","final_loss","training_config","export_dir"),
 }
+ANALYSIS_FIELDS = ("name","group_id","id","failure_type","failure_reason","base_scene",
+                   "interaction","wrong_behavior","expected_behavior","key_scene_factors",
+                   "official_metrics","uncertainty","risk_factors","supporting_case_ids","uncovered_case_ids")
 SCENE_FIELDS = ("scene_id","scene_token","dataset","sample_root","matched_camera","frame_count","fps","images_complete")
 BUSINESS_FIELDS = ("reason","stop_reason","failed_requirements","failed_requirements_scope",
                    "evidence_paths","scope","global_infeasibility_proven")
@@ -43,7 +46,11 @@ def brief_metrics(value):
 def summarize(tool, payload):
     result = pick(payload,FIELDS[tool])
     result.update(pick(payload,("mode","mock","status")))
-    if tool=="video_retriever":
+    if tool=="failure_analyzer":
+        analysis=payload.get("failure_analysis")
+        if isinstance(analysis,dict):
+            result["failure_analysis"]=pick(analysis,ANALYSIS_FIELDS)
+    elif tool=="video_retriever":
         scene=payload.get("scene_ref")
         if isinstance(scene,dict):
             result["scene_ref"]=pick(scene,SCENE_FIELDS)
@@ -52,40 +59,16 @@ def summarize(tool, payload):
                 result["available_cameras"]=list(cameras)
         else:
             result["scene_ref"]=deepcopy(scene)
-        alternatives=payload.get("alternatives")
-        if isinstance(alternatives,list):
-            result["alternative_count"]=len(alternatives)
-            result["alternative_scenes"]=[dict(
-                rank=item.get("rank"),scene_id=(item.get("scene_ref") or {}).get("scene_id"),
-                scene_token=(item.get("scene_ref") or {}).get("scene_token"),
-                match_score=item.get("match_score")) for item in alternatives[:2] if isinstance(item,dict)]
     elif tool=="edit_planner":
         evidence=payload.get("evidence")
         if isinstance(evidence,dict):
-            result["evidence"]=pick(evidence,("map_available","map_checks","map_reasons",
-                "map_evidence_limits","target_region_frames","verification_source","precheck_conflicts",
-                "selected_rank"))
-            attempts=evidence.get("retrieval_attempts")
-            if isinstance(attempts,list):
-                result["evidence"]["retrieval_attempts"]=[
-                    pick(item,("rank","scene_id","scene_token","suitability"))
-                    for item in attempts[:3] if isinstance(item,dict)]
-            for key in ("map_reasons","map_evidence_limits"):
-                if isinstance(result["evidence"].get(key),list):
-                    result["evidence"][key]=bounded_rows(result["evidence"][key],6)
-            facts=evidence.get("map_facts")
-            if isinstance(facts,dict):
-                result["evidence"]["map_facts"]=pick(facts,("selection_policy","target_junction_fid",
-                    "target_entry_distance_m","target_entry_frame_index","target_junction",
-                    "approach_lane_count","lanes_with_direction","connectors_with_turn","connector_count"))
-            visual=evidence.get("visual_review")
-            if isinstance(visual,dict):
-                result["evidence"]["visual_review"]=pick(visual,("cameras","sheet_count","model_calls",
-                    "checks","reasons"))
+            result["evidence"]=pick(evidence,("missing_resources","road_geometry_available","added_vehicle_asset_available"))
             observation=evidence.get("visual_observation")
             if isinstance(observation,dict) and observation.get("record_dir"):
                 result["evidence"]["observation_record_dir"]=observation["record_dir"]
     elif tool in ("attack_vehicle_editor","ego_trajectory_editor"):
+        if tool=='ego_trajectory_editor' and isinstance(payload.get('expert_feedback'),dict):
+            result['expert_feedback']=deepcopy(payload['expert_feedback'])
         if "checks" in payload:
             result["checks"]=check_view(payload["checks"])
         result.update(pick(payload,BUSINESS_FIELDS))
@@ -94,9 +77,13 @@ def summarize(tool, payload):
         # Keep measured recovery feedback, without archived internal requests.
         detail=payload.get("detail")
         if isinstance(detail,dict):
-            result["recovery_feedback"]=pick(detail,("status","reason","stop_reason","revision_feedback",
+            result["recovery_feedback"]=pick(detail,("status","reason","stop_reason","search_stage","revision_feedback",
                 "guidance","failed_requirements","measurements","reuse_completed_from",
-                "termination_evidence","request_count","attempt_count","remaining_budget"))
+                "rejected_initial_placements",
+                "termination_evidence","request_count","attempt_count","remaining_budget",
+                "api_budget","constructor_budget","resumable_candidate_ids","ready_to_submit_candidate_ids","retry_allowed",
+                "recovery_action","recovery_hint","finalization_grace_used","request_timeout_recovery",
+                "editing_timeout_recovery_used"))
     elif tool=="policy_runner":
         reports=payload.get("reports")
         if isinstance(reports,list):
@@ -159,6 +146,8 @@ def compact_state(source):
             hint=HANDOFF_HINTS.get(tool)
             if hint:
                 entry["result"]["handoff_hint"]=hint
+            if tool=="edit_planner" and isinstance(entry["result"]["result"].get("attack_input"),dict):
+                replace_references("attack_vehicle_editor",entry["result"]["result"]["attack_input"],references)
             references.append((tool,original,reference))
         elif reference and envelope.get("status")=="error":
             error=envelope.get("error",{})
@@ -181,7 +170,9 @@ def compact_state(source):
                 original_args=previous["decision"].get("arguments",{})
                 kept,omitted={},[]
                 for key,value in original_args.items():
-                    if value is None or isinstance(value,(str,int,float,bool)) or len(json.dumps(value,ensure_ascii=False))<=2048:
+                    if key=="failure_analysis" and isinstance(value,dict):
+                        kept[key]=pick(value,ANALYSIS_FIELDS)
+                    elif value is None or isinstance(value,(str,int,float,bool)) or len(json.dumps(value,ensure_ascii=False))<=2048:
                         kept[key]=deepcopy(value)
                     else:
                         omitted.append(key)
@@ -193,8 +184,7 @@ def compact_state(source):
     return state
 
 HANDOFF_HINTS = {
-    "video_retriever": "Handoff: pass result_ref verbatim as edit_planner.retrieval_result or attack_vehicle_editor.scene_ref; never retype this JSON. Tool04 tries alternatives ranks 2 and 3 itself.",
-    "edit_planner": "Handoff: ready results carry adapted_plan; do not read removed edit_plan or attack_input.",
+    "video_retriever": "Handoff: pass result_ref verbatim as edit_planner.retrieval_result or attack_vehicle_editor.scene_ref; never retype this JSON.",
     "attack_vehicle_editor": "Handoff: pass result_ref verbatim as ego_trajectory_editor.attack_result; never retype this JSON.",
 }
 

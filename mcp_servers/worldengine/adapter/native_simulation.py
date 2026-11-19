@@ -10,12 +10,23 @@ import os
 import pickle
 import runpy
 import sys
+try:
+    from .startup_timing import get_timing
+except ImportError:
+    from startup_timing import get_timing
+
+_STARTUP = get_timing('simulator')
+_STARTUP.mark('wrapper_entered')
 
 
 def activate_exported_scene_adapter(scenes):
     exported = [str(key) for key, scene in scenes.items()
                 if scene.get('metadata', {}).get('native_export')]
     if exported:
+        for key in exported:
+            reference=scenes[key]['metadata']['native_export']
+            if reference.get('ego_calibration_frame') != 'reconstruction':
+                raise ValueError('Legacy exported UTM ego calibration must be re-exported with MTGS reconstruction poses before simulation; reuse the saved trajectory, not a new Agent run')
         from replay_pose import install
         install()
     return exported
@@ -31,9 +42,11 @@ def main():
         return Path(json.loads(value) if value.startswith('"') else value)
     source = path_value('data_file_path')
     output = path_value('output_dir')
-    with source.open('rb') as stream:
-        scenes = pickle.load(stream)
-    exported = activate_exported_scene_adapter(scenes)
+    with _STARTUP.span('scenario_load'):
+        with source.open('rb') as stream:
+            scenes = pickle.load(stream)
+    with _STARTUP.span('scene_adapter_and_framework_imports'):
+        exported = activate_exported_scene_adapter(scenes)
     audit = dict(adapter='edited_scene_coordinates.v1', exported_scene_ids=exported,
                  pose_adapter_active=bool(exported), scenario_file=str(source),
                  policy_and_metrics_unchanged=True, status='running')
@@ -53,7 +66,8 @@ def main():
     report.write_text(json.dumps(audit, indent=2))
     sys.argv = [str(entry), *overrides]
     try:
-        runpy.run_path(str(entry), run_name='__main__')
+        with _STARTUP.span('native_entry_total'):
+            runpy.run_path(str(entry), run_name='__main__')
         if exported:
             from worldengine.engine.engine_utils import get_engine
             engine = get_engine()

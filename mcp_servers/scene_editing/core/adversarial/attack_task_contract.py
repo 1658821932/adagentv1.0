@@ -73,6 +73,12 @@ def plan_evidence(times, xy, yaw, ego, ego_yaw, size, preferences, contract=None
     if contract is None:
         return preferred
     required = objective_evidence(times, xy, yaw, ego, ego_yaw, size, contract['objective'])
+    if preferred.get('waypoints') and preferences['waypoints'] != contract['objective'].get('waypoints'):
+        required['requested_waypoints'] = preferred['waypoints']
+        required['failed_checks'].extend(f'requested_waypoint_{i+1}'
+            for i, waypoint in enumerate(preferred['waypoints']) if not waypoint['passed'])
+        required['goal_met'] = not required['failed_checks']
+        required['objective_cost'] += preferred['waypoint_cost']
     corridor = contract.get('path_corridor')
     if corridor is None:
         return dict(required, task_contract=deepcopy(contract), preferences=preferred,

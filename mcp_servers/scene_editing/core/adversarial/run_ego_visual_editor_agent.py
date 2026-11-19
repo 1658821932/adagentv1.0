@@ -26,6 +26,11 @@ from ego_tool_transport import (require_native_call, validate_exposed_call,
 
 INSPECT = {'type':'function','function':{'name':'inspect_trajectory', 'description':'Inspect a generated map and candidate/parent trajectory diagram, not a camera image.', 'parameters':{'type':'object','properties':{'candidate_id':{'type':'string'}},'required':['candidate_id'],'additionalProperties':False}}}
 
+FOCUSED_CONTEXT = 'focused_defense.v2'
+NATIVE_ACTION = ('Return exactly one native function call from the supplied tools for this turn. '
+    'Use any attached diagram to choose the action. Put the rationale in reason when the tool accepts it. '
+    'Do not return a prose answer or a JSON code block.')
+
 
 @timed_operation('ego.visual_agent', 'run_dir')
 def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_turns=10, max_edit_candidates=5, max_inspections=2, point_only=False, max_tokens=6144, target_track=DEFAULT_TARGET_TRACK, conflict_brief=None, resume=False, allow_timeout_change=False, controlled_generation=False, target_effect=None, foci_enabled=True, stage_timeout_s=900):
@@ -33,6 +38,9 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     if (experiments_root()) not in run_dir.parents or (run_dir.exists() and not resume):
         raise ValueError('Visual run must be a new directory under experiments or explicitly resumed')
     editor = EgoEditor(input_dir, constructor_run, run_dir, foci_run=foci_run, target_track=target_track, resume=resume)
+    from decision_scene_view import render_overview, actor_view, GUIDANCE as SCENE_GUIDANCE
+    layout_path=render_overview(editor.times,editor.baseline_xy,editor.baseline_yaw,editor.actors,
+        editor.road_official or editor.road,run_dir/'scene-overview.png',target_track)
     brief = None
     if conflict_brief is not None:
         brief_dir = Path(conflict_brief).resolve()
@@ -46,9 +54,10 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
         validate_brief(brief, float(editor.times[-1]))
     archived = json.loads((run_dir/'config.json').read_text()) if resume else None
     profile = load_llm_profile()
-    context_view = archived.get('context_view_version') if resume else 'lossless_context.v1'
-    if context_view != 'lossless_context.v1':
+    context_view = archived.get('context_view_version') if resume else FOCUSED_CONTEXT
+    if context_view not in ('lossless_context.v1', FOCUSED_CONTEXT):
         raise ValueError('Unsupported archived context view version')
+    editor.focus_selected_context = context_view == FOCUSED_CONTEXT
     candidate_view = archived.get('candidate_view_version') if resume else ('unranked_motion.v2' if controlled_generation else None)
     if candidate_view not in (None,'unranked_motion.v2'):
         raise ValueError('Unsupported candidate comparison view')
@@ -79,6 +88,10 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     if controlled_generation:
         config.update(controlled_generation=True,foci_enabled=foci_enabled,target_effect=target_effect)
     config['decision_loop_version']='focused_comparison.v1'
+    # Keep old request reconstruction stable when resuming an archived run.
+    if not resume or archived.get('selected_inspection_policy'):
+        config['selected_inspection_policy']='automatic_after_selection.v1'
+        agent_prompt+='\nSelecting the initial candidate automatically attaches its trajectory diagram to the next request. Read that attached diagram and choose an edit or submission; no separate mandatory inspection call is needed. Manual inspection remains available for other candidates. Image delivery and exact-candidate submission checks remain binding.'
     config['tool_transport_version']='native_result_with_image_capability.v2'
     config['image_tool_choice']=profile.get('image_tool_choice','required')
     if profile.get('thinking_mode'):
@@ -204,6 +217,9 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
     if type(stage_timeout_s) not in (int, float) or stage_timeout_s <= 0:
         raise ValueError('stage_timeout_s must be positive')
     deadline = time.perf_counter() + stage_timeout_s
+    # A resumed request must match its archived images. Do not resend the
+    # initial layout on an arbitrary later failed turn.
+    layout_delivery_turn = 1
     try:
         for turn in range(actions+1, max_turns+1):
             remaining = deadline - time.perf_counter()
@@ -213,6 +229,8 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             visual = review_state(editor.nodes, inspections, deliveries, pending, pending_review, max_inspections)
             context = editor.model_context(max_turns-turn+1, max_edit_candidates-editor.edit_count, feedback, pending_review_candidate_id=pending_review,
                 inspection_candidate_ids=[row['candidate_id'] for row in pending_records()])
+            context['scene_layout']=actor_view(editor.times,editor.baseline_xy,editor.actors,target_track)
+            context['visual_guidance']=SCENE_GUIDANCE
             if generation is not None:
                 context['generation_budget']=generation.context()
             if target_effect is not None:
@@ -258,6 +276,9 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
 
             content = prompt if pending is None else [{'type':'text','text':prompt+'\nRequested diagram for '+', '.join(row['candidate_id'] for row in pending_records())},
                 *[image_part(run_dir/row['path']) for row in pending_records()]]
+            if turn == layout_delivery_turn:
+                if isinstance(content,str): content=[{'type':'text','text':content}]
+                content.extend([{'type':'text','text':'Frozen attack scene BEV; recorded ego is a reference, not a policy rollout.'},image_part(layout_path)])
             messages = [{'role':'user','content':content}]
             choice, tools = _tool_contract(editor, turn, max_turns, max_edit_candidates, require_edit=point_only)
             if generation is not None:
@@ -290,6 +311,11 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             choice, tools = require_native_call(choice, tools, messages=messages,
                 image_tool_choice=profile.get('image_tool_choice','required'),
                 tool_choice_policy=profile.get('tool_choice_policy','preserve'))
+            if context_view == FOCUSED_CONTEXT and choice == 'auto':
+                if isinstance(content, list):
+                    content.append({'type': 'text', 'text': NATIVE_ACTION})
+                else:
+                    messages[0]['content'] = content + '\n' + NATIVE_ACTION
             if resume and prior_request is not None and turn == resume_turn:
                 payload = prior_request['payload']
                 expected = normalize_kimi_parameters(profile['model'], dict(messages=messages,
@@ -322,11 +348,15 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                 continue
             call = calls[0]; name = call['function']['name']
             tool_started = time.perf_counter()
+            arguments_validated=False
             try:
                 args = _arguments(call)
                 validate_exposed_call(name, args, tools)
+                arguments_validated=True
                 if name == 'select_constructor_candidate' and set(args) == {'candidate_id','reason'}:
                     result = editor.select_constructor(args)
+                    if result.get('status')=='selected' and config.get('selected_inspection_policy'):
+                        result['automatic_inspection']=inspect(args['candidate_id'],automatic=True)
                 elif name == 'inspect_trajectory' and set(args) == {'candidate_id'}:
                     cached = any(row['candidate_id']==args['candidate_id'] for row in inspections)
                     allowance = review_state(editor.nodes, inspections, deliveries, None, pending_review, max_inspections)
@@ -377,12 +407,15 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
                     raise ValueError('Unknown tool or invalid arguments')
             except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
                 result = {'status':'invalid','error':str(error)[:300]}
+                if not arguments_validated:
+                    result.update(error_code='invalid_tool_arguments',executed=False,candidate_created=False,
+                        instruction='Resend one valid JSON object for the currently exposed tool schema. No trajectory edit was executed; keep the current candidate. Do not add a constructor call to correct JSON formatting.')
             except Exception as error:
                 folder=run_dir/'tool-exchanges'/f'turn_{turn:02d}'
                 folder.mkdir(parents=True,exist_ok=False)
                 atomic_json(folder/'call.json',call)
                 atomic_json(folder/'result.json',dict(status='execution_failed',error_type=type(error).__name__))
-                from common.llm_audit import record_tool_exchange
+                from backend_hooks import record_tool_exchange
                 record_tool_exchange(call, dict(status='execution_failed',error_type=type(error).__name__), folder,
                                      elapsed_seconds=time.perf_counter()-tool_started)
                 raise
@@ -391,7 +424,7 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             folder = run_dir/'tool-exchanges'/f'turn_{turn:02d}'; folder.mkdir(parents=True, exist_ok=False)
             result['archive_ref'] = str(folder)
             atomic_json(folder/'call.json', call); atomic_json(folder/'result.json', result)
-            from common.llm_audit import record_tool_exchange
+            from backend_hooks import record_tool_exchange
             record_tool_exchange(call, result, folder, elapsed_seconds=time.perf_counter()-tool_started)
             from agent_tool_view import compact_action_feedback
             feedback = compact_action_feedback(result)
@@ -411,7 +444,7 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
         stop = 'native_tool_protocol_failed'
         raise
     except Exception as error:
-        if time.perf_counter() >= deadline and type(error).__name__ in {'TimeoutExpired', 'TimeoutError', 'APITimeoutError'}:
+        if time.perf_counter() >= deadline and (getattr(error,'failure_kind',None)=='request_wall_time_exceeded' or type(error).__name__ in {'TimeoutExpired', 'TimeoutError', 'APITimeoutError', 'RequestDeadlineExceeded'}):
             stop = 'stage_timeout_exhausted'
         else:
             stop = 'request_or_execution_failed'

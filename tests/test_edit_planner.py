@@ -8,6 +8,7 @@ import pytest
 
 from tools.registry import call_tool
 from tools.tool04_edit_planner.real import run
+from mcp_servers.scene_editing.adapter.schemas import AttackInput
 
 PNG = base64.b64decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jMZkAAAAASUVORK5CYII=')

@@ -1,6 +1,6 @@
-"""Standard-library initial-motion precheck shared by planning, backend and tests."""
+"""Raw annotation diagnostics and the backend's generator initial-state check."""
 import math
-from mcp_servers.scene_editing.core.adversarial import acceptance_policy as policy
+import acceptance_policy as policy
 
 
 def initial_ego_box(frame, box, first_frame):
@@ -103,41 +103,34 @@ def initial_motion_precheck(frames, track_id, acceptance=None):
 
 PRECHECK_STILL_SPEED_MPS = 0.3
 
-# Only motion near the ego is evidence about this actor. A track crossing another
-# road 40 m away has meaningless derived steering/slip and must not fail the check.
-RELEVANT_RANGE_M = 30.0
-
-
 def initial_state_precheck(editor):
     if editor.target['operation'] != 'edit_existing':
         return None
-    size = editor.target['size_m']
-    # Boxes are stored in each frame's own ego frame, so a stationary actor appears to
-    # move backwards at exactly the ego speed. Transform to world first, otherwise
-    # every stopped or slow vehicle looks like it is reversing.
-    import numpy as np
-    frames = getattr(editor, 'frames', None)
-    samples = []
-    for index, (time, xy, yaw) in enumerate(zip(editor.times, editor.seed_xy, editor.seed_yaw)):
-        local = np.asarray(xy[:2], dtype=float)
-        if float(np.linalg.norm(local)) > RELEVANT_RANGE_M:
-            continue
-        ego_yaw = 0.0
-        if frames is not None and index < len(frames):
-            matrix = np.asarray(frames[index]['ego2global'], dtype=float)
-            position = matrix[:2, :2] @ local + matrix[:2, 3]
-            ego_yaw = math.atan2(matrix[1, 0], matrix[0, 0])
-        else:
-            position = local
-        samples.append((time, position, float(yaw) + ego_yaw))
-    if len(samples) < 2:
+    if len(editor.times) < 2:
         return None
-    result = initial_motion_precheck([
-        dict(timestamp=time, anns=dict(track_tokens=[editor.target['track_id']],
-            gt_boxes=[[xy[0], xy[1], 0., size[0], size[1], size[2], yaw]]))
-        for time, xy, yaw in samples
-    ], editor.target['track_id'], editor.constraints.get('acceptance_policy'))
-    if result['passed']:
+    # Selection CSVs already use the fixed initial-ego frame. Applying each
+    # current ego2global again invents target motion as the ego moves/turns.
+    # Check the inherited boundary with the actual generator, not the editable
+    # future of the original recording. Generated candidates are checked later.
+    from vehicle_initial_state import initial_state
+    effective = policy.resolve(editor.constraints.get('acceptance_policy'))
+    boundary = float(editor.edit_start_s)
+    result = dict(track_id=editor.target['track_id'], boundary_s=boundary,
+        coordinate_frame='initial_ego',
+        scope='Inherited state at the edit boundary; editable future is checked after construction')
+    try:
+        state = initial_state(editor.times, editor.seed_xy, editor.seed_yaw,
+                              editor.target['size_m'], boundary, effective)
+        result.update(forward_speed_mps=state['speed'],
+            rear_axle_lateral_speed_mps=state['lateral_speed_mps'],
+            steering_rad=state['steering'])
+        if state['speed'] > effective['generator_max_speed_mps'] + 1e-6:
+            raise ValueError('unsupported_initial_state: speed exceeds configured generator range')
+    except ValueError as exc:
+        if not str(exc).startswith('unsupported_initial_state:'):
+            raise
+        result.update(passed=False, errors=[str(exc)])
+    else:
         return None
     return dict(stop_reason='unsupported_initial_state', reason='; '.join(result['errors']),
         scope='Object initial state is incompatible with the trajectory generator; choose another object, add a vehicle or change scene.',

@@ -155,6 +155,37 @@ def trial_specs(times, ego, ego_yaw, parent_xy, arguments, prefix_end, search_ro
         yield specs[int(index)]
 
 
+def acceptance_goal_evidence(times, xy, ego, ego_yaw, arguments, first_contact_time_s, *, target_yaw, target_size, constraints):
+    """Share the hard-task policy with independent recomputation, not saved verdicts."""
+    if constraints.get('agent_decides_interaction'):
+        from copy import deepcopy
+        from attack_task_contract import plan_evidence
+        preferred=deepcopy(arguments.get('objective',{'keyframes':[]}))
+        preferred.pop('interaction',None)
+        preferred['interaction_window_s']=list(constraints['event_window_s'])
+        contract=deepcopy(constraints.get('task_contract'))
+        if contract:contract['objective'].pop('interaction',None)
+        hard=contract or dict(objective=dict(keyframes=[],interaction_window_s=list(constraints['event_window_s'])))
+        report=plan_evidence(times,xy,target_yaw,ego,ego_yaw,target_size,preferred,hard)
+        required=constraints.get('require_reference_contact',False)
+        return dict(report,acceptance_basis='reference_contact_required_for_eligibility' if required else 'explicit_task_only_interaction_is_agent_review',
+            interaction_assessment='target_body_contact_required_no_near_miss_class' if required else 'measurements_only_no_contact_or_clearance_class_gate')
+    measured=goal_evidence(times,xy,ego,ego_yaw,arguments,first_contact_time_s,
+        target_yaw=target_yaw,target_size=target_size,task_contract=constraints.get('task_contract'))
+    if (constraints.get('generated_objectives_are_preferences') and 'objective' in arguments
+            and not constraints.get('task_contract') and not constraints.get('objective_contract')):
+        from copy import deepcopy
+        required=deepcopy(arguments)
+        required['objective']['keyframes']=[]
+        required['objective']['interaction_window_s']=list(constraints.get('event_window_s',arguments['objective']['interaction_window_s']))
+        hard=goal_evidence(times,xy,ego,ego_yaw,required,first_contact_time_s,
+            target_yaw=target_yaw,target_size=target_size)
+        return dict(hard,preferences=measured,preferences_met=measured['goal_met'],
+            acceptance_basis='configured_event_and_declared_interaction',
+            keyframe_scope='Agent optimization preferences; explicit caller task_contract remains hard')
+    return measured
+
+
 def goal_evidence(times, xy, ego, ego_yaw, arguments, first_contact_time_s, target_yaw=None, target_size=None, task_contract=None):
     if 'objective' in arguments:
         from attack_task_contract import plan_evidence

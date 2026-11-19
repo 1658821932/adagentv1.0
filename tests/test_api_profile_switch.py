@@ -112,6 +112,20 @@ def test_list_ignores_per_tool_and_global_settings(api_file, capsys):
     assert api_file.read_bytes() == before
 
 
+def test_scene_generator_reads_its_own_model_profile_and_effort(api_file, monkeypatch):
+    from common import api_profiles
+
+    config = json.loads(api_file.read_text())
+    config['tool_profiles'] = {'scene_instance_generator': 'api1'}
+    config['tool_efforts'] = {'scene_instance_generator': 'low'}
+    api_file.write_text(json.dumps(config))
+    monkeypatch.setattr(api_profiles, 'API_CONFIG', api_file)
+    monkeypatch.delenv('SCENE_INSTANCE_GENERATOR_LLM_PROFILE', raising=False)
+    monkeypatch.delenv('SCENE_INSTANCE_GENERATOR_REASONING_EFFORT', raising=False)
+    assert api_profiles.profile_argument('scene_instance_generator') == 'api1'
+    assert api_profiles.effort_for('scene_instance_generator') == 'low'
+
+
 @pytest.mark.parametrize("name", ["reasoning_effort", "tool_profiles", "tool_efforts"])
 def test_add_rejects_metadata_names_even_when_absent(api_file, capsys, name):
     config = json.loads(api_file.read_text())

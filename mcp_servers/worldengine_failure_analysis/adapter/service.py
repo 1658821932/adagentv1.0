@@ -253,6 +253,7 @@ def analyze_scene(
         "--token", token.strip(),
         "--config", str(config),
         "--api-config", str(API_CONFIG_PATH),
+        "--request-audit", "common.llm_audit:RequestAudit",
         "--run-name", run_name,
         "--run-dir", str(task.output),
     ]

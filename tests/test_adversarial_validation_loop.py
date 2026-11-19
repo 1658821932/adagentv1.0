@@ -116,14 +116,30 @@ def test_seed_binding_rejects_another_attack_version(tmp_path):
         load_seed(tmp_path,value)
 
 
+def test_seed_reuses_pdm_configuration_separately_from_attack_schema(tmp_path):
+    value=config()['attack_input']
+    attack=attack_result()
+    attack['result']['shared_history']={'end_s':1.5}
+    files={'attack-input.json':{**value,'pdm_ignore_traffic_lights':True},
+           'attack-result.json':attack,'pdm-result.json':pdm_result(),
+           'pdm-input.json':dict(challenge_baseline_scene_path='/original/scene',
+               challenge_attack_scene_path='/output/attack_1',challenge_target_track='target',
+               challenge_target_is_new=True,challenge_history_s=1.5,challenge_ignore_traffic_lights=True)}
+    for name,data in files.items():(tmp_path/name).write_text(json.dumps(data))
+    assert load_seed(tmp_path,value,{'ignore_traffic_lights':True})['attack']==attack
+    with pytest.raises(ValueError,match='traffic-light mode'):
+        load_seed(tmp_path,value)
+
+
 def test_loop_forwards_explicit_traffic_light_mode(tmp_path):
-    value=config();value['attack_input']['pdm_ignore_traffic_lights']=True
+    value=config();value['pdm']={'ignore_traffic_lights':True}
     seen=[]
     def tools(tool,arguments,mode):
         seen.append((tool,arguments))
         return attack_result() if tool=='attack_vehicle_editor' else pdm_result()
     run(value,tmp_path/'run',tool_runner=tools)
-    assert all(args['challenge_ignore_traffic_lights'] for name,args in seen if name=='policy_runner')
+    pdm_calls=[args for name,args in seen if name=='policy_runner']
+    assert pdm_calls and all(args['challenge_ignore_traffic_lights'] for args in pdm_calls)
 
 
 def test_unsafe_original_diagnostic_does_not_block_edited_scene_feedback():

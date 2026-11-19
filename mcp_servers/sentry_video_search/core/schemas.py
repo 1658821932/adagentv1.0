@@ -1,5 +1,5 @@
 """Native retrieval result schema."""
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, asdict
 from typing import Any
 
 @dataclass
@@ -13,7 +13,6 @@ class VideoSearchResult:
     source_file: str | None = None
     source_segment: dict[str, float] | None = None
     scene_ref: dict[str, Any] | None = None
-    alternatives: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

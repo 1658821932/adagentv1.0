@@ -353,6 +353,13 @@ def inherited_brake_state(times,xy,yaw,time,parent_curve=None):
 def modern_edit(times, lookup, operation, boundary, *, parent_curve=None, acceptance=None, parent_context=None):
     if acceptance is not None and 'edit_start_s' in acceptance:
         boundary=float(acceptance['edit_start_s'])
+    from shared_history import (
+        MAX_NATIVE_GRID_JITTER_S, TAKEOVER_TIME_S, shared_history_end_index,
+    )
+    if (operation.get('start_time_s') == TAKEOVER_TIME_S
+            and 0.0 < boundary - TAKEOVER_TIME_S <= MAX_NATIVE_GRID_JITTER_S
+            and boundary == times[shared_history_end_index(times)]):
+        operation = dict(operation, start_time_s=boundary)
     parent_xy,parent_yaw = lookup(operation['parent_candidate_id'])
     if operation['edit_mode']=='route_edit':
         if operation.get('route_edit_version','state_continuity.v2') != 'state_continuity.v2':

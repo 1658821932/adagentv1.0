@@ -30,12 +30,12 @@ class EditableObservationTests(unittest.TestCase):
         fresh=self.policy.resolve();old=self.policy.resolve(dict(policy_version='reference_acceptance.v1',observation_end_s=3.))
         self.assertEqual(self.policy.edit_start(fresh),0.)
         self.assertEqual(fresh['observation_end_s'],1.5)
-        self.assertEqual(self.policy.danger_start(fresh),2.)
+        self.assertEqual(self.policy.danger_start(fresh),1.5)
         self.assertEqual(self.policy.edit_start(old),3.)
         self.assertNotIn('edit_start_s',old)
         fresh_from_old=self.policy.for_new_run(old)
         self.assertEqual(self.policy.edit_start(fresh_from_old),0.)
-        self.assertEqual(self.policy.danger_start(fresh_from_old),2.)
+        self.assertEqual(self.policy.danger_start(fresh_from_old),1.5)
         with self.assertRaises(ValueError):self.policy.resolve(dict(attack_danger_start_s=-.1))
 
     def test_speed_edit_at_zero_and_one_second_changes_history_and_preserves_initial_state(self):

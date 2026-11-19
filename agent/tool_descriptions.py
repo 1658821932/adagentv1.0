@@ -77,9 +77,11 @@ def get_function_tools():
             "properties":{
                 "reason":{"type":"string","minLength":1,"description":"Why this call advances the task."},
                 "arguments":arguments,
-                "execution":{"type":"object","properties":{"retry":{"type":"boolean"}},
-                             "required":["retry"],"additionalProperties":False,
-                             "description":"Set retry=true only for a deliberate retry/new execution."},
+                "execution":{"type":"object","properties":{"retry":{"type":"boolean"},
+                    "background":{"type":"boolean","description":"For independent tool06/tool07 only: submit and return the persistent job without waiting."},
+                    "job_id":{"type":"string","minLength":1,"description":"Reconnect to the existing same-tool job; keep original arguments and use background=false to wait."}},
+                             "additionalProperties":False,
+                             "description":"Set retry=true only for a deliberate retry/new execution. Background jobs must be collected before finish."},
             },
             "required":["reason","arguments"],"additionalProperties":False,
         }

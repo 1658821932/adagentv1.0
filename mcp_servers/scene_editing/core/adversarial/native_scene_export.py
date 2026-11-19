@@ -13,6 +13,9 @@ import os
 import subprocess
 import numpy as np
 from experiment_runtime import atomic_json
+from shared_history import (
+    MAX_NATIVE_GRID_JITTER_S, WE_TICK_S, native_sample_rate, shared_history_end_index,
+)
 from run_ego_reference import ego_path_from_frames,observed_objects_from_frames,EGO_FRONT,EGO_REAR,EGO_WIDTH
 
 
@@ -52,24 +55,56 @@ def native_types(scene):
     return converted[0]
 
 
-def build(frames,cameras,scene_id,asset_id,*,expert=None):
+def export_summary(report):
+    alignment=report.get('checks', {}).get('time_alignment')
+    if alignment:
+        alignment={key:value for key,value in alignment.items() if key not in ('native_time_s','uniform_time_s')}
+        alignment['max_grid_drift_s']=report['checks'].get('max_uniform_grid_drift_s')
+    return {key: report[key] for key in ('status', 'reason', 'error_type', 'report_path') if key in report} | {
+        'time_alignment': alignment}
+
+
+def validate_expert_trajectory(times, recorded_xy, recorded_yaw, expert):
+    """Validate the submitted poses before native export or rendering."""
+    et, xy, yaw = (np.asarray(component) for component in expert)
+    if et.shape != times.shape or not np.allclose(et, times, atol=1e-6, rtol=0):
+        raise ValueError('Expert timestamps differ from frozen attack')
+    if xy.shape != recorded_xy.shape or yaw.shape != recorded_yaw.shape:
+        raise ValueError('Expert pose count differs from frozen attack')
+    if not np.isfinite(xy).all() or not np.isfinite(yaw).all():
+        raise ValueError('Expert poses must be finite')
+
+    prefix = slice(0, shared_history_end_index(times) + 1)
+    yaw_delta = yaw[prefix] - recorded_yaw[prefix]
+    yaw_error = np.abs(np.arctan2(np.sin(yaw_delta), np.cos(yaw_delta)))
+    if not np.allclose(xy[0], recorded_xy[0], atol=1e-6, rtol=0) or yaw_error[0] > 1e-6:
+        raise ValueError('Expert changed the initial scene pose')
+    if not np.allclose(xy[prefix], recorded_xy[prefix], atol=1e-6, rtol=0) or yaw_error.max() > 1e-6:
+        raise ValueError('Expert changed the shared 0–1.5s history; edit only after takeover')
+
+
+def build(frames,cameras,scene_id,asset_id,*,expert=None,reconstruction=None):
     """WE states use body centres in world-axis coordinates translated by the first rear axle."""
     times,recorded_xy,recorded_yaw=ego_path_from_frames(frames)
     times=np.asarray(times);first=np.asarray(frames[0]['ego2global'],float)
     yaw0=float(np.arctan2(first[1,0],first[0,0]));rotation=np.array([[np.cos(yaw0),-np.sin(yaw0)],[np.sin(yaw0),np.cos(yaw0)]])
     xy,yaw=recorded_xy,recorded_yaw
     if expert is not None:
-        et,xy,yaw=expert
-        if not np.allclose(et,times,atol=1e-6,rtol=0):raise ValueError('Expert timestamps differ from frozen attack')
-        if not np.isfinite(xy).all() or not np.isfinite(yaw).all():raise ValueError('Expert poses must be finite')
-        if not np.allclose(np.asarray(xy)[0],recorded_xy[0],atol=1e-6,rtol=0) or abs(float(np.arctan2(np.sin(yaw[0]-recorded_yaw[0]),np.cos(yaw[0]-recorded_yaw[0]))))>1e-6:
-            raise ValueError('Expert changed the initial scene pose')
-    # WE requires a uniform sample interval. Keep native poses at native indices,
-    # retain original timestamps in metadata and report the small grid drift.
-    step=float(np.median(np.diff(times)));sample_rate=round(step/.05)
+        validate_expert_trajectory(times, recorded_xy, recorded_yaw, expert)
+        _, xy, yaw = expert
+    # Align acquisition jitter by native frame index, preserving images and every
+    # actor pose together. Large irregularity/missing frames still require resampling.
+    sample_rate = native_sample_rate(times)
     if sample_rate<1:raise ValueError('Scene sampling is faster than WE native base interval')
-    uniform=np.arange(len(times))*sample_rate*.05;drift=float(np.max(np.abs(uniform-times)))
-    if drift>.001:raise ValueError('Nonuniform timestamps need explicit resampling before native export')
+    nominal_step = sample_rate * WE_TICK_S
+    uniform = np.arange(len(times)) * nominal_step
+    drift = float(np.max(np.abs(uniform - times)))
+    tolerance=min(MAX_NATIVE_GRID_JITTER_S,nominal_step*.01)
+    interval_drift=float(np.max(abs(np.diff(times)-nominal_step)))
+    if drift>tolerance or interval_drift>tolerance:
+        raise ValueError(f'Nonuniform timestamps need explicit resampling before native export: grid drift={drift:.6f}s, interval drift={interval_drift:.6f}s, alignment limit={tolerance:.6f}s')
+    if reconstruction is None:
+        raise ValueError('MTGS reconstruction calibration is required; raw UTM ego poses are not render references')
     actors=observed_objects_from_frames(frames);tracks={};n=len(times)
     types={'vehicle':'VEHICLE','pedestrian':'PEDESTRIAN','bicycle':'CYCLIST','cyclist':'CYCLIST','barrier':'TRAFFIC_BARRIER','traffic_cone':'TRAFFIC_CONE','cone':'TRAFFIC_CONE','generic_object':'TRAFFIC_OBJECT','traffic_object':'TRAFFIC_OBJECT','czone_sign':'TRAFFIC_OBJECT'}
     def track(token,kind):
@@ -90,11 +125,18 @@ def build(frames,cameras,scene_id,asset_id,*,expert=None):
     tracks['ego']=ego
     for node in tracks.values():
         state=node['state'];valid=state['valid'].astype(bool);indices=np.flatnonzero(valid)
-        if len(indices)>1:state['velocity'][valid]=np.gradient(state['position'][valid,:2],times[valid],axis=0)
+        if len(indices)>1:state['velocity'][valid]=np.gradient(state['position'][valid,:2],uniform[valid],axis=0)
+    # Shared history has causal velocities. Expert future changes must not leak
+    # through a central difference into the VAD takeover state.
+    shared_end = shared_history_end_index(times)
+    for i in range(shared_end + 1):
+        left=max(0,i-1);right=max(1,i)
+        ego['state']['velocity'][i]=(ego['state']['position'][right,:2]-ego['state']['position'][left,:2])/(uniform[right]-uniform[left])
     # Preserve original sensor/annotation data; expert poses change sensor frame,
     # so reproject each box/velocity instead of leaving attack annotations stale.
     exported=deepcopy(frames)
     for i,f in enumerate(exported):
+        f['timestamp']=frames[0]['timestamp']+int(round(uniform[i]*1_000_000))
         old=np.asarray(frames[i]['ego2global'],float);new=old.copy();delta=float(yaw[i]-recorded_yaw[i]);cs,sn=np.cos(delta),np.sin(delta)
         rz=np.array([[cs,-sn,0.],[sn,cs,0.],[0.,0.,1.]])
         new[:3,:3]=rz@old[:3,:3];new[:2,3]=first[:2,3]+np.asarray(xy)[i]@rotation.T
@@ -107,29 +149,41 @@ def build(frames,cameras,scene_id,asset_id,*,expert=None):
         angle=float(np.arctan2(change[1,0],change[0,0]))
         for j,box in enumerate(f['anns']['gt_boxes']):
             b=np.asarray(box,float);b[:3]=(change@np.r_[b[:3],1.])[:3];b[6]+=angle;f['anns']['gt_boxes'][j]=b.tolist()
-        if 'gt_velocity_3d' in f['anns']:f['anns']['gt_velocity_3d']=(np.asarray(f['anns']['gt_velocity_3d'])@change[:3,:3].T).tolist()
+        if 'gt_velocity_3d' in f['anns']:
+            world_velocity=np.array([np.r_[tracks[str(token)]['state']['velocity'][i],0.]
+                for token in f['anns']['track_tokens']]).reshape(-1,3)
+            f['anns']['gt_velocity_3d']=(world_velocity@new_lidar[:3,:3]).tolist()
         f['lidar2global']=new_lidar.tolist()
         if 'can_bus' in f:
             f['can_bus'][:3]=new[:3,3].tolist();f['can_bus'][3:7]=qnew.tolist()
-    # Camera and reconstruction calibration use the original poses, not edited ego.
+    # Rendering reference belongs to the reconstruction, not UTM annotations.
     metadata=dict(nuplan_lidar_pc_tokens=[f['token'] for f in frames],
         openscene_data_infos_dict={f['token']:f for f in exported},digitaltwin_asset_id=asset_id,
-        digitaltwin_ego2globals=[f['ego2global'] for f in frames],
-        old_origin_in_current_coordinate=-first[:2,3],native_export=dict(version='edited_scene.v1',
+        digitaltwin_ego2globals=reconstruction.poses.copy(),
+        old_origin_in_current_coordinate=-first[:2,3],native_export=dict(version='edited_scene.v2',
             original_timestamps_us=[f['timestamp'] for f in frames],max_uniform_grid_drift_s=drift,
+            time_alignment=dict(method='native_index_jitter_alignment.v1',native_time_s=times.tolist(),
+                uniform_time_s=uniform.tolist(),max_interval_drift_s=interval_drift,
+                tolerance_s=tolerance,poses_and_sensor_frames_preserved=True,
+                shared_history_end_frame_index=shared_end,
+                shared_history_source_end_s=float(times[shared_end])),
             ego_position_reference='body_center; rear axle offset '+str(offset)+'m',
-            ego_calibration_frame='global',planar_geometry=True,physical_execution_certified=False,
-            recorded_ego_time_s=times.tolist(),
+            ego_calibration_frame='reconstruction',reconstruction_calibration=reconstruction.provenance,
+            planar_geometry=True,physical_execution_certified=False,
+            recorded_ego_time_s=uniform.tolist(),
             recorded_ego_rear_axle_global=(first[:2,3]+recorded_xy@rotation.T).tolist(),
             recorded_ego_heading_rad=(recorded_yaw+yaw0).tolist()))
+    nav_heading=recorded_yaw+yaw0
+    metadata['native_export']['navigation_reference_body_xy_m']=(recorded_xy@rotation.T+
+        offset*np.column_stack([np.cos(nav_heading),np.sin(nav_heading)])).tolist()
     scene=dict(id=scene_id,name=scene_id,token=frames[0].get('scene_token',scene_id),dataset='digitaltwin.nuplan',
         map=frames[0]['map_location'],log_length=n,sample_rate=sample_rate,base_timestamp=frames[0]['timestamp'],
         sdc_id='ego',cameras=deepcopy(cameras),lidar=dict(channel='LIDAR_TOP',sensor2ego_rotation=frames[0]['lidar2ego_rotation'],sensor2ego_translation=frames[0]['lidar2ego_translation']),
         object_track=tracks,metadata=metadata,dynamic_map_states={},map_features={})
     # Signal states/positions are attached after the real lane-map binding.
     typed_fields=native_types(scene)
-    return scene,dict(max_uniform_grid_drift_s=drift,typed_calibration_fields=typed_fields,original_ego_preserved=expert is None,
-        frame_count=n,tracks=list(tracks),source_ego2globals_preserved_for_reconstruction=True)
+    return scene,dict(max_uniform_grid_drift_s=drift,time_alignment=metadata['native_export']['time_alignment'],typed_calibration_fields=typed_fields,original_ego_preserved=expert is None,
+        frame_count=n,tracks=list(tracks),reconstruction_calibration=reconstruction.provenance)
 
 
 def export(source_ref,frozen_scene,output,*,expert_trajectory=None,attack_result=None):
@@ -149,7 +203,8 @@ def export(source_ref,frozen_scene,output,*,expert_trajectory=None,attack_result
         added=None
         if attack_result and attack_result.get('operation')=='add_vehicle':
             info=json.loads((frozen/'freeze-info.json').read_text())
-            if Path(info['source_scene']).resolve()!=source.resolve():raise ValueError('Added asset provenance references a different source scene')
+            from ego_history import source_scene
+            if source_scene(info['source_scene'])!=source.resolve():raise ValueError('Added asset provenance references a different source scene')
             track=attack_result.get('target_track',info.get('track_id'))
             if info.get('track_id')!=track or not info.get('asset_path'):raise ValueError('Added vehicle needs its exact frozen track and PLY asset binding')
             original=json.loads((source/'metadata/frames.json').read_text())
@@ -159,7 +214,20 @@ def export(source_ref,frozen_scene,output,*,expert_trajectory=None,attack_result
         if expert_trajectory:
             with Path(expert_trajectory).open() as stream:rows=list(csv.DictReader(stream))
             expert=(np.array([float(r['time_s']) for r in rows]),np.array([[float(r['ego_x_m']),float(r['ego_y_m'])] for r in rows]),np.array([float(r['ego_yaw_rad']) for r in rows]))
-        scene,checks=build(frames,cameras,source_ref['scene_id'],asset_id,expert=expert)
+        from reconstruction_calibration import load_reconstruction_calibration
+        reconstruction=load_reconstruction_calibration(source,frames,asset_id=asset_id)
+        scene,checks=build(frames,cameras,source_ref['scene_id'],asset_id,expert=expert,reconstruction=reconstruction)
+        history=frozen/'ego-history.json'
+        if history.is_file():
+            data=json.loads(history.read_text());poses=np.asarray(data['original_navigation_ego2global'],float)
+            angles=np.arctan2(poses[:,1,0],poses[:,0,0]);offset=(EGO_FRONT-EGO_REAR)/2
+            scene['metadata']['native_export']['navigation_reference_body_xy_m']=(poses[:,:2,3]-
+                np.asarray(frames[0]['ego2global'])[:2,3]+offset*np.column_stack([np.cos(angles),np.sin(angles)])).tolist()
+            nav=np.asarray(scene['metadata']['native_export']['navigation_reference_body_xy_m'])
+            interval=float(scene['sample_rate'])*.05
+            scene['object_track']['ego']['state']['velocity'][0]=(nav[1]-nav[0])/interval
+            scene['metadata']['native_export']['shared_history']=dict(end_s=1.5,
+                targets=data['targets'],source_frames_sha256=data['source_frames_sha256'])
         # Known official-map coordinates have an explicit rear-axle/yaw origin.
         official=source/'metadata/map_drivable_official.json'
         if not official.is_file():raise ValueError('Official map with explicit coordinate provenance is required')
@@ -219,5 +287,7 @@ def export(source_ref,frozen_scene,output,*,expert_trajectory=None,attack_result
             scope='Exact native-index edited planar poses, real calibrated cameras and source checkpoint. Native replay/video decoding and physical acceptance have not been run.')
     except (OSError,ValueError,KeyError,TypeError,subprocess.TimeoutExpired) as error:
         report['reason']=str(error)
+        report['error_type']=type(error).__name__
+    report['report_path']=str((output/'export-report.json').resolve())
     atomic_json(output/'export-report.json',report)
     return report

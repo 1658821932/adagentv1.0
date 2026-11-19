@@ -1,6 +1,5 @@
 """Scene provenance must survive import, reranking and clip export."""
 import json
-import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -31,12 +30,17 @@ def scene(tmp_path):
         frames.append({"token": str(i), "timestamp": 1_000_000 + i * 500_000, "cams": cameras})
     (sample / "metadata/frames.json").write_text(json.dumps(frames))
     (sample / "metadata/cameras.json").write_text(json.dumps({name: {"channel": name} for name in CAMERAS}))
-    videos = sample / "preview"
+    videos = tmp_path / "videos"
     videos.mkdir()
+    preview = sample / "preview"
+    preview.mkdir()
     for name in CAMERAS:
         video = videos / (name + ".mp4")
         video.write_bytes(b"video")
         register_scene_video(video, sample, name)
+        canonical = preview / video.name
+        canonical.write_bytes(b"video")
+        register_scene_video(canonical, sample, name)
     return sample, videos
 
 @pytest.mark.parametrize("camera", CAMERAS)
@@ -53,7 +57,7 @@ def test_any_camera_resolves_same_complete_scene(scene, tmp_path, camera):
     assert full["timestamps_us"] == [1_000_000, 1_500_000, 2_000_000]
     for name in CAMERAS:
         assert result["cameras"][name]["available_images"] == 3
-        assert Path(result["cameras"][name]["video_path"]).is_file()
+        assert Path(result["cameras"][name]["video_path"]) == sample / "preview" / (name + ".mp4")
         assert [x["timestamp_us"] for x in full["cameras"][name]["frames"]] == full["timestamps_us"]
 
 
@@ -63,30 +67,6 @@ def test_missing_image_is_reported_without_inventing_availability(scene, tmp_pat
     result = bind_scene(videos / "CAM_F0.mp4", tmp_path / "output")
     assert result["images_complete"] is False
     assert result["cameras"]["CAM_L0"]["available_images"] == 2
-
-
-def test_ranked_bindings_use_separate_manifest_files(scene, tmp_path):
-    sample, videos = scene
-    first = bind_scene(videos / "CAM_F0.mp4", tmp_path / "output", manifest_name="scene_binding_rank01.json")
-    second = bind_scene(videos / "CAM_R0.mp4", tmp_path / "output", manifest_name="scene_binding_rank02.json")
-    assert Path(first["manifest_path"]).name == "scene_binding_rank01.json"
-    assert Path(second["manifest_path"]).name == "scene_binding_rank02.json"
-    assert Path(first["manifest_path"]).is_file() and Path(second["manifest_path"]).is_file()
-
-
-def test_external_library_video_is_only_a_fallback_for_the_matched_camera(scene, tmp_path):
-    sample, videos = scene
-    external = tmp_path / 'external'
-    external.mkdir()
-    for camera in CAMERAS:
-        path = external / f'{camera}.mp4'
-        path.write_bytes(b'video')
-        register_scene_video(path, sample, camera)
-        (videos / f'{camera}.mp4').unlink()
-    result = bind_scene(external / 'CAM_F0.mp4', tmp_path / 'output')
-    assert result['cameras']['CAM_F0']['video_path'] == str(external / 'CAM_F0.mp4')
-    assert all(result['cameras'][name]['video_path'] is None for name in CAMERAS if name != 'CAM_F0')
-    assert result['images_complete'] is True
 
 
 def test_unbound_video_and_missing_source_are_errors(tmp_path):
@@ -112,7 +92,7 @@ def test_import_keeps_binding_with_relative_sample_root(scene, tmp_path):
     sample, videos = scene
     sidecar = videos / "CAM_R0.scene.json"
     record = json.loads(sidecar.read_text())
-    record["sample_root"] = os.path.relpath(sample, sidecar.parent)
+    record["sample_root"] = "../dataset/samples/anchor"
     sidecar.write_text(json.dumps(record))
     imported, _ = import_source_video(videos / "CAM_R0.mp4", library_dir=tmp_path / "library")
     result = bind_scene(imported, tmp_path / "output")
@@ -125,12 +105,14 @@ def test_retrieval_binds_rerank_winner_source_not_export_filename(scene, tmp_pat
     from mcp_servers.sentry_video_search.adapter.service import search_local
     from mcp_servers.sentry_video_search.core.config import SearchConfig
     sample, videos = scene
-    hit = {"source_file": str(videos / "CAM_B0.mp4"), "start_time": 0.0, "end_time": 1.5, "similarity_score": 0.9}
+    hit = {"candidate_index": 0, "source_file": str(videos / "CAM_B0.mp4"),
+           "start_time": 0.0, "end_time": 1.5, "similarity_score": 0.9}
+    reranked = {"candidates": [hit], "ranked_results": [{"candidate_index": 0, "relevance_score": 0.9}]}
     def export(details, requirement, config, logs):
         p = config.output_dir / "renamed_search_clip.mp4"
         p.write_bytes(b"clip")
         return p
-    with patch("mcp_servers.sentry_video_search.core.service._ensure_dashscope_key"), patch("mcp_servers.sentry_video_search.core.service._search_index", return_value=[hit]), patch("mcp_servers.sentry_video_search.core.reranker.rerank_hits", return_value=(hit, {})), patch("mcp_servers.sentry_video_search.core.service._export_reranked_hits", side_effect=export):
+    with patch("mcp_servers.sentry_video_search.core.service._ensure_dashscope_key"), patch("mcp_servers.sentry_video_search.core.service._search_index", return_value=[hit]), patch("mcp_servers.sentry_video_search.core.reranker.rerank_hits", return_value=(hit, reranked)), patch("mcp_servers.sentry_video_search.core.service._export_reranked_hits", side_effect=export):
         result = search_local("rear view", SearchConfig(runtime_home=tmp_path / "index"))
     assert result.scene_ref["scene_token"] == "anchor"
     assert result.scene_ref["matched_camera"] == "CAM_B0"
@@ -141,13 +123,44 @@ def test_retrieval_binds_rerank_winner_source_not_export_filename(scene, tmp_pat
     assert saved["scene_ref"]["matched_camera"] == "CAM_B0"
 
 
-def test_adapter_rejects_unbound_retrieval(tmp_path):
+@pytest.mark.parametrize("has_bound_candidate", [False, True])
+def test_adapter_uses_next_valid_binding_from_same_rerank(scene, tmp_path, has_bound_candidate):
     from mcp_servers.sentry_video_search.adapter.service import search_local
     from mcp_servers.sentry_video_search.core.config import SearchConfig
-    from mcp_servers.sentry_video_search.core.schemas import VideoSearchResult
-    raw = VideoSearchResult("test", "/clip.mp4", "/run", "local_hit", 0.9, {}, source_file="/unbound.mp4")
-    with patch("mcp_servers.sentry_video_search.core.service.search_local", return_value=raw), pytest.raises(ValueError, match="No scene binding"):
-        search_local("test", SearchConfig(runtime_home=tmp_path / "index"))
+    _, videos = scene
+    unbound = videos / "unbound.mp4"
+    unbound.write_bytes(b"video")
+    (videos / "CAM_F0.scene.json").write_text("{")
+    sources = [unbound, videos / "CAM_F0.mp4"]
+    if has_bound_candidate:
+        sources.append(videos / "CAM_B0.mp4")
+    hits = [dict(candidate_index=i, source_file=str(path), similarity_score=0.9,
+                 start_time=float(i), end_time=float(i+1)) for i, path in enumerate(sources)]
+    scores = [dict(candidate_index=i, relevance_score=0.9-i/10) for i in reversed(range(len(hits)))]
+    details = {"candidates": hits, "ranked_results": scores}
+    config = SearchConfig(runtime_home=tmp_path / "index")
+    core = "mcp_servers.sentry_video_search.core"
+    with (
+        patch(f"{core}.service._ensure_dashscope_key"),
+        patch(f"{core}.service._search_index", return_value=hits) as search,
+        patch(f"{core}.reranker.rerank_hits", return_value=(hits[0], details)) as rerank,
+        patch(f"{core}.service._trim_hit", return_value=tmp_path / "clip.mp4") as trim,
+    ):
+        if not has_bound_candidate:
+            with pytest.raises(ValueError, match="No scene binding could be resolved for the 2 reranked local matches"):
+                search_local("test", config)
+            trim.assert_not_called()
+        else:
+            result = search_local("test", config)
+            assert result.source_file == str(sources[2])
+            assert result.match_score == pytest.approx(0.7)
+            assert result.source_segment == {"start_time": 2., "end_time": 3.}
+            assert result.scene_ref["matched_camera"] == "CAM_B0"
+            assert all(call.args[0]["source_file"] == result.source_file for call in trim.call_args_list)
+            report = Path(result.run_dir) / "logs/09_rerank.json"
+            assert [item["candidate_index"] for item in json.loads(report.read_text())["scene_binding_rejections"]] == [0, 1]
+        search.assert_called_once()
+        rerank.assert_called_once()
 
 
 def test_client_rejects_legacy_unbound_subprocess_payload():

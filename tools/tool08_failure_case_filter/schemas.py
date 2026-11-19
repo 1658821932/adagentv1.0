@@ -6,7 +6,7 @@ PositiveInt = Annotated[int, Field(gt=0)]
 
 class Input(InputModel):
     scenario_pkl: NonEmptyStr = Field(description='Scenario pickle whose identities correspond to the evaluated run.')
-    result_dir: NonEmptyStr = Field(description='policy_runner output containing official PDM CSV and execution metadata.')
+    result_dir: NonEmptyStr = Field(description='policy_runner output containing exactly one official PDM CSV and the matching execution metadata.')
     scene_token: NonEmptyStr | None = Field(default=None, description='Optional full scene identity or unambiguous 16-character suffix.')
     timeout: PositiveInt = Field(default=120, description='Score-reading process timeout in seconds.')
     python: NonEmptyStr | None = Field(default=None, description='Optional interpreter for reading native scenario metadata.')

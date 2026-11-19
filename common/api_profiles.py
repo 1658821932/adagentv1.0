@@ -20,12 +20,14 @@ LEVELS = ("low", "medium", "high")
 
 ENV = {
     "failure_analyzer": "FAILURE_ANALYZER_LLM_PROFILE",
+    "scene_instance_generator": "SCENE_INSTANCE_GENERATOR_LLM_PROFILE",
     "edit_planner": "EDIT_PLANNER_LLM_PROFILE",
     "attack_editor": "ATTACK_EDITOR_LLM_PROFILE",
     "ego_editor": "EGO_EDITOR_LLM_PROFILE",
 }
 EFFORT_ENV = {
     "failure_analyzer": "FAILURE_ANALYZER_REASONING_EFFORT",
+    "scene_instance_generator": "SCENE_INSTANCE_GENERATOR_REASONING_EFFORT",
     "edit_planner": "EDIT_PLANNER_REASONING_EFFORT",
     "attack_editor": "ATTACK_EDITOR_REASONING_EFFORT",
     "ego_editor": "EGO_EDITOR_REASONING_EFFORT",
@@ -56,10 +58,10 @@ def tool_profile(component: str) -> str:
     return os.getenv(ENV[component]) or selections().get(component, DEFAULT)
 
 
-def profile_argument(component: str):
-    """Argument for get_profile(): None means follow the main agent."""
+def profile_argument(component: str) -> str:
+    """Argument for get_profile(): 'kimi' is the historical alias for active_profile."""
     name = tool_profile(component)
-    return None if name == DEFAULT else name
+    return "kimi" if name == DEFAULT else name
 
 
 def effort_selections() -> dict:

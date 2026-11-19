@@ -33,25 +33,26 @@ def test_native_failure_is_reported_despite_geometry_pass():
     assert reports[0]['source']=='native_replay' and reports[0]['actual_ranges']['speed_mps'][1]==5.21
 
 
-def test_probe_enum_only_contains_ready_untested_candidates_and_read_is_not_repeated():
+def test_probe_enum_only_contains_ready_untested_candidates_and_reads_remain_cached():
     tools=[tool('probe_pdm'),tool('evaluate_candidate'),tool('edit_trajectory_points')];before=deepcopy(tools)
     nodes={key:dict(result=result(passed)) for key,passed in [('bad',False),('tested',True),('ready',True)]}
     exposed=trajectory_tools(tools,nodes,{'bad'},{'tested'},1)
     byname={entry['function']['name']:entry['function'] for entry in exposed}
     assert byname['probe_pdm']['parameters']['properties']['candidate_id']['enum']==['ready']
-    assert 'bad' not in byname['evaluate_candidate']['parameters']['properties']['candidate_id']['enum']
+    assert byname['evaluate_candidate']['parameters']['properties']['candidate_id']['enum']==['bad','tested','ready']
     assert tools==before
 
 
 def test_no_eligible_candidate_hides_probe_without_loosening_the_gate():
     exposed=trajectory_tools([tool('probe_pdm'),tool('evaluate_candidate')],{'bad':dict(result=result(False))},{'bad'},set(),2)
-    assert exposed==[]
+    assert [item['function']['name'] for item in exposed]==['evaluate_candidate']
 
 
-def test_delivered_visual_inspection_is_not_offered_again():
+def test_delivered_visual_inspection_remains_available_as_cached_evidence():
     exposed=trajectory_tools([tool('inspect_trajectory'),tool('submit_candidate')],
         {'ready':dict(result=result(True))},set(),set(),0,inspected={'ready'})
-    assert [item['function']['name'] for item in exposed]==['submit_candidate']
+    assert [item['function']['name'] for item in exposed]==['inspect_trajectory','submit_candidate']
+    assert exposed[0]['function']['parameters']['properties']['candidate_id']['enum']==['ready']
     # Omitting the delivery ledger preserves compatibility for other callers.
     exposed=trajectory_tools([tool('inspect_trajectory')],{},set(),set(),0)
     assert [item['function']['name'] for item in exposed]==['inspect_trajectory']

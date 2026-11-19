@@ -48,3 +48,19 @@ def test_missing_and_extra_fields_rejected():
     exposed=[tool('inspect')]
     with pytest.raises(ValueError,match='Missing'):validate_exposed_call('inspect',{},exposed)
     with pytest.raises(ValueError,match='Unexpected'):validate_exposed_call('inspect',dict(candidate_id='a',extra=1),exposed)
+
+
+def test_malformed_native_arguments_require_correction_without_executing_an_edit():
+    import json
+    from run_ego_editor_agent import _arguments
+    from agent_tool_view import compact_action_feedback
+    malformed='{"parent_candidate_id":"foci_001","targets":[{"time_s":5,"speed_mps":0}]}'+'{"duplicated":true}'
+    with pytest.raises(ValueError,match='invalid_json.*resend'):
+        _arguments(dict(function=dict(arguments=malformed)))
+    with pytest.raises(ValueError,match='must be an object'):
+        _arguments(dict(function=dict(arguments='[]')))
+    assert _arguments(dict(function=dict(arguments=json.dumps({'candidate_id':'foci_001'}))))=={'candidate_id':'foci_001'}
+    feedback=compact_action_feedback(dict(status='invalid',error_code='invalid_tool_arguments',
+        executed=False,candidate_created=False,instruction='Resend using the exposed schema.'))
+    assert feedback['executed'] is False and feedback['candidate_created'] is False
+    assert feedback['instruction']=='Resend using the exposed schema.'

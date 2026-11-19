@@ -135,8 +135,11 @@ def run(scene, added_run, output, worldengine, frame_indices):
     recon = np.asarray(asset['background']['config']['recon2world_translation'], float)
     models = instantiate_models(asset, Path(worldengine).resolve())
     from road_height import RoadHeightMap, ego_height_reference
+    from reconstruction_calibration import load_reconstruction_calibration, recorded_pose_at
+    calibration = load_reconstruction_calibration(scene, frozen, asset_id=checkpoints[0].stem)
+    calibration.verify_origin(recon)
     road_map = RoadHeightMap.load(scene)
-    height_ref = ego_height_reference(frozen, road_map, recon)
+    height_ref = ego_height_reference(frozen, road_map, recon, calibration=calibration)
     anchor = next(a for a in objects[0] if a['track'] == info['track_id'])
     plan_to_asset = asset_from_first_ego(frozen[0], recon)
     initial_yaw = math.atan2(frozen[0]['ego2global'][1][0], frozen[0]['ego2global'][0][0])
@@ -149,9 +152,8 @@ def run(scene, added_run, output, worldengine, frame_indices):
         current = next(a for a in objects[i] if a['track'] == info['track_id'])
         models['added_vehicle'], placement = added_vehicle_model(
             info, current, plan_to_asset, road_map, initial_yaw + current['yaw'])
-        ego_matrix = np.asarray(frame['ego2global'], float).copy(); ego_matrix[:3, 3] -= recon
-        ego_matrix[2, 3] = road_map.height_at(ego_matrix[0, 3], ego_matrix[1, 3]) \
-            + height_ref['reference_m']
+        raw = np.asarray(frame['ego2global'], float)
+        ego_matrix, camera_ground = recorded_pose_at(calibration,raw[:2, 3]-recon[:2],np.arctan2(raw[1, 0],raw[0, 0]),road_map)
         for camera in CAMERAS:
             config = frame['cams'][camera]
             with Image.open(scene/'original_images'/config['data_path']) as image:
@@ -168,13 +170,13 @@ def run(scene, added_run, output, worldengine, frame_indices):
         records.append(dict(frame_index=i, time_s=float(times[i]),
                             target_xy_yaw=[current['x'], current['y'], current['yaw']],
                             vehicle_placement=placement,
-                            ego_height_above_road_m=height_ref['reference_m'], cameras=camera_data))
+                            ego_height_above_road_m=(None if camera_ground['height'] is None else float(ego_matrix[2,3]-camera_ground['height'])),camera_ground=camera_ground,cameras=camera_data))
         print(f'rendered frame {i}', flush=True)
     atomic_json(output/'render-report.json', dict(status='frames_rendered_needs_visual_check',
         scene=str(scene), added_run=str(added_run), asset=info['asset_path'], track_id=info['track_id'],
         vehicle_placement=placement,
-        camera_z_policy=('ego origin z re-anchored to the scene road_height_map plus the frame-0 '
-                         'recorded height reference; recorded pitch/roll retained'),
+        camera_z_policy='MTGS reconstruction tilt and measured clearance above reconstructed road; UTM Z is not a height reference',
+        reconstruction_calibration=calibration.provenance,
         camera_height_reference_m=height_ref['reference_m'],
         camera_offset_profile_m=height_ref['profile_m'],
         pose_assumptions='PLY local +X forward, +Z up; bounding-box bottom on the road_height_map surface',

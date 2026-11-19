@@ -5,6 +5,8 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -35,6 +37,23 @@ def fake_launcher():
     def launch(command, **kwargs):
         return original([sys.executable, "-c", FAKE, command[-1]], **kwargs)
     return patch("agent.jobs.subprocess.Popen", side_effect=launch)
+
+
+def test_independent_06_07_background_jobs_are_persistent_and_not_duplicated(tmp_path):
+    modes={'ego_trajectory_editor':'mock','policy_runner':'mock'}
+    executor=ToolExecutor(modes,jobs_root=tmp_path,execution_timeout=5,scope='pair')
+    with fake_launcher():
+        expert=executor.execute('ego_trajectory_editor',{'attack_result':'frozen','_execution':{'background':True}})
+        policy=executor.execute('policy_runner',{'scene':'frozen','_execution':{'background':True}})
+        assert expert['status']==policy['status']=='running'
+        first,second=expert['job']['job_id'],policy['job']['job_id']
+        assert first!=second
+        restored=ToolExecutor(modes,jobs_root=tmp_path,execution_timeout=5,scope='pair')
+        assert restored.execute('ego_trajectory_editor',{'_execution':{'job_id':first}})['status']=='success'
+        assert restored.execute('policy_runner',{'_execution':{'job_id':second}})['status']=='success'
+        assert (tmp_path/'launches').read_text().count('started')==2
+        assert restored.execute('policy_runner',{'scene':'frozen','_execution':{'background':True}})['job']['job_id']==second
+        assert (tmp_path/'launches').read_text().count('started')==2
 
 def test_timeout_concurrent_submit_and_restart_reuse(tmp_path):
     store=JobStore(tmp_path)
@@ -115,6 +134,7 @@ def test_orphan_child_blocks_replacement(tmp_path):
                     break
                 time.sleep(.01)
             assert state["job"]["state"]=="orphaned"
+            assert store.wait(job, 720)['job']['state'] == 'orphaned'
             assert store.submit("test","mock",{},"run",retry=True)==job
         finally:
             os.killpg(child.pid,signal.SIGKILL)
@@ -122,17 +142,100 @@ def test_orphan_child_blocks_replacement(tmp_path):
         assert store.wait(job,5)["error"]["type"]=="job_interrupted"
 
 
+def test_stale_worker_and_child_identities_cannot_signal_reused_process_groups(tmp_path):
+    from agent.jobs import process_record, write
+
+    store = JobStore(tmp_path)
+    job = 'a' * 32
+    folder = tmp_path / job
+    folder.mkdir()
+    with stubborn_session(tmp_path, 'unrelated') as (leader, child):
+        stale = process_record(leader.pid)
+        stale['process_start'] = str(int(stale['process_start']) - 100)
+        manifest = dict(stale, status='running', tool='test')
+        write(folder / 'manifest.json', manifest)
+        write(folder / 'children.json', [stale])
+        with patch('agent.jobs.signal.pidfd_send_signal') as kill:
+            assert store.query(job)['job']['state'] == 'interrupted'
+            write(folder / 'manifest.json', manifest)
+            assert store.stop(job)['status'] == 'interrupted'
+        kill.assert_not_called()
+
+
+def stubborn_command(ready):
+    child_code = ('import os, signal, time; from pathlib import Path; '
+                  'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                  f'Path({str(ready)!r}).write_text(str(os.getpid())); time.sleep(30)')
+    leader_code = f'import subprocess, sys; subprocess.Popen([sys.executable,"-c",{child_code!r}]).wait()'
+    return [sys.executable, '-c', leader_code]
+
+
+@contextmanager
+def stubborn_session(tmp_path, job_id):
+    ready = tmp_path / 'stubborn.pid'
+    leader = subprocess.Popen(stubborn_command(ready), start_new_session=True,
+                              env={**os.environ, 'ADAGENT_JOB_ID': job_id})
+    try:
+        deadline = time.monotonic() + 5
+        while not (ready.exists() and ready.stat().st_size) and time.monotonic() < deadline:
+            time.sleep(.01)
+        yield leader, int(ready.read_text())
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        leader.wait(timeout=5)
+
+
+def test_stop_kills_sigterm_resistant_descendant_after_leader_exits(tmp_path):
+    from agent.jobs import process_identity, process_record, write
+
+    store = JobStore(tmp_path)
+    job = 'a'*32
+    folder = tmp_path / job
+    folder.mkdir()
+    with stubborn_session(tmp_path, 'unmarked') as (leader, child), ThreadPoolExecutor() as pool:
+        write(folder / 'manifest.json', dict(process_record(leader.pid), tool='test', status='running'))
+        assert process_identity(child)
+        reaped = pool.submit(leader.wait, 5)
+        assert store.stop(job)['status'] == 'interrupted'
+        assert reaped.result() == -signal.SIGTERM
+        assert process_identity(child) is None
+
+
+def test_orphaned_descendant_without_worker_or_child_session_leader_blocks_retry(tmp_path):
+    from agent.jobs import process_identity, process_record, write
+
+    store = JobStore(tmp_path)
+    with fake_launcher():
+        job = store.submit('test', 'mock', {}, 'run')
+    manifest = json.loads((tmp_path / job / 'manifest.json').read_text())
+    os.kill(manifest['pid'], signal.SIGKILL)
+    with stubborn_session(tmp_path, job) as (leader, child):
+        write(tmp_path / job / 'children.json', [process_record(leader.pid)])
+        leader.terminate()
+        assert leader.wait(timeout=5) == -signal.SIGTERM
+        assert process_identity(child)
+        assert store.wait(job, 5)['job']['state'] == 'orphaned'
+        with fake_launcher():
+            assert store.submit('test', 'mock', {}, 'run', retry=True) == job
+        assert store.stop(job)['status'] == 'interrupted'
+        assert process_identity(child) is None
+
+
 def test_subprocess_registration_and_real_timeout_cleanup(tmp_path,monkeypatch):
     import pytest
     from mcp_servers.process import run_logged
     from agent.jobs import process_identity
     monkeypatch.setenv("ADAGENT_JOB_DIR",str(tmp_path))
+    ready = tmp_path / 'stubborn.pid'
     with pytest.raises(subprocess.TimeoutExpired):
-        run_logged([sys.executable,"-c","import time;time.sleep(10)"],
-                   cwd=tmp_path,log_path=tmp_path/"child.log",timeout=.1)
+        run_logged(stubborn_command(ready), cwd=tmp_path, log_path=tmp_path/'child.log', timeout=1.)
     children=json.loads((tmp_path/"children.json").read_text())
     assert len(children)==1
     assert process_identity(children[0]["pid"]) is None
+    assert process_identity(int(ready.read_text())) is None
 
 
 def test_stop_scope_kills_worker_and_registered_child_groups(tmp_path):

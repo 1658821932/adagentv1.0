@@ -20,8 +20,12 @@ class ToolExecutor:
             mode = self.tool_modes[tool_name]
             arguments = dict(arguments)
             control = arguments.pop("_execution", {})
-            if not isinstance(control, dict) or set(control) - {"job_id", "retry"}:
-                raise ValueError("_execution accepts only job_id and retry")
+            if not isinstance(control, dict) or set(control) - {"job_id", "retry", "background"}:
+                raise ValueError("_execution accepts only job_id, retry and background")
+            if 'background' in control and type(control['background']) is not bool:
+                raise ValueError('_execution.background must be boolean')
+            if control.get('background') and tool_name not in ('ego_trajectory_editor','policy_runner'):
+                raise ValueError('Background execution is supported for independent 06/07 branches')
             if "retry" in control and type(control["retry"]) is not bool:
                 raise ValueError("_execution.retry must be boolean")
             if control.get("job_id"):
@@ -37,7 +41,7 @@ class ToolExecutor:
                     job_id = control["job_id"]
             else:
                 job_id = self.jobs.submit(tool_name, mode, arguments, self.scope, retry=control.get("retry", False))
-            return self.jobs.wait(job_id, self.execution_timeout)
+            return self.jobs.wait(job_id, 0 if control.get('background') else self.execution_timeout)
         except Exception as exc:
             return dict(status="error", tool=tool_name,
                         error=dict(type="execution_error", message=str(exc)))

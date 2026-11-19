@@ -13,6 +13,19 @@ class AttackConfigurationError(ValueError):
         self.details = details
 
 
+def same_scene_constraints(previous, current):
+    """Wall budgets/output roots may change; physics and caller contracts may not."""
+    transient={'attack_stage_timeout_s','pdm_probe_root','vadv2_probe_root','inherited_constructor_budget',
+        'object_reselection_count','object_reselection_reason','object_selection_feedback','_ego_speed_targets',
+        '_fixed_ego_history','_ego_history_revision_target','ego_history_revision_count','expert_margin_revision_count'}
+    def stable(value):
+        result={key:item for key,item in value.items() if key not in transient}
+        result.setdefault('prepare_ego_history',True)
+        result.setdefault('ego_history_target_speed_mps',None)
+        return result
+    return stable(previous)==stable(current)
+
+
 def _resolve_policy(value):
     try:
         return policy.resolve(value)
