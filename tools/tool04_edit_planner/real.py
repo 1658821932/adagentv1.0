@@ -7,6 +7,8 @@ from time import perf_counter
 # A vehicle is only worth editing if it is close to the ego path and ahead of it once.
 ELIGIBLE_MAX_DISTANCE_M = 30.0
 ELIGIBLE_BEHIND_TOLERANCE_M = 10.0
+CANONICAL_VEHICLE_ASSET = Path(__file__).resolve().parents[2] / "data/assets/vehicle_01.ply"
+CANONICAL_VEHICLE_SIZE_M = [4.432, 2.033, 1.637]
 from tools.llm_runtime import validation_details
 from .schemas import Input, Output
 
@@ -173,6 +175,58 @@ def _correct_plan(facts,candidate):
     return candidate.ego_correct_trajectory_strategy
 
 
+def _tool05_input(data, summary, plan):
+    """Build the only executable bridge from tool04's map review to tool05."""
+    if data.scenario.attack.other_origin == "none":
+        return None
+    eligible = list(summary["evidence"].get("eligible_vehicle_tracks") or [])
+    attack_strategy = plan.get("attack_edit_strategy") or "构造目标车辆交互。"
+    options = []
+    if eligible:
+        options.append(dict(
+            option_id="edit_existing",
+            operation="edit_existing",
+            instruction=("在场景中已验证可编辑的车辆中，选择最接近目标交互的一辆；"
+                         + attack_strategy),
+            rationale="工具④已确认该场景存在持续可见且接近自车路径的真实车辆。",
+            uncertainty="具体车辆、轨迹和到达时机由工具⑤搜索验证。"))
+    vehicle = data.vehicle
+    vehicle_dict = vehicle.model_dump(mode="json") if vehicle is not None else None
+    if vehicle_dict is None and CANONICAL_VEHICLE_ASSET.is_file():
+        vehicle_dict = dict(asset_path=str(CANONICAL_VEHICLE_ASSET),
+                            size_m=list(CANONICAL_VEHICLE_SIZE_M))
+    if vehicle_dict is not None:
+        maneuver = ("stationary" if
+                    data.scenario.attack.other_origin == "ahead_same_lane"
+                    and data.scenario.attack.other_action == "straight"
+                    else "left_cut_in")
+        options.append(dict(
+            option_id="add_vehicle",
+            operation="add_vehicle",
+            maneuver=maneuver,
+            instruction=("在当前场景可编辑的道路空间内新增目标车辆，形成目标交互；"
+                         + attack_strategy),
+            rationale="使用项目提供的真实车辆资产构造场景中不存在的目标车辆。",
+            uncertainty="新增位置、轨迹和到达时机必须由工具⑤搜索并验证。"))
+    if not options:
+        return None
+    operation = options[0]["operation"] if len(options) == 1 else "auto"
+    request = dict(
+        scene_ref=data.scene_ref.model_dump(mode="json"),
+        instruction=data.scenario.target_scene + " " + attack_strategy,
+        operation=operation,
+        plan_options=[] if operation != "auto" else options,
+        prepare_ego_history=plan.get("ego_input_edit_strategy") is not None,
+        vadv2_self_test=True,
+    )
+    if operation == "add_vehicle":
+        request.update(maneuver=options[0]["maneuver"], vehicle=vehicle_dict)
+    elif operation == "auto":
+        request["vehicle"] = vehicle_dict
+    from mcp_servers.scene_editing.adapter.schemas import AttackInput
+    return AttackInput.model_validate(request).model_dump(mode="json")
+
+
 def ready_from_precheck(data,summary,checks,elapsed_seconds):
     """Data-only ready verdict and plan; no image or model call is used."""
     facts=summary['evidence'].get('map_facts') or {}
@@ -184,9 +238,22 @@ def ready_from_precheck(data,summary,checks,elapsed_seconds):
               ego_correct_trajectory_strategy=_correct_plan(facts,candidate))
     reasons=list(summary['evidence'].get('map_reasons') or [])
     reasons.append("Map and annotation evidence pass road, lane and placement checks; no visual model was used.")
+    handoff = _tool05_input(data, summary, plan)
+    if data.scenario.attack.other_origin != "none" and handoff is None:
+        result = bound_result(data, summary, dict(
+            suitability="needs_information",
+            reasons=reasons + ["No executable existing vehicle or added-vehicle asset is available for tool05."],
+            checks=dict(road=checks.get("road", "unknown"), lanes=checks.get("lanes", "unknown"),
+                        space=checks.get("space", "unknown")),
+            adapted_plan=None, retrieval_suggestion=None, attack_input=None))
+        result["evidence"] = dict(result["evidence"], verification_source="measured_map_precheck",
+                                  visual_model_used=False)
+        return dict(status="success", tool="edit_planner",
+                    result=Output.model_validate(result).model_dump(mode="json"),
+                    meta=dict(mode="real", model=None, attempts=0, elapsed_seconds=elapsed_seconds))
     result=bound_result(data,summary,dict(
         suitability="ready",reasons=reasons,checks=checks,adapted_plan=plan,
-        retrieval_suggestion=None))
+        retrieval_suggestion=None,attack_input=handoff))
     result['evidence']=dict(result['evidence'],verification_source="measured_map_precheck",
                             visual_model_used=False)
     return dict(status="success",tool="edit_planner",

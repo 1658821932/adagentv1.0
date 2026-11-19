@@ -82,6 +82,13 @@ export function editPlannerDetailGroups(result, error) {
   const facts = result.evidence?.map_facts || {};
   const target = facts.target_junction || {};
   const reasons = (result.reasons || []).map(text).filter(Boolean).join('；');
+  const handoff = result.attack_input;
+  const handoffLabel = handoff?.operation
+    ? ({ auto: '自动选择车辆', edit_existing: '编辑现有车辆', add_vehicle: '新增车辆' }[handoff.operation] || handoff.operation)
+    : '';
+  const handoffText = handoffLabel
+    ? `${handoffLabel}${Array.isArray(handoff.plan_options) && handoff.plan_options.length ? ` · ${handoff.plan_options.length} 个方案` : ''}`
+    : '';
   return groupsWithValues([
     { title: '结构检查', rows: [
       ['结论', PLANNER_VERDICTS[result.suitability] || text(result.suitability)],
@@ -95,6 +102,7 @@ export function editPlannerDetailGroups(result, error) {
     ] },
     { title: '适配方案', rows: [
       ['攻击车编辑', edit(plan.attack_edit_strategy)],
+      ['工具⑤交接', handoffText],
       ['自车输入编辑', edit(plan.ego_input_edit_strategy)],
       ['自车正确轨迹', text(plan.ego_correct_trajectory_strategy)],
     ] },

@@ -15,7 +15,7 @@ checks 的 road、lanes、space 分别填写 pass、fail 或 unknown：
 - 三项 pass：ready，提供 adapted_plan。
 - 有证据确认必要结构不符：unsuitable，至少一项 fail，提供具体的 retrieval_suggestion。
 - 证据不足或矛盾未解决：needs_information，相关项 unknown，说明需要补充什么。
-非 ready 时 adapted_plan 为 null。
+非 ready 时 adapted_plan 为 null、attack_input 为 null。程序会在 ready 时根据实际可编辑车辆和车辆资产生成并校验工具⑤所需的 attack_input；不要自己改写其中的场景引用。
 
 ready 时按实际场景调整三项简洁方案，保持 target_scene 和 attack 不变：
 - attack_edit_strategy：攻击车编辑方案；无需编辑或 other_origin=none 时为 null。

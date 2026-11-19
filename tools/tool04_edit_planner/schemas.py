@@ -6,6 +6,7 @@ from common.models import OutputModel
 from common.scene_refs import SceneReference
 from tools.llm_runtime import ToolModel, NonEmptyStr
 from tools.tool02_scene_instance_generator.schemas import Attack, Output as ScenarioOutput
+from mcp_servers.scene_editing.adapter.schemas import AttackInput, VehicleAsset
 
 SCENARIO_TOOL = "scene_instance_generator"
 RETRIEVAL_TOOL = "video_retriever"
@@ -83,6 +84,9 @@ class Input(ToolModel):
     candidate_id: NonEmptyStr = Field(description="Candidate id selected from scenario_result.candidates.")
     retrieval_result: RetrievalContext = Field(
         description="Tool03 successful envelope, result object or result_ref for the same candidate.")
+    vehicle: VehicleAsset | None = Field(
+        default=None,
+        description="Optional real added-vehicle asset. The canonical project asset is used when omitted.")
 
     @model_validator(mode="before")
     @classmethod
@@ -170,6 +174,9 @@ class Output(Response):
     candidate_id: NonEmptyStr = Field(description="Selected tool02 candidate, copied by the tool.")
     target_scene: NonEmptyStr = Field(description="Copied from tool02; the tool never rewrites it.")
     attack: Attack = Field(description="Copied from tool02; the tool never rewrites it.")
+    attack_input: dict[str, Any] | None = Field(
+        default=None,
+        description="Validated tool05 input when ready; null for non-ready results or a single-vehicle target.")
     evidence: dict[str, Any] = Field(description="Observed scene facts used for the review.")
 
     @model_validator(mode="after")
@@ -177,4 +184,18 @@ class Output(Response):
         if self.attack.other_origin == "none" and self.adapted_plan is not None:
             if self.adapted_plan.attack_edit_strategy is not None:
                 raise ValueError("no target vehicle in the target scene: attack_edit_strategy must be null")
+        if self.suitability != "ready":
+            if self.attack_input is not None:
+                raise ValueError("non-ready edit plans cannot carry attack_input")
+            return self
+        if self.attack.other_origin == "none":
+            if self.attack_input is not None:
+                raise ValueError("a single-vehicle target cannot carry attack_input")
+            return self
+        if self.attack_input is None:
+            raise ValueError("ready two-vehicle plans require attack_input for tool05")
+        handoff = AttackInput.model_validate(self.attack_input)
+        scene_ref = handoff.scene_ref if isinstance(handoff.scene_ref, SceneReference) else SceneReference.model_validate(handoff.scene_ref)
+        if (scene_ref.scene_id, scene_ref.scene_token) != (self.scene_id, self.scene_token):
+            raise ValueError("attack_input.scene_ref differs from the reviewed scene")
         return self

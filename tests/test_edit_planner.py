@@ -99,6 +99,9 @@ def test_ready_copies_target_and_attack_and_builds_plan_without_a_model(scene, m
     assert output['checks'] == {'road': 'pass', 'lanes': 'pass', 'space': 'pass'}
     assert output['adapted_plan']['ego_correct_trajectory_strategy'] == '自车减速后安全通过'
     assert output['adapted_plan']['ego_input_edit_strategy']
+    handoff = AttackInput.model_validate(output['attack_input'])
+    assert handoff.operation in ('edit_existing', 'auto')
+    assert (handoff.scene_ref.scene_id, handoff.scene_ref.scene_token) == ('source', 'token')
     assert output['evidence']['visual_model_used'] is False
     assert output['evidence']['verification_source'] == 'measured_map_precheck'
 
@@ -161,6 +164,7 @@ def test_no_target_vehicle_keeps_attack_edit_null(scene, monkeypatch):
     assert result['status'] == 'success', result
     assert result['result']['attack'] == ATTACK_NONE
     assert result['result']['adapted_plan']['attack_edit_strategy'] is None
+    assert result['result']['attack_input'] is None
 
 
 @pytest.mark.parametrize('form', ['envelope', 'result', 'result_ref'])
@@ -206,9 +210,22 @@ def test_candidate_must_exist_and_match_the_retrieval(scene):
     assert run(value)['error']['type'] == 'input_validation_error'
 
 
+def test_supplied_vehicle_asset_reaches_tool05_handoff(scene, tmp_path, monkeypatch):
+    stub_map(monkeypatch, {'road': 'pass', 'lanes': 'pass', 'space': 'pass'})
+    asset = tmp_path / 'vehicle.ply'
+    asset.write_bytes(b'ply fixture')
+    value = arguments(scene)
+    value['vehicle'] = dict(asset_path=str(asset), size_m=[4.4, 2.0, 1.6])
+    result = run(value)
+    assert result['status'] == 'success', result
+    handoff = AttackInput.model_validate(result['result']['attack_input'])
+    assert handoff.vehicle is not None and handoff.vehicle.asset_path == str(asset)
+    assert handoff.operation in ('edit_existing', 'auto')
+
+
 def test_legacy_input_fields_are_rejected(scene):
     for extra in ('scene_requirement', 'target_effect', 'edit_strategy', 'interaction',
-                  'vehicle', 'retrieval_result_ref'):
+                  'retrieval_result_ref'):
         value = arguments(scene)
         value[extra] = 'legacy'
         assert run(value)['error']['type'] == 'input_validation_error', extra
@@ -255,6 +272,7 @@ def test_rank_one_failure_falls_back_to_rank_two(scene, monkeypatch):
     output = result['result']
     assert output['suitability'] == 'ready'
     assert output['scene_token'] == 'token-2'
+    assert output['attack_input']['scene_ref']['scene_token'] == 'token-2'
     assert output['evidence']['selected_rank'] == 2
     assert [item['rank'] for item in output['evidence']['retrieval_attempts']] == [1, 2]
 

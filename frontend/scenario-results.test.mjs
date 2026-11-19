@@ -115,6 +115,19 @@ test('the actual app renderer shows structured failure messages', () => {
 });
 
 
+test('tool04 shows a validated attack_input handoff for tool05', () => {
+  const result = {
+    suitability: 'ready',
+    checks: { road: 'pass', lanes: 'pass', space: 'pass' },
+    adapted_plan: { attack_edit_strategy: '编辑现有车辆', ego_input_edit_strategy: '调整速度',
+      ego_correct_trajectory_strategy: '安全避让' },
+    attack_input: { operation: 'auto', plan_options: [{}, {}] },
+    evidence: {},
+  };
+  const plan = editPlannerDetailGroups(result).find(group => group.title === '适配方案');
+  assert.equal(plan.rows.find(([key]) => key === '工具⑤交接')[1], '自动选择车辆 · 2 个方案');
+});
+
 test('tool04 summary and details use checks and adapted_plan, never removed edit-plan fields', () => {
   const result = {
     suitability: 'needs_information', candidate_id: 'cand_1',
