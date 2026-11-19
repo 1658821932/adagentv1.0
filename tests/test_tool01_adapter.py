@@ -17,7 +17,8 @@ FACTS = {"status": "ok", "token": "scene-4abb45d9ee1a5c5c", "map_location": "map
          "attack": {"map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
                     "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep"},
          "environment": {"time": "2021-09-16T20:16:41+00:00", "weather": None, "extra": None},
-         "frame_images": [{"index": 0, "time_s": 0.0, "images": {}}]}
+         "frame_images": [{"index": 0, "time_s": 0.0, "images": {}}],
+         "bev_image": "/tmp/tool01-bev-fixture.png"}
 
 
 class AdapterFailureTests(unittest.TestCase):

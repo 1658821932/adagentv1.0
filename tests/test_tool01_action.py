@@ -232,6 +232,7 @@ class EntryPointTests(unittest.TestCase):
             "other_lane_keeping": "keep",
             "interaction": "rear_end",
             "evidence": {},
+            "bev_image": "/tmp/tool01-bev-fixture.png",
         }
 
     def run_facts(self, frames):

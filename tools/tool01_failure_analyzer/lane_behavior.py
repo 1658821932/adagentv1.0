@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 
 LANE_KEEP_TOLERANCE_M = 0.5
@@ -367,6 +368,78 @@ def analyze(map_location, frames, ego, sequences, selected, violation, collision
     if interaction is None:
         raise sf.FactsError("interaction type could not be measured")
 
+    # Render one self-contained BEV sequence for semantic verification. It is an
+    # evidence artifact for VLM classification, not a second source of geometry.
+    bev_path = None
+    try:
+        import tempfile
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.patches import Polygon as PlotPolygon, FancyArrowPatch
+        ego_points = [metric_point(*point) for point in ego["positions"][:violation + 1]]
+        target_rows = located if selected and located else []
+        target_points = [row["point"] for row in target_rows]
+        all_points = ego_points + target_points
+        min_x = min(point.x for point in all_points); max_x = max(point.x for point in all_points)
+        min_y = min(point.y for point in all_points); max_y = max(point.y for point in all_points)
+        pad = max(8.0, 0.15 * max(max_x - min_x, max_y - min_y))
+        figure = Figure(figsize=(12, 9), dpi=150)
+        FigureCanvasAgg(figure)
+        axis = figure.subplots()
+        lanes.plot(ax=axis, facecolor="#edf1f5", edgecolor="#657080", linewidth=0.8)
+        baselines.plot(ax=axis, color="#d49a00", linewidth=0.55, alpha=0.75)
+        intersections.boundary.plot(ax=axis, color="black", linewidth=1.8)
+        ego_length, ego_width, _ = sf.ego_geometry()
+        axis.plot([point.x for point in ego_points], [point.y for point in ego_points],
+                  color="#1976d2", linewidth=3, label="EGO history")
+        for index, point in enumerate(ego_points):
+            heading = ego["yaw"][index]
+            ego_shape = body(metric_point(*ego["positions"][index]), heading, ego_length, ego_width)
+            color = "#d32f2f" if index == violation else "#00897b"
+            axis.add_patch(PlotPolygon(list(ego_shape.exterior.coords), closed=True, facecolor=color,
+                                       edgecolor="black", linewidth=0.8, alpha=0.72, zorder=8))
+            axis.add_patch(FancyArrowPatch((point.x, point.y),
+                                           (point.x + math.cos(heading) * 4.5,
+                                            point.y + math.sin(heading) * 4.5),
+                                           arrowstyle="-|>", mutation_scale=9, color="black",
+                                           linewidth=0.9, zorder=10))
+            axis.text(point.x, point.y + 1.6, str(index), fontsize=6.5, color=color, zorder=11)
+        if target_rows:
+            axis.plot([row["point"].x for row in target_rows],
+                      [row["point"].y for row in target_rows],
+                      color="#f57c00", linewidth=3, label="OTHER history")
+            for row in target_rows:
+                item = row["item"]
+                actor = sf.actor_body(item, frames[item["index"]], item["index"])
+                actor_polygon = Polygon([metric_point(x, y) for x, y in actor.points])
+                color = "#d32f2f" if item["index"] == violation else "#f57c00"
+                axis.add_patch(PlotPolygon(list(actor_polygon.exterior.coords), closed=True,
+                                           facecolor=color, edgecolor="black", linewidth=0.8,
+                                           alpha=0.72, zorder=9))
+                center = actor_polygon.centroid
+                axis.add_patch(FancyArrowPatch(
+                    (center.x, center.y),
+                    (center.x + math.cos(item["world_yaw"]) * 5,
+                     center.y + math.sin(item["world_yaw"]) * 5),
+                    arrowstyle="-|>", mutation_scale=9, color="black", linewidth=0.9,
+                    zorder=11))
+                axis.text(center.x, center.y + 1.6, str(item["index"]), fontsize=6.5,
+                          color=color, zorder=12)
+        axis.set_xlim(min_x - pad, max_x + pad)
+        axis.set_ylim(min_y - pad, max_y + pad)
+        axis.set_aspect("equal")
+        axis.grid(alpha=0.12)
+        axis.legend(loc="best")
+        axis.set_title("BEV route evidence: ego, target, headings, lanes and violation frame")
+        figure.tight_layout()
+        with tempfile.NamedTemporaryFile(prefix="tool01-bev-", suffix=".png", delete=False) as stream:
+            bev_path = Path(stream.name)
+        figure.savefig(bev_path, format="png")
+    except (ImportError, OSError, ValueError, TypeError, KeyError) as error:
+        if bev_path is not None:
+            bev_path.unlink()
+        raise sf.FactsError(f"cannot render BEV evidence: {error}") from None
+
     return {
         "available": True,
         "reason": None,
@@ -376,6 +449,7 @@ def analyze(map_location, frames, ego, sequences, selected, violation, collision
         "other_action": other_action,
         "other_lane_keeping": other_lane_state,
         "interaction": interaction,
+        "bev_image": str(bev_path),
         "evidence": {
             "home_lane_group_fid": None if home is None else home["group"],
             "violation_lane_group_fid": None if current is None else current["group"],

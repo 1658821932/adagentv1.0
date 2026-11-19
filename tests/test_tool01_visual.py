@@ -82,6 +82,42 @@ def last_prompt():
     return content[0]["text"], [part for part in content if part["type"] == "image_url"]
 
 
+class VisualBEVTests(unittest.TestCase):
+    def run_bev(self, payload):
+        StubClient.answer = payload
+        StubClient.calls = []
+        root = Path(RUN_TMP.name) / f"bev-{uuid4().hex[:8]}"
+        root.mkdir(parents=True)
+        image = root / "source.png"
+        Image.new("RGB", (64, 48), (40, 80, 120)).save(image, format="PNG")
+        facts = dict(FACTS, violation_step=7, bev_image=str(image))
+        try:
+            with mock.patch("agent.llm_client.LLMClient", StubClient):
+                result = visual_check.check_bev(facts, root)
+        finally:
+            self.assertFalse(image.exists())
+        return result, root
+
+    def test_bev_decides_only_road_context(self):
+        result, root = self.run_bev('{"map_context":"curve","notes":["车道连续弯曲"]}')
+        self.assertEqual(result, {"map_context": "curve", "notes": ["车道连续弯曲"]})
+        self.assertTrue((root / "bev_route.png").is_file())
+        text, images = last_prompt()
+        self.assertIn("只根据这张连续轨迹 BEV", text)
+        self.assertEqual(len(images), 1)
+
+    def test_bev_rejects_missing_or_invalid_fields(self):
+        for payload in (
+            '{"map_context":"curve"}',
+            '{"map_context":"unknown","notes":[]}',
+            '{"map_context":"curve","ego_action":"turn_right","notes":[]}',
+            '{"map_context":"curve","notes":[1]}',
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises(visual_check.VisualCheckError):
+                    self.run_bev(payload)
+
+
 class VisualEnvironmentTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
@@ -137,7 +173,9 @@ class VisualEnvironmentTests(unittest.TestCase):
     def test_invalid_notes_weather_and_extra_are_rejected(self):
         for payload in (answer(notes=False), answer(notes=[1]), answer(notes=[""]),
                         answer(weather=None), answer(weather="sunny"),
-                        answer(extra=None), answer(extra=3)):
+                        answer(extra=None), answer(extra=3),
+                        answer(extra="城市弯道路口，路面干燥"),
+                        answer(notes=["城市弯道路口"])):
             with self.subTest(payload=payload):
                 with self.assertRaises(visual_check.VisualCheckError):
                     run_check(payload)

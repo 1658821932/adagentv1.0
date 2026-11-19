@@ -505,6 +505,7 @@ def facts(archive, token):
                    "other_lane_keeping": attack["other_lane_keeping"]},
         "environment": {"time": scene_time(frames), "weather": None, "extra": None},
         "frame_images": frame_images(archive, frames),
+        "bev_image": lanes["bev_image"],
     }
 
 

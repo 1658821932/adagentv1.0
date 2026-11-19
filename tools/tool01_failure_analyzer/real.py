@@ -1,12 +1,10 @@
-"""Failure analyzer: measure the failure from the archive, then verify it against images.
+"""Failure analyzer: measure, verify road context, and supplement environment.
 
-The archive and map supply the initial facts. Three eight-camera sheets let the
-model correct the final road, direction, lane-keeping and conflict classification
-while the official PDM outcome and violation frame stay fixed.
-
-The whole analysis runs in a dedicated worker process started through
-``mcp_servers.process.run_logged``, so ``timeout`` is a hard budget for data reading,
-image preparation, every model request and its retries.
+The map and archive produce deterministic interaction facts. One BEV route image is
+reviewed for map context only; one violation-frame camera overview supplies
+weather and environmental text. The whole analysis runs in a dedicated worker
+process so timeout remains a hard budget for data reading and every model
+request.
 """
 
 from __future__ import annotations
@@ -23,8 +21,9 @@ from mcp_servers.process import run_logged
 from mcp_servers.worldengine_failure_analysis.adapter.service import WfaError, failure_facts
 
 from . import evidence
+from .language import ego_cause
 from .schemas import Output
-from .visual_check import VisualCheckError, check as visual_check
+from .visual_check import VisualCheckError, check as visual_check, check_bev
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT_S = 300.0
@@ -82,6 +81,25 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
         return _failure("timeout" if _timeout_of(error) else "failure_facts_error",
                         run_dir, "data", str(error))
 
+    evidence.write_manifest(run_dir, stage="bev", resolved_token=facts["token"],
+                            simulation=facts.get("simulation_record"))
+    try:
+        bev = check_bev(facts, run_dir=run_dir)
+    except (VisualCheckError, OSError, ValueError) as error:
+        stage = getattr(error, "stage", "bev")
+        evidence.write_manifest(run_dir, status="failed", stage=stage, error=str(error))
+        return _failure("bev_check_error", run_dir, stage, str(error))
+
+    measured_context = facts["attack"]["map_context"]
+    corrections = []
+    if bev["map_context"] != measured_context:
+        corrections.append(dict(field="map_context", measured=measured_context,
+                                final=bev["map_context"]))
+        facts["attack"]["map_context"] = bev["map_context"]
+        facts["failure"]["ego_cause"] = ego_cause(
+            facts["failure"]["interaction"], facts["attack"], facts["attack"]["ego_action"],
+            facts["attack"]["ego_lane_keeping"], facts["failure"]["outcome"])
+
     evidence.write_manifest(run_dir, stage="images", resolved_token=facts["token"],
                             simulation=facts.get("simulation_record"))
     try:
@@ -96,7 +114,7 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
         run_dir,
         stage="verification",
         final=facts["attack"],
-        corrections=[],
+        corrections=corrections,
     )
 
     evidence.write_manifest(run_dir, status="success", stage="done", finished_at=evidence.stamp())
@@ -116,8 +134,8 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
                             "extra": visual["extra"]},
             "verification": {
                 "sample_frames": visual["sample_frames"],
-                "corrections": visual["corrections"],
-                "notes": visual["notes"],
+                "corrections": corrections + list(visual["corrections"]),
+                "notes": list(bev["notes"]) + list(visual["notes"]),
             },
         },
     }

@@ -1,13 +1,12 @@
-"""Visual verification of the measured failure facts.
+"""Visual checks for tool01 measured failure facts.
 
-The measured facts are authoritative; this step may not change them. It checks them
-against the eight-camera images of one archived scene and fills the environment
-fields that the archive has no data for.
+The BEV image supplies only road context. The violation-frame camera overview
+supplies only weather and environmental text. Deterministic actor and map
+geometry measurements are not changed by these image classifications.
 """
 from __future__ import annotations
 
 import base64
-import json
 from pathlib import Path
 
 from tools.llm_runtime import parse_json_object
@@ -24,27 +23,37 @@ TILE_W, TILE_H, LABEL_H = 320, 180, 18
 IMAGE_QUALITY = 82
 WEATHER = ("clear", "cloudy", "rainy", "foggy", "snowy", "unknown")
 MAP_CONTEXTS = ("straight_road", "curve", "t_junction", "cross_intersection", "merge")
-EGO_ACTIONS = ("straight", "turn_left", "turn_right")
-LANE_KEEPING = ("left_offset", "keep", "right_offset")
-OTHER_ORIGINS = ("ahead_same_lane", "behind_same_lane", "oncoming", "left_adjacent",
-                 "right_adjacent", "left_arm", "right_arm", "none")
-OTHER_ACTIONS = ("straight", "turn_left", "turn_right", "none")
-INTERACTIONS = ("rear_end", "opposite_direction", "cut_in", "crossing", "side_swipe", "near_miss", "single_vehicle")
 REQUIRED_FIELDS = ("weather", "extra", "notes")
+ENVIRONMENT_FORBIDDEN = ("直路", "弯道", "丁字", "十字", "路口", "汇流", "车道",
+                         "自车", "他车", "车辆", "左转", "右转", "直行")
 
-PROMPT = """你的唯一任务是根据违规帧八相机总览补充天气和环境描述。不要判断或修改道路、车辆动作、车道保持、他车来向或交互类型。
-{facts}
 
-首次违规帧为第 {violation} 帧。你会收到 {images_count} 张八相机3×3总览图：
+def environment_forbidden_terms(value):
+    return [term for term in ENVIRONMENT_FORBIDDEN if term in value]
+
+
+PROMPT = """你的唯一任务是根据首次违规帧的八相机总览补充天气和环境描述。
+不要判断道路形态、路口类型、车辆、车头方向、车道保持、他车来向、车辆动作或交互类型。
+首次违规帧为第 {violation} 帧。你会收到 {images_count} 张八相机总览图：
 {images}
 只填写：
 - weather：clear / cloudy / rainy / foggy / snowy / unknown
-- extra：一句可见环境描述，不推测
+- extra：一句可见环境描述，只写天气、光照、能见度、路面状态和静态背景；没有可靠描述时为空字符串
 - notes：可选补充说明；没有补充时为空数组
 
-看不清天气时 weather 填 unknown，extra 可为空。不要返回任何其他字段。
+看不清天气时 weather 填 unknown。不要返回任何其他字段。
 必须返回 JSON：
 {{"weather":"unknown","extra":"","notes":[]}}
+"""
+
+
+BEV_REQUIRED_FIELDS = ("map_context", "notes")
+BEV_PROMPT = """你只根据这张连续轨迹 BEV 证据图判断自车在违规帧所在道路的整体形态。
+图中浅色区域是官方车道，黑色边界是路口；蓝线和青绿色车身是自车轨迹和车身，橙色线和车身是目标车，黑色箭头是车头方向，数字是帧号，红色表示首次违规帧。
+- map_context：只能是 straight_road / curve / t_junction / cross_intersection / merge。
+- notes：可选的简短核对依据，字符串数组。
+只返回：
+{"map_context":"curve","notes":[]}
 """
 
 
@@ -133,9 +142,69 @@ def contact_sheet(images, index, target, rows):
     return target
 
 
-def data_url(path):
-    """Encode the JPEG already produced by contact_sheet without recompressing it."""
-    return "data:image/jpeg;base64," + base64.b64encode(Path(path).read_bytes()).decode("ascii")
+def data_url(path, mime="image/jpeg"):
+    """Encode an already prepared image without recompressing it."""
+    return "data:" + mime + ";base64," + base64.b64encode(Path(path).read_bytes()).decode("ascii")
+
+
+def check_bev(facts, run_dir):
+    """Classify road context from the measured BEV sequence."""
+    import shutil
+    from agent.llm_client import LLMClient
+    from tools.tool01_failure_analyzer import evidence
+
+    source = Path(str(facts.get("bev_image") or ""))
+    if not source.is_file():
+        raise VisualCheckError("facts do not contain a readable BEV evidence image", stage="bev")
+    try:
+        return _check_bev(source, Path(run_dir), shutil.copyfile, LLMClient, evidence)
+    finally:
+        source.unlink()
+
+
+def _check_bev(source, run_dir, copyfile, client_type, evidence):
+    target = run_dir / "bev_route.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    copyfile(source, target)
+    url = data_url(target, "image/png")
+    evidence.write_manifest(run_dir, stage="bev_vlm", bev_image=str(target))
+    try:
+        client = client_type(component="failure_analyzer")
+        raw = client.chat([
+            {"role": "system", "content": "只输出一个 JSON 对象，不要 Markdown，不要解释。"},
+            {"role": "user", "content": [
+                {"type": "text", "text": BEV_PROMPT},
+                {"type": "image_url", "image_url": {"url": url}},
+            ]},
+        ])
+    except Exception as error:
+        timed_out = isinstance(error, TimeoutError) or type(error).__name__ in {
+            "APITimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout"}
+        evidence.write_manifest(run_dir, stage="bev_vlm", error=type(error).__name__)
+        raise VisualCheckError("BEV model request failed (" + type(error).__name__ + ")",
+                               stage="bev_vlm", timeout=timed_out) from None
+    (run_dir / "bev_response.txt").write_text(raw if isinstance(raw, str) else "")
+    if not isinstance(raw, str) or not raw.strip():
+        evidence.write_manifest(run_dir, stage="bev_vlm", error="empty response")
+        raise VisualCheckError("BEV model returned no text", stage="bev_vlm")
+    try:
+        answer = parse_json_object(raw)
+    except (TypeError, ValueError) as error:
+        evidence.write_manifest(run_dir, stage="bev_vlm", error="invalid JSON")
+        raise VisualCheckError("BEV model returned invalid JSON", stage="bev_vlm") from error
+    if not isinstance(answer, dict) or set(answer) != set(BEV_REQUIRED_FIELDS):
+        raise VisualCheckError("BEV model response must contain exactly map_context and notes",
+                               stage="bev_vlm")
+    context = answer["map_context"]
+    notes = answer["notes"]
+    if context not in MAP_CONTEXTS:
+        raise VisualCheckError("BEV model map_context is invalid: " + repr(context), stage="bev_vlm")
+    if not isinstance(notes, list) or not all(isinstance(note, str) and note.strip() for note in notes):
+        raise VisualCheckError("BEV model notes must be a list of non-empty strings", stage="bev_vlm")
+    notes = [note.strip() for note in notes]
+    evidence.write_manifest(run_dir, stage="bev_verification",
+                            decisions={"map_context": context}, notes=notes)
+    return {"map_context": context, "notes": notes}
 
 
 def check(archive, token, facts, run_dir=None):
@@ -181,14 +250,12 @@ def check(archive, token, facts, run_dir=None):
         raise VisualCheckError(f"image preparation failed ({type(error).__name__})",
                                stage="images") from None
 
-    payload = {key: facts[key] for key in ("failure", "attack") if key in facts}
     listed = "\n".join(
         f"- 第 {position} 张：帧 {index}，{frame_time(rows, index):.1f}s"
         f"（{frame_roles(index, len(rows), violation)}）"
         for position, index in enumerate(indices, start=1))
     content = [{"type": "text", "text": PROMPT.format(
-        facts=json.dumps(payload, ensure_ascii=False), violation=violation,
-        images_count=len(indices), images=listed)}]
+        violation=violation, images_count=len(indices), images=listed)}]
     content += [{"type": "image_url", "image_url": {"url": url}} for url in urls]
 
     evidence.write_manifest(run_dir, stage="vlm")
@@ -244,6 +311,17 @@ def check(archive, token, facts, run_dir=None):
         extra = answer["extra"]
         if not isinstance(extra, str):
             raise VisualCheckError(f"visual check 'extra' must be a string, got {extra!r}", stage="vlm")
+        forbidden = environment_forbidden_terms(extra)
+        if forbidden:
+            raise VisualCheckError(
+                f"visual check 'extra' contains non-environment terms: {', '.join(forbidden)}",
+                stage="vlm")
+        for note in notes:
+            forbidden = environment_forbidden_terms(note)
+            if forbidden:
+                raise VisualCheckError(
+                    f"visual check notes contain non-environment terms: {', '.join(forbidden)}",
+                    stage="vlm")
     except (TypeError, ValueError) as error:
         failed("vlm", "invalid model answer")
         raise VisualCheckError(f"visual check returned no usable JSON: {raw[:200]!r}",

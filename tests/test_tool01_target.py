@@ -212,6 +212,7 @@ class TargetEntryPointTests(unittest.TestCase):
             "other_lane_keeping": "unknown",
             "interaction": "single_vehicle",
             "evidence": {},
+            "bev_image": "/tmp/tool01-bev-fixture.png",
         }
         result = self.call(frames_with({7: [ahead(30.0)]}), lane_data=lane_data)
         self.assertEqual(result["attack"]["other_origin"], "none")

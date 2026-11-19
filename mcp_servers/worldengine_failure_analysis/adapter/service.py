@@ -61,7 +61,7 @@ def _is_archive(path: Path) -> bool:
 
 
 REQUIRED_FACT_KEYS = ("token", "map_location", "violation_step", "failure", "attack",
-                      "environment", "frame_images")
+                      "environment", "frame_images", "bev_image")
 
 
 def failure_facts(token: str, simulation: str | None = None, timeout_s: float | None = None) -> dict:

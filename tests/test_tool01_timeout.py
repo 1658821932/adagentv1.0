@@ -31,6 +31,7 @@ facts = dict(archive="archive", token="scene-4abb45d9ee1a5c5c", simulation_recor
 visual = dict(decision={{**facts["attack"], "interaction": "crossing"}}, sample_frames=[5, 7, 9],
               corrections=[], notes=[], weather="clear", extra="")
 with mock.patch.object(real, "failure_facts", return_value=facts), \\
+     mock.patch.object(real, "check_bev", return_value={{"map_context": "t_junction", "notes": []}}),\\
      mock.patch.object(real, "visual_check", return_value=visual):
     result = real.analyze(request["input_data"], request["run_dir"])
 json.dump(result, sys.stdout)
