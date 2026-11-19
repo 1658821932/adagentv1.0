@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import subprocess
 import threading
+from uuid import uuid4
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,21 +14,13 @@ class ProcessCancelled(KeyboardInterrupt):
     """The current process received an explicit termination request."""
 
 
-def stop_group(process, grace=2):
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=grace)
-    except subprocess.TimeoutExpired:
-        pass
-    # The leader may have exited while grandchildren are still alive.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
+def stop_group(process, record, job_id, grace=2):
+    from agent.jobs import terminate_sessions
+
+    remaining = terminate_sessions(lambda: [record], job_id, grace)
+    if remaining:
+        raise RuntimeError(f'Process cleanup could not confirm termination of PIDs {remaining}')
+    process.wait(timeout=2)
 
 
 def run_logged(command, *, cwd, log_path, env=None, timeout=86400, input=None,
@@ -35,7 +28,11 @@ def run_logged(command, *, cwd, log_path, env=None, timeout=86400, input=None,
     """No pipe buffering: logs are visible while the process is running."""
     if type(timeout) not in (int, float) or timeout <= 0:
         raise ValueError("timeout must be positive")
+    from agent.jobs import process_record
+
+    job_id = os.getenv('ADAGENT_JOB_ID') or uuid4().hex
     env = {**(os.environ if env is None else env), "PYTHONUNBUFFERED": "1"}
+    env['ADAGENT_JOB_ID'] = job_id
     # Adapter entry points run from their own directory, so project-level
     # packages must stay importable without per-script path juggling. Appending
     # keeps the child's own roots ahead of ours.
@@ -65,25 +62,26 @@ def run_logged(command, *, cwd, log_path, env=None, timeout=86400, input=None,
                 process = subprocess.Popen(command, cwd=cwd, env=env, text=True,
                     stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
                     stdout=output, stderr=errors, start_new_session=True)
+                record = process_record(process.pid)
                 try:
                     if os.getenv("ADAGENT_JOB_DIR"):
-                        from agent.jobs import locked, write, process_identity
+                        from agent.jobs import locked, write
                         import json
                         job_dir = Path(os.environ["ADAGENT_JOB_DIR"])
                         with locked(job_dir / "children.lock"):
                             children_file = job_dir / "children.json"
                             children = json.loads(children_file.read_text()) if children_file.exists() else []
-                            children.append(dict(pid=process.pid, process_start=process_identity(process.pid)))
+                            children.append(record)
                             write(children_file, children)
                     process.communicate(input=input, timeout=timeout)
                 except BaseException:
-                    stop_group(process)
+                    stop_group(process, record, job_id)
                     raise
             finally:
                 if output is not errors:
                     output.close()
         if process.returncode:
-            stop_group(process)
+            stop_group(process, record, job_id)
         stdout = stdout_path.read_text(errors="replace") if json_stdout else _tail(stdout_path)
         stderr = _tail(log_path) if json_stdout else ""
         return subprocess.CompletedProcess(command, process.returncode,
