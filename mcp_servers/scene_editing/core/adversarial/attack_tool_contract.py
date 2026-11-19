@@ -22,6 +22,12 @@ def goal_diagnostics(goal):
                     interval_s=frame['evaluated_interval_s'],actual=frame['actual'],
                     max_constraint_error=frame['max_constraint_error'],
                     requested=frame.get('requested'),actual_ranges=frame.get('actual_ranges')))
+        for name in ('waypoints', 'requested_waypoints'):
+            for index, waypoint in enumerate(report.get(name, []), 1):
+                if not waypoint['passed']:
+                    measurements.append(dict(source=source, waypoint=index, waypoint_group=name,
+                        time_s=waypoint['evaluated_time_s'], requested=waypoint['requested'],
+                        actual=waypoint['actual'], errors=waypoint['errors'], tolerances=waypoint['tolerances']))
     return failures, measurements
 
 
@@ -34,6 +40,44 @@ def candidate_eligibility(result):
         failures.append('declared_objective_missing')
     return dict(reference_geometry_passed=geometry,task_contract_passed=task,
                 pdm_probe_eligible=geometry and task,task_failed_checks=failures)
+
+
+def check_submission(editor, candidate_id):
+    """Validate the candidate and its exact-version policy evidence."""
+    result = editor.nodes[candidate_id]['result']
+    if not result['reference_screen_passed']:
+        raise ValueError('Submitted candidate must pass all configured reference checks')
+    declared = result.get('construction_goal_input', {})
+    constraints = editor.constraints
+    if (constraints.get('task_contract') or (constraints.get('require_structured_objective')
+            and not constraints.get('stationary_target'))) and 'objective' not in declared:
+        raise ValueError('Declare and pass a structured objective before submitting this run')
+    if constraints.get('behavior_contract') and declared.get('interaction_mode') == 'either':
+        raise ValueError('Declare near_miss/contact through active construction before submission')
+    goal = result.get('construction_goal')
+    if goal is not None and not goal['goal_met']:
+        raise ValueError('Active construction goal is not met; fallback cannot be submitted as goal completion')
+    for setting, probe, name in (
+        ('pdm_self_check', editor.pdm_probe, 'PDM'),
+        ('vadv2_self_test', editor.policy_probe, 'VADv2'),
+    ):
+        if constraints.get(setting):
+            if probe is None:
+                raise ValueError(name + ' self-check was enabled but its controller is unavailable')
+            probe.require_challenge(candidate_id)
+
+
+def submission_ready_candidates(editor, qualified, reviewed):
+    ready = []
+    for candidate_id in qualified:
+        if candidate_id not in reviewed:
+            continue
+        try:
+            check_submission(editor, candidate_id)
+        except ValueError:
+            continue
+        ready.append(candidate_id)
+    return ready
 
 
 def optimization_summary(goal):

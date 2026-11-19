@@ -15,8 +15,8 @@ def validate_objective(arguments, times, prefix, edit_start_s=None):
     if not isinstance(arguments['reason'], str) or not arguments['reason'].strip():
         raise ValueError('A nonempty reason is required')
     objective = arguments['objective']
-    if not isinstance(objective, dict) or set(objective) - {'interaction', 'interaction_window_s', 'keyframes'}:
-        raise ValueError('objective contains unsupported fields; use optional keyframes')
+    if not isinstance(objective, dict) or set(objective) - {'interaction', 'interaction_window_s', 'keyframes', 'waypoints'}:
+        raise ValueError('objective contains unsupported fields; use optional keyframes or waypoints')
     earliest_event=float(prefix) if edit_start_s is not None else float(np.nextafter(prefix,np.inf))
     objective.setdefault('interaction_window_s', [earliest_event, float(times[-1])])
     objective.setdefault('keyframes', [])
@@ -30,13 +30,18 @@ def validate_objective(arguments, times, prefix, edit_start_s=None):
         if isinstance(frame, dict) and isinstance(frame.get('time_window_s'), list)
         and len(frame['time_window_s']) == 2 and all(type(v) in (int,float) for v in frame['time_window_s']) else None
         for frame in frames]
-    windows = [objective.get('interaction_window_s'), arguments.get('edit_window_s')]
+    interaction_window = objective['interaction_window_s']
+    windows = [interaction_window, arguments.get('edit_window_s')]
     if isinstance(objective.get('keyframes'), list):
         windows += [frame.get('time_window_s') for frame in objective['keyframes'] if isinstance(frame, dict)]
     for window in windows:
         if isinstance(window, list) and len(window) == 2:
             for index in (0, 1):
-                if type(window[index]) in (int, float) and abs(window[index]-times[-1]) <= .001:
+                endpoint = window[index]
+                # A scoring boundary inside the scene must stay at its configured time.
+                if (type(endpoint) in (int, float)
+                        and abs(endpoint - times[-1]) <= .001
+                        and (window is not interaction_window or endpoint > times[-1])):
                     window[index] = float(times[-1])
     # Endpoint alignment must keep a previously valid full-window hold valid.
     # Never clip a genuinely overlong user request to make it pass.
@@ -84,6 +89,9 @@ def validate_objective(arguments, times, prefix, edit_start_s=None):
         raise ValueError('preserve_outside_window must be boolean')
     if arguments.get('preserve_outside_window') and 'edit_window_s' not in arguments:
         raise ValueError('preserve_outside_window requires edit_window_s')
+    if 'waypoints' in objective:
+        from trajectory_waypoints import validate_waypoints
+        validate_waypoints(objective['waypoints'], prefix if edit_start_s is None else edit_start_s, float(times[-1]))
 
 
 def bodies(xy, yaw, size):
@@ -173,6 +181,13 @@ def objective_evidence(times, xy, yaw, ego, ego_yaw, size, objective):
         interaction_ok = bool(not len(contacts) and gaps.min() >= policy.ATTACK_NEAR_MISS_MIN_GAP_M and gaps[mask].min() <= policy.ATTACK_EVENT_MAX_GAP_M)
         interaction_cost = float(max(0., policy.ATTACK_NEAR_MISS_MIN_GAP_M-gaps.min()) + max(0., gaps[mask].min()-policy.ATTACK_EVENT_MAX_GAP_M))
     failed = [f'keyframe_{i+1}' for i, report in enumerate(reports) if not report['passed']]
+    waypoint_evidence = {}
+    if objective.get('waypoints'):
+        from trajectory_waypoints import measure_waypoints
+        waypoints, errors = measure_waypoints(times, xy, yaw, state[3], objective['waypoints'])
+        waypoint_evidence = dict(waypoints=waypoints, waypoint_cost=float(errors @ errors))
+        failed.extend(f'waypoint_{i+1}' for i, report in enumerate(waypoints) if not report['passed'])
+        residual += waypoint_evidence['waypoint_cost']
     if not interaction_ok:
         failed.append('requested_interaction')
     index = int(np.argmin(gaps + np.where(mask, 0., 1e6)))
@@ -181,7 +196,7 @@ def objective_evidence(times, xy, yaw, ego, ego_yaw, size, objective):
         measured_time_s=float(times[index]), interaction_mode=objective.get('interaction'),
         first_contact_time_s=None if not len(contacts) else float(times[contacts[0]]),
         min_clearance_m=float(gaps.min()),
-        scope='Time-windowed body-center relative position, heading and speed; sampled reference geometry')
+        scope='Time-windowed body-center position, heading and speed; sampled reference geometry', **waypoint_evidence)
 
 
 def goal_cost(evidence):

@@ -31,6 +31,9 @@ def test_probe_overlay_then_trajectory_inspection_before_submit(monkeypatch,tmp_
     class Probe:
         def __init__(self,owner):self.owner=owner;self.tested=False
         def context(self):return dict(candidates={'seed_000':{}} if self.tested else {},remaining=0 if self.tested else 1)
+        def require_challenge(self,candidate):
+            if not self.tested or candidate != 'seed_000':
+                raise ValueError('No verified probe')
         def probe(self,candidate):
             self.tested=True
             return dict(status='completed',candidate_id=candidate,pdm_defense_succeeded=False,overlay_path='/pdm.png')
@@ -93,7 +96,9 @@ def test_late_qualified_candidate_gets_review_and_submission_without_more_search
         def complete(self,label,messages,**kwargs):
             seen.append(kwargs)
             if len(seen)==2:
-                assert 'construct_attack_candidates' not in {t['function']['name'] for t in kwargs['tools']}
+                assert {t['function']['name'] for t in kwargs['tools']} == {'submit_candidate','finish_search'}
+                submit = next(t['function'] for t in kwargs['tools'] if t['function']['name']=='submit_candidate')
+                assert submit['parameters']['properties']['candidate_id']['enum']==['candidate_001']
                 assert messages[0]['content'][1]['path']=='/candidate.png'
             return '',len(seen)
     def decode(index):
@@ -112,7 +117,9 @@ def test_late_qualified_candidate_gets_review_and_submission_without_more_search
     exec(compile(ast.Module(body=[node],type_ignores=[]),'edit_object','exec'),namespace)
     assert namespace['edit_object'](editor,dict(instruction='fixture'),Archive(),300,128,1,stage_timeout_s=10)=='candidate_001'
     assert len(seen)==2
-    assert json.loads((tmp_path/'output.json').read_text())['finalization_grace_used']
+    summary=json.loads((tmp_path/'output.json').read_text())
+    assert summary['finalization_grace_used']
+    assert summary['ready_to_submit_candidate_ids']==['candidate_001']
 
 
 def test_stationary_seed_fast_path_only_reviews_image_then_submits(tmp_path):

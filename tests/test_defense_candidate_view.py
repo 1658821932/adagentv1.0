@@ -85,3 +85,26 @@ def test_inspecting_another_candidate_expands_its_curves_without_changing_edit_p
     assert set(result['active_candidate_details'])=={'fallback','another'}
     assert result['active_candidate_details']['another']['motion_timeline']==evidence['motion_timeline']
     assert result['current_edit_parent_id']=='fallback'
+
+
+def test_after_selection_only_active_candidate_motion_is_sent():
+    evidence=temporal_evidence([0.,3.,4.],[[0.,0.],[1.,0.],[1.,0.]],[5.,6.,7.],3.)
+    rows=[dict(candidate_id=cid,status='reference_screen_passed',**evidence)
+          for cid in ('fallback','inspected','unused','edit_001')]
+    rows[2].update(status='reference_screen_failed',failed_checks=['road'],coverage={'rear':'unknown'})
+    context=dict(candidate_catalog=rows,selected_initial_candidate_id='fallback',
+        current_edit_parent_id='fallback',latest_generated_candidate_id='edit_001',
+        inspection_candidate_ids=['inspected'])
+    before=deepcopy(context)
+    result=compact_context(context,focus_selected=True)
+    table=result['candidate_catalog']
+    catalog=[dict(zip(table['columns'],row)) for row in table['rows']]
+    assert [row['candidate_id'] for row in catalog]==[row['candidate_id'] for row in rows]
+    assert catalog[2]['reference_screen_passed'] is False
+    assert catalog[2]['failed_checks']==['road'] and catalog[2]['unknown_checks']==['rear']
+    assert 'clearance_periods' not in table['columns']
+    active=result['active_candidate_details']
+    assert set(active)=={'fallback','inspected','edit_001'}
+    assert active['fallback']['motion_timeline']==evidence['motion_timeline']
+    assert active['inspected']['clearance_periods']==evidence['clearance_periods']
+    assert context==before

@@ -96,6 +96,25 @@ def test_history_adjustment_restarts_from_source_and_remains_explicit(source,tmp
     assert revised['shared_state']['initial_speed_mps']==first['shared_state']['initial_speed_mps']
 
 
+def test_explicit_ego_speed_can_reduce_takeover_speed(source, tmp_path):
+    prepared = prepare_acceleration(source, tmp_path/'slower', policy.for_new_run(), target_speed_mps=.65)
+    assert prepared['status'] == 'prepared'
+    assert prepared['shared_state']['takeover']['speed_mps'] < history_state(source)['takeover']['speed_mps']
+
+
+def test_other_vehicle_prompts_receive_only_the_final_ego_state():
+    from attack_context_view import editing_view, selection_view
+
+    state = dict(time_s=1.5, rear_axle_xy_m=[2.3, -.2], yaw_rad=-.15, speed_mps=2.23)
+    inputs = dict(constraints=dict(prepare_ego_history=True, ego_history_route={'end_xy_m': [2.35, -.18]},
+        _fixed_ego_history=dict(frozen=True, end_s=1.5, status='prepared', takeover=state,
+                                initial_speed_mps=.75, report_path='stage-a-private.json')))
+    for view in (editing_view(inputs), selection_view(inputs)):
+        assert 'ego_history_route' not in view['constraints']
+        assert 'prepare_ego_history' not in view['constraints']
+        assert view['fixed_ego_history'] == dict(frozen=True, end_s=1.5, status='prepared', takeover=state)
+
+
 def test_stage_a_completes_before_any_actor_selection_and_does_not_use_api(source,tmp_path,monkeypatch):
     import run_attack_workflow as workflow
     monkeypatch.setenv('ADVERSARIAL_EXPERIMENTS_ROOT',str(tmp_path))

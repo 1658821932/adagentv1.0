@@ -35,7 +35,7 @@ def finalist_order(ranked):
     return ordered
 
 
-def construct_pool(editor, arguments):
+def construct_pool(editor, arguments, connector_plan=None):
     from attack_editor import MAX_INTERNAL_PER_CALL, MAX_INTERNAL_PER_RUN
     if editor.constraints.get('behavior_contract'):
         raise ValueError('This archived run has a legacy behavior contract; use a new run for structured objectives')
@@ -58,6 +58,8 @@ def construct_pool(editor, arguments):
     folder = editor.run_dir / 'construction_pools' / pool_id
     folder.mkdir(parents=True, exist_ok=False)
     atomic_json(folder / 'input.json', arguments)
+    if connector_plan is not None:
+        atomic_json(folder / 'connector-route.json', connector_plan)
     atomic_json(path, budget)
     selected, verified = [], []
     completed = False
@@ -137,6 +139,12 @@ def construct_pool(editor, arguments):
             else 'call_budget_exhausted' if budget['evaluations']-before>=MAX_INTERNAL_PER_CALL else 'optimizer_converged',
             limits=dict(per_call=MAX_INTERNAL_PER_CALL, per_run=MAX_INTERNAL_PER_RUN),
             scope='Parent control sequence, continuous guidance and adaptive strict screening; only selected results become formal candidates')
+        if connector_plan is not None:
+            from connector_route import connector_passage
+            output['connector_route'] = {key: connector_plan[key] for key in ('connector_id', 'entry_lane', 'exit_lane')}
+            for candidate in selected:
+                node = editor.nodes[candidate['candidate_id']]
+                candidate['connector_passage'] = connector_passage(editor.scene, connector_plan, editor.times, node['xy'])
         atomic_json(folder/'strict-finalists.json', verified)
         atomic_json(folder/'output.json', output)
     return output

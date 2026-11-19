@@ -58,6 +58,39 @@ def test_multiple_speed_targets_keep_initial_pose_and_continuity():
     assert np.max(np.linalg.norm(np.diff(xy,axis=0),axis=1))<4.1
 
 
+def test_endpoint_route_freezes_fixed_start_and_reproduces_saved_controls(tmp_path):
+    from ego_history import prepare, verify
+
+    source = tmp_path/'source'
+    metadata = source/'metadata'
+    metadata.mkdir(parents=True)
+    original = frames()
+    (metadata/'frames.json').write_text(json.dumps(original))
+    road = {'features': {'lane': {'polygon': [[-10, -20], [100, -20], [100, 20], [-10, 20]]}}}
+    (metadata/'map_drivable_official.json').write_text(json.dumps(road))
+    route = dict(end_xy_m=[7.65, -.28], end_yaw_rad=-.08, end_speed_mps=5.3,
+                 via_xy_m=[3.8, -.07], via_time_s=.75)
+    prepared = prepare(source, tmp_path/'prepared', None, policy.for_new_run(), route=route)
+    assert verify(prepared)
+    manifest = json.loads((prepared/'ego-history.json').read_text())
+    assert manifest['mode'] == 'endpoint_route'
+    assert manifest['takeover_xy_m'] == pytest.approx(route['end_xy_m'], abs=.12)
+    assert manifest['takeover_yaw_rad'] == pytest.approx(route['end_yaw_rad'], abs=.08)
+    assert manifest['continuous_takeover_speed_mps'] == pytest.approx(route['end_speed_mps'], abs=.25)
+    edited = json.loads((prepared/'metadata/frames.json').read_text())
+    assert edited[0]['ego2global'] == original[0]['ego2global']
+    times, _, _ = ego_path_from_frames(original)
+    assert [row['ego2global'] for row, t in zip(edited, times) if t >= manifest['reference_rejoin_s']] == [
+        row['ego2global'] for row, t in zip(original, times) if t >= manifest['reference_rejoin_s']]
+
+
+def test_endpoint_route_declines_a_far_endpoint(tmp_path):
+    from ego_history_route import generate as generate_route
+
+    with pytest.raises(ValueError, match='reachable in 1.5s'):
+        generate_route(tmp_path, frames(), {'end_xy_m': [40., 0.]}, policy.for_new_run())
+
+
 def test_initial_heading_alignment_does_not_create_first_step_yaw_spike(monkeypatch):
     from ego_speed_schedule import Route
     original=Route.drive

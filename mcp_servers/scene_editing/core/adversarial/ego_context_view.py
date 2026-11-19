@@ -13,6 +13,8 @@ CURVE_FIELDS = ('schema_version', 'max_speed_mps', 'max_acceleration_mps2',
     'tangential_deceleration_mps2', 'target_speed_mps', 'transition_time_s',
     'transition_distance_m', 'hold_starts_at_s', 'reference_path_candidate_id',
     'route_edit_summary', 'speed_edit_summary', 'acceleration_peak', 'speed_law', 'peak_tangential_deceleration_mps2', 'terminal_velocity_xy_mps')
+INDEX_FIELDS = ('candidate_id', 'parent_candidate_id', 'source', 'status', 'submit_status',
+    'reference_screen_passed', 'failed_checks', 'unknown_checks', 'min_target_clearance_m')
 
 
 def candidate_summary(value):
@@ -46,7 +48,7 @@ def candidate_details(value):
     return result
 
 
-def compact_context(context):
+def compact_context(context, *, focus_selected=False):
     result = dict(context)
     catalog = context['candidate_catalog']
     lookup = {row['candidate_id']: row for row in catalog}
@@ -61,6 +63,7 @@ def compact_context(context):
         result['edit_history_archive'] = 'editor-state.json#history'
     latest = context.get('latest_generated_candidate_id') or (history[-1]['candidate_id'] if history else None)
     current = context.get('current_edit_parent_id') or (context.get('current') or {}).get('candidate_id')
+    focused = focus_selected and current is not None
     active = [context.get('selected_initial_candidate_id'), current, latest, context.get('pending_review_candidate_id')]
     active.extend(context.get('inspection_candidate_ids') or [])
     expanded={}
@@ -68,16 +71,24 @@ def compact_context(context):
         if key not in lookup:
             continue
         details=candidate_details(lookup[key])
-        repeated=set(candidate_summary(lookup[key]))-{'candidate_id','motion_timeline','curve_metrics','operation_summary'}
+        repeated = (set(INDEX_FIELDS) if focused else
+            set(candidate_summary(lookup[key])) - {'motion_timeline', 'curve_metrics', 'operation_summary'})
+        repeated.discard('candidate_id')
         expanded[key]={name:value for name,value in details.items() if name not in repeated}
         expanded[key]['summary_evidence']='candidate_catalog'
     result['active_candidate_details']=expanded
-    summaries = [candidate_summary(row) for row in catalog]
-    for row in summaries:
-        # Full time series are useful for the current comparison, not every retained seed.
-        row.pop('motion_timeline', None)
-        row.pop('curve_metrics', None)
-        row.pop('operation_summary', None)
+    if focused:
+        summaries = [{key: card[key] for key in INDEX_FIELDS if key in card}
+                     for card in map(candidate_card, catalog)]
+        for row, source in zip(summaries, catalog):
+            row.update({key: source[key] for key in ('source', 'status', 'submit_status') if key in source})
+    else:
+        summaries = [candidate_summary(row) for row in catalog]
+        for row in summaries:
+            # Full time series are useful for the current comparison, not every retained seed.
+            row.pop('motion_timeline', None)
+            row.pop('curve_metrics', None)
+            row.pop('operation_summary', None)
     columns = list(dict.fromkeys(key for row in summaries for key in row))
     result['candidate_catalog'] = dict(columns=columns, rows=[[row.get(key) for key in columns] for row in summaries])
     for name in ('current', 'best'):
@@ -117,4 +128,9 @@ def compact_context(context):
         'Current edit parent, latest generated candidate and numerical best are distinct; ranking never selects a final candidate.')
     if 'candidate_order_note' in context:
         result['context_policy']='Candidate rows retain generation order, all IDs, check failures, unknowns and decision metrics; no quality ranking. Timelines use frame_times_s and expand only for fallback/current/latest/review and attached inspection IDs. Inspect any other ID for details. Summary metrics occur once in candidate_catalog. At most three recent edit records are inline; older history remains in editor-state.json. Full numeric evidence is archived; catalog references in feedback avoid duplication.'
+    if focused:
+        result['context_policy'] = ('candidate_catalog lists candidates in generation order with eligibility, checks and minimum target gap. '
+            'active_candidate_details adds motion and progress evidence for the retained fallback, current parent, latest edit and candidates under review. '
+            'Use inspect_trajectory to expand another candidate and see its diagram. Use frame_times_s for motion timelines. '
+            'Full evidence remains in the candidate reports and editor-state.json.')
     return result

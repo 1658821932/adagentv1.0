@@ -859,4 +859,4 @@ class EgoEditor:
                     definition='reference_progress_percent = 100 * net advancement along the original route from edit_start_s / original route available from that time. New runs cover the whole scene from 0s, including the observation window. Same denominator for all candidates. Reverse/lateral travel earns no extra progress. No minimum percentage gate.')
         context['tool_semantics']={key:value for key,value in TOOL_SEMANTICS.items() if key != 'offset_bounds'}
         context['inspection_candidate_ids']=list(inspection_candidate_ids or [])
-        return compact_context(context)
+        return compact_context(context, focus_selected=getattr(self, 'focus_selected_context', False))

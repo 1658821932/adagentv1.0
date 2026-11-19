@@ -12,7 +12,7 @@ from ego_editor import apply_candidate_repair, apply_point_edits
 from ego_road_checks import load_official_drivable
 from experiment_runtime import atomic_json
 from run_ego_reference import EGO_FRONT, EGO_REAR, ego_path_from_frames, observed_objects_from_frames
-from attack_tool_contract import candidate_eligibility, goal_diagnostics, optimization_summary
+from attack_tool_contract import candidate_eligibility, check_submission, goal_diagnostics, optimization_summary
 from vehicle_trajectory import attack_time_grid, construct_trajectory, motion_heading, sample_xy, screen_attack
 from displacement_tool import interpolate_offsets
 from vehicle_motion import simulate_motion, check_bicycle
@@ -374,6 +374,16 @@ class AttackEditor:
     def construct_pool(self, arguments):
         if self.constraints.get('stationary_target'):
             raise ValueError('A stationary target has no motion controls; evaluate seed_000 or request a new placement')
+        connector_plan = None
+        if 'connector_route' in arguments:
+            objective = arguments.get('objective')
+            if not isinstance(objective, dict) or 'waypoints' in objective:
+                raise ValueError('connector_route requires objective and supplies its waypoints; remove explicit waypoints')
+            from connector_route import plan_connector_route
+            arguments = dict(arguments, objective=dict(objective))
+            connector_plan = plan_connector_route(self.scene, self.frames, arguments.pop('connector_route'),
+                                                  self.edit_start_s, float(self.times[-1]))
+            arguments['objective']['waypoints'] = connector_plan['waypoints']
         if self.constraints.get('task_contract') and 'objective' not in arguments:
             raise ValueError('Task-contract runs require structured planning preferences')
         prefix = self.edit_start_s
@@ -389,6 +399,8 @@ class AttackEditor:
             validate_goal(arguments, self.times, prefix)
         if 'objective' in arguments:
             from optimized_attack_pool import construct_pool
+            if connector_plan is not None:
+                return construct_pool(self, arguments, connector_plan=connector_plan)
             return construct_pool(self, arguments)
         contract=self.constraints.get('behavior_contract')
         if contract is not None:
@@ -673,24 +685,7 @@ class AttackEditor:
             raise ValueError('A candidate has already been submitted')
         if candidate_id not in self.inspected:
             raise ValueError('Inspect and receive the trajectory image before submission')
-        if not self.nodes[candidate_id]['result']['reference_screen_passed']:
-            raise ValueError('Submitted candidate must pass all configured reference checks')
-        goal = self.nodes[candidate_id]['result'].get('construction_goal')
-        declared=self.nodes[candidate_id]['result'].get('construction_goal_input',{})
-        if (self.constraints.get('task_contract') or (self.constraints.get('require_structured_objective') and not self.constraints.get('stationary_target'))) and 'objective' not in declared:
-            raise ValueError('Declare and pass a structured objective before submitting this run')
-        if self.constraints.get('behavior_contract') and declared.get('interaction_mode')=='either':
-            raise ValueError('Declare near_miss/contact through active construction before submission')
-        if goal is not None and not goal['goal_met']:
-            raise ValueError('Active construction goal is not met; fallback cannot be submitted as goal completion')
-        if self.constraints.get('pdm_self_check'):
-            if self.pdm_probe is None:
-                raise ValueError('PDM self-check was enabled but its controller is unavailable')
-            self.pdm_probe.require_challenge(candidate_id)
-        if self.constraints.get('vadv2_self_test'):
-            if self.policy_probe is None:
-                raise ValueError('VADv2 self-test enabled but its controller is unavailable')
-            self.policy_probe.require_challenge(candidate_id)
+        check_submission(self, candidate_id)
         self.submitted = candidate_id
         atomic_json(self.run_dir / 'accepted-submission.json', dict(candidate_id=candidate_id,
             reason=reason, physical_collision='undetermined', metrics=self.public(candidate_id)))
@@ -731,6 +726,7 @@ class AttackEditor:
             constructor_budget=dict(**budget, remaining_evaluations=MAX_INTERNAL_PER_RUN-budget['evaluations'],
                                     per_call_limit=MAX_INTERNAL_PER_CALL, per_run_limit=MAX_INTERNAL_PER_RUN),
             coordinate_frame='scene-local metres, x=initial ego forward, y=left; target positions are body centers',
+            connector_route_preview=self.selection.get('connector_route_preview'),
             timeline=[dict(time_s=float(time), ego_xy_m=ego.tolist(), seed_xy_m=seed.tolist())
                       for time, ego, seed in zip(self.times, self.ego, self.seed_xy)],
             candidates=catalog,

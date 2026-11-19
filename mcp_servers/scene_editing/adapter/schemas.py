@@ -26,7 +26,7 @@ class AttackPlanOption(InputModel):
     option_id: NonEmptyStr
     operation: Literal['edit_existing','add_vehicle']
     target_track: NonEmptyStr | None = None
-    maneuver: Literal['stationary','left_cut_in'] | None = None
+    maneuver: Literal['stationary','left_cut_in'] | None = Field(default=None, description='Optional legacy hint for an added vehicle. Describe other motion in instruction.')
     instruction: Annotated[str, Field(min_length=1,max_length=1600)] = Field(description='Brief mechanism and qualitative relative placement/motion. Leave coordinates, speed, exact timing and control search to tool05; numeric evidence is advisory unless explicitly required by the user.')
     rationale: Annotated[str, Field(min_length=1,max_length=500)]
     uncertainty: Annotated[str, Field(min_length=1,max_length=500)]
@@ -35,8 +35,23 @@ class AttackPlanOption(InputModel):
     def applicable_fields(self):
         if self.operation=='edit_existing' and self.maneuver is not None:
             raise ValueError('Existing-vehicle option does not use an added-vehicle maneuver')
-        if self.operation=='add_vehicle' and (self.target_track is not None or self.maneuver is None):
-            raise ValueError('Added-vehicle option needs maneuver and no existing target ID')
+        if self.operation=='add_vehicle' and self.target_track is not None:
+            raise ValueError('Added-vehicle option cannot specify an existing target ID')
+        return self
+
+
+class EgoHistoryRoute(InputModel):
+    end_xy_m: Annotated[list[float], Field(min_length=2, max_length=2)] = Field(description='Ego rear-axle [x,y] at 1.5s in scene-local metres. The recorded initial state is fixed.')
+    end_yaw_rad: float | None = Field(default=None, description='Optional end heading in scene-local radians.')
+    end_speed_mps: Annotated[float, Field(ge=0)] | None = Field(default=None, description='Optional continuous rear-axle speed at 1.5s.')
+    via_xy_m: Annotated[list[float], Field(min_length=2, max_length=2)] | None = Field(default=None, description='Optional intermediate rear-axle point.')
+    via_time_s: Annotated[float, Field(gt=0, lt=1.5)] | None = Field(default=None, description='Optional time for the intermediate point. Omit to allow any time inside the prefix.')
+    connector_id: NonEmptyStr | None = Field(default=None, description='Optional scene-map connector used as route guidance.')
+
+    @model_validator(mode='after')
+    def timed_via_point(self):
+        if self.via_time_s is not None and self.via_xy_m is None:
+            raise ValueError('via_time_s requires via_xy_m')
         return self
 
 
@@ -50,6 +65,7 @@ class AttackInput(InputModel):
     vehicle: VehicleAsset | None = None
     prepare_ego_history: bool = Field(default=True,description='Stage A automatically prepares and freezes feasible forward acceleration during 0–1.5s before the attack Agent selects/edits a vehicle. No additional Agent/API call. Explicit false preserves the source history.')
     ego_history_target_speed_mps: Annotated[float, Field(ge=0)] | None = Field(default=None,description='Optional stage-A target speed at 1.5s. Omit for a bounded programmatic acceleration preference. Explicit targets are checked, never silently weakened.')
+    ego_history_route: EgoHistoryRoute | None = Field(default=None, description='Optional short pose edit for stage A. Provide a reachable endpoint at 1.5s, with optional heading, speed, one intermediate point and connector guidance.')
     constraints: AttackConstraints = Field(default_factory=AttackConstraints)
     timeout: PositiveInt = Field(default=3600, description='Whole tool execution timeout, including selection/export. This is not the trajectory-stage budget.')
     stage_timeout_s: PositiveInt = Field(default=420, description='Trajectory editing budget excluding time waiting for native VADv2 probes. Whole-tool timeout and shared probe/API/constructor budgets still apply; retry does not reset them.')
@@ -75,6 +91,8 @@ class AttackInput(InputModel):
     def operation_arguments(self):
         if not self.prepare_ego_history and self.ego_history_target_speed_mps is not None:
             raise ValueError('ego_history_target_speed_mps requires prepare_ego_history=true')
+        if self.ego_history_route is not None and (not self.prepare_ego_history or self.ego_history_target_speed_mps is not None):
+            raise ValueError('ego_history_route requires prepare_ego_history=true and uses its own optional end_speed_mps')
         ids=[option.option_id for option in self.plan_options]
         if len(ids)!=len(set(ids)):raise ValueError('plan_options option_id must be unique')
         if self.operation=='auto':

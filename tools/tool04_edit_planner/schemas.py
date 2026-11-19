@@ -1,10 +1,10 @@
 """Tool03 retrieval -> coarse plan -> validated tool05 arguments."""
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from pydantic import Field, PrivateAttr, RootModel, model_validator
 from common.scene_refs import SceneReference
 from common.models import OutputModel
 from common.artifacts import load_tool_result
-from mcp_servers.scene_editing.adapter.schemas import AttackInput, VehicleAsset, AttackPlanOption
+from mcp_servers.scene_editing.adapter.schemas import AttackInput, VehicleAsset, AttackPlanOption, EgoHistoryRoute
 from tools.llm_runtime import ToolModel, NonEmptyStr
 
 class RetrievalContext(OutputModel):
@@ -43,6 +43,7 @@ class Input(ToolModel):
     scene_requirement: NonEmptyStr = Field(description="Target scene from tool02.")
     target_effect: NonEmptyStr = Field(description="Unchanged global correct ego behavior from tool02.")
     edit_strategy: NonEmptyStr | None = Field(default=None, description="Selected tool02 candidate editing idea; null means no other-vehicle editing needed.")
+    ego_input_edit_strategy: NonEmptyStr | None = Field(default=None, description='Optional intended change to ego history through 1.5s. Used only to plan stage 05A.')
     vehicle: VehicleAsset | None = Field(default=None,description="Optional real added-vehicle PLY and length/width/height. Required for executable add_vehicle arguments; do not infer from images.")
 
     _retrieval_result_ref: str | None = PrivateAttr(default=None)
@@ -84,11 +85,31 @@ class EditPlan(ToolModel):
             raise ValueError('New-vehicle plan requires a supported maneuver and no invented track ID')
         return self
 
+class EgoHistoryPlan(ToolModel):
+    mode: Literal['keep', 'speed', 'route']
+    target_speed_mps: Annotated[float, Field(ge=0)] | None = None
+    route: EgoHistoryRoute | None = None
+
+    @model_validator(mode='after')
+    def for_mode(self):
+        if (self.target_speed_mps is not None) != (self.mode == 'speed') or (self.route is not None) != (self.mode == 'route'):
+            raise ValueError('keep takes no parameters, speed takes target_speed_mps, and route takes route')
+        return self
+
+    def attack_arguments(self):
+        if self.mode == 'keep':
+            return {'prepare_ego_history': False}
+        if self.mode == 'speed':
+            return {'prepare_ego_history': True, 'ego_history_target_speed_mps': self.target_speed_mps}
+        return {'prepare_ego_history': True, 'ego_history_route': self.route.model_dump(mode='json', exclude_none=True)}
+
+
 class Response(ToolModel):
     suitability: Literal['ready','unsuitable','needs_information']
     reasons: list[NonEmptyStr] = Field(min_length=1)
     edit_plan: EditPlan | None = None
     edit_options: list[AttackPlanOption] = Field(default_factory=list,max_length=3,description="1..3 unranked coarse alternatives when editing is needed. Consider existing and added vehicles together; do not force a count. Legacy edit_plan is accepted only when edit_options is empty.")
+    ego_history_plan: EgoHistoryPlan | None = Field(default=None, description='One shared 05A decision before all other-vehicle options. Choose keep, an ego speed target, or a reachable ego route endpoint at 1.5s.')
     retrieval_suggestion: NonEmptyStr | None = None
 
     @model_validator(mode='after')
@@ -111,6 +132,10 @@ class Output(Response):
 
     @model_validator(mode='after')
     def handoff(self):
+        if self.ego_history_plan is not None and self.attack_input is not None:
+            for key, value in self.ego_history_plan.attack_arguments().items():
+                if self.attack_input.get(key) != value:
+                    raise ValueError('Stage 05A arguments differ from the reviewed ego_history_plan')
         if self.suitability=='ready':
             if self.edit_options:
                 if self.attack_input is None:raise ValueError('Ready options require attack_input')

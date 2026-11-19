@@ -40,6 +40,32 @@ def test_real_overlong_hold_is_rejected_and_float_subtraction_noise_is_not():
         prevalidate_action('construct_attack_candidates',arguments(.3))
 
 
+@pytest.mark.parametrize('scene_end,expected_end', [(7.500465, 7.5), (7.499535, 7.499535)])
+def test_attack_constructor_keeps_scoring_window_inside_both_bounds(monkeypatch, scene_end, expected_end):
+    import optimized_attack_pool
+
+    captured = []
+
+    def reached_search(editor, arguments):
+        captured.append(arguments['objective']['interaction_window_s'])
+        raise RuntimeError('reached constructor search')
+
+    monkeypatch.setattr(optimized_attack_pool, 'ControlSearch', reached_search)
+    times = np.array([0., 1.5, 2., 2.5, scene_end])
+    args = dict(parent_candidate_id='seed_000', max_candidates=2, reason='fixture',
+        objective=dict(interaction_window_s=[1.5, 7.5], keyframes=[
+            dict(time_window_s=[1.6, 2.4], hold_duration_s=.3, speed_mps=[0., 1.])]))
+    editor = SimpleNamespace(constraints={'event_window_s': [1.5, 7.5]})
+    validate_objective(args, times, 1.5, edit_start_s=0.)
+    with pytest.raises(RuntimeError, match='reached constructor search'):
+        optimized_attack_pool.construct_pool(editor, args)
+    assert captured == [[1.5, expected_end]]
+
+    args['objective']['interaction_window_s'] = [1.5, 7.501]
+    with pytest.raises(ValueError, match='inside configured event window'):
+        optimized_attack_pool.construct_pool(editor, args)
+
+
 def test_freeze_accepts_the_same_rounded_event_boundary_as_geometry():
     from attack_timing import contact_after_observation
     assert contact_after_observation([0.,1.499938,7.5],[1],1.5,time_tolerance_s=.001)
@@ -201,3 +227,47 @@ def test_new_attack_constructor_accepts_keyframes_without_interaction_field():
     assert 'interaction' not in args['objective']
     prevalidate_action('edit_route',{'parent_candidate_id':'seed_000'},
         SimpleNamespace(constraints={'agent_decides_interaction':True}))
+
+
+def test_constructor_checks_timed_absolute_waypoints_even_with_advisory_keyframes():
+    from attack_constructor import acceptance_goal_evidence
+
+    times = np.arange(0., 4.01, .25)
+    xy = np.column_stack((np.zeros(len(times)), times * 2.))
+    yaw = np.full(len(times), np.pi / 2)
+    ego = np.column_stack((np.full(len(times), 30.), times))
+    args = dict(parent_candidate_id='seed_000', max_candidates=1, reason='crossing fixture',
+        objective=dict(waypoints=[
+            dict(position_m=[0., 0.], time_s=0., speed_mps=2., yaw_rad=np.pi/2),
+            dict(position_m=[0., 3.], time_window_s=[1.4, 1.6], speed_mps=2.),
+            dict(position_m=[0., 7.24], time_s=3.62, speed_mps=2., position_tolerance_m=.01),
+        ]))
+    validate_objective(args, times, 1.5, edit_start_s=0.)
+
+    def check():
+        return acceptance_goal_evidence(times, xy, ego, yaw, args, None,
+            target_yaw=yaw, target_size=[4., 2., 1.5],
+            constraints=dict(agent_decides_interaction=True, event_window_s=[1.5, 4.]))
+
+    evidence = check()
+    assert evidence['goal_met']
+    reports = evidence['requested_waypoints']
+    assert reports[2]['evaluated_time_s'] == 3.62
+    assert reports[2]['actual']['position_m'] == pytest.approx([0., 7.24])
+    args['objective']['waypoints'][1]['speed_mps'] = 4.
+    rejected = check()
+    assert not rejected['goal_met'] and rejected['failed_checks'] == ['requested_waypoint_2']
+    assert rejected['requested_waypoints'][1]['errors']['speed_error_mps'] == pytest.approx(2.)
+
+
+@pytest.mark.parametrize('bad_point', [
+    dict(position_m=[2., 3.], time_s=1., time_window_s=[1., 2.]),
+    dict(position_m=[2., 3.], time_window_s=[0., 2.]),
+    dict(position_m=[2., 3.], time_s=2., speed_mps=-1.),
+    dict(position_m=[2., 3.], time_s=2., speed_tolerance_mps=.1),
+])
+def test_absolute_waypoint_input_rejects_conflicting_fields(bad_point):
+    args = dict(parent_candidate_id='seed_000', max_candidates=1, reason='fixture',
+        objective=dict(waypoints=[dict(position_m=[0., 0.], time_s=0.), bad_point]))
+    with pytest.raises(ValueError, match='waypoint 2'):
+        validate_objective(args, np.arange(0., 4.01, .25), 1.5, edit_start_s=0.)

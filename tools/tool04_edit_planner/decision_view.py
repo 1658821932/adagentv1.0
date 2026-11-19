@@ -42,7 +42,8 @@ def model_view(summary, evidence_path):
         'missing_resources','added_vehicle_asset_available','review_scope') if key in evidence}
     view['evidence']['full_scene_evidence_path']=str(evidence_path)
     spatial=evidence.get('spatial_overview',{})
-    view['evidence']['spatial_overview']={key:value for key,value in spatial.items() if key not in ('vehicle_catalog','trajectory')}
+    view['evidence']['spatial_overview']={key:value for key,value in spatial.items()
+        if key not in ('vehicle_catalog','trajectory','ego_history_geometry')}
     if spatial.get('status')=='available':
         # Layout and ego route are supplied visually; individual time histories
         # can be queried instead of sending every box at multiple times.
@@ -50,6 +51,8 @@ def model_view(summary, evidence_path):
         view['actors']=[dict(actor,**{key:value for key,value in catalog.get(actor['track_id'],{}).items() if key!='track_id'}) for actor in view['actors']]
         view.pop('snapshots',None)
         view['ego_reference']=spatial.get('ego_summary')
+        if spatial.get('ego_history_geometry'):
+            view['ego_history_geometry']=rounded(spatial['ego_history_geometry'])
     view['presentation']=dict(numeric_precision='Rounded to 2 decimal places for planning only; original precision is preserved in full evidence and tool05 inputs.',
         vehicle_catalog='All observed vehicle IDs retained; ordering is not a quality ranking.',
         nonvehicle_snapshots=f'Nearest {MAX_NEARBY_NONVEHICLES} nonvehicles per snapshot plus category counts; omission is not absence or proof of safety.')

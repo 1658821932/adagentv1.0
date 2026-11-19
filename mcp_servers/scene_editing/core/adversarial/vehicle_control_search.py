@@ -6,6 +6,7 @@ from scipy.optimize import least_squares
 
 from attack_objective import (best_hold, frame_errors, relative_state)
 from attack_task_contract import corridor_errors
+from trajectory_waypoints import measure_waypoints, time_bounds
 from run_ego_reference import EGO_FRONT, EGO_REAR, EGO_WIDTH
 from vehicle_initial_state import initial_state, initial_lateral_velocity
 from vehicle_trajectory import actor_observation_series, actor_pose_at_time, sample_xy
@@ -250,7 +251,12 @@ class ControlSearch:
         self.ego_yaw = np.interp(self.times, editor.times, editor.ego_yaw)
         self.ego_center = self.ego+(EGO_FRONT-EGO_REAR)/2*np.column_stack([np.cos(self.ego_yaw), np.sin(self.ego_yaw)])
         self.boundary = getattr(editor,'edit_start_s',policy.edit_start(editor.constraints.get('acceptance_policy') or editor.constraints))
-        self.pose_specs = self._eligible_pose_specs(search_specs(arguments, editor, self.parent))
+        self.waypoints = arguments['objective'].get('waypoints', [])
+        if self.waypoints and 'initial_pose_search' not in arguments:
+            specs = self._waypoint_pose_specs()
+        else:
+            specs = search_specs(arguments, editor, self.parent)
+        self.pose_specs = self._eligible_pose_specs(specs)
         self.base = self.parent['result'].get('control_sequence') or infer_controls(self.times,
             self.parent['dense_xy'], self.parent['dense_yaw'], editor.target['size_m'], self.boundary)
         self.control_times = np.asarray(self.base['times_s'])
@@ -268,6 +274,21 @@ class ControlSearch:
         self.initial = np.r_[np.asarray(self.base['acceleration_mps2'])[self.editable], np.asarray(self.base['steering_rad'])[self.editable]*10]
         self.lower = np.r_[np.full(self.n, -4.5), np.full(self.n, -5.5)]
         self.upper = np.r_[np.full(self.n, 2.5), np.full(self.n, 5.5)]
+
+    def _waypoint_pose_specs(self):
+        first = self.waypoints[0]
+        if (self.editor.target.get('operation') != 'add_vehicle'
+                or time_bounds(first) != (self.boundary, self.boundary)
+                or self.boundary != self.editor.times[0]
+                or self.arguments.get('preserve_outside_window')):
+            return [None]
+        offset = np.asarray(first['position_m']) - self.active_seed_xy[0]
+        spec = dict(position_offset_m=dict(forward_m=float(offset[0]), left_m=float(offset[1])))
+        if 'speed_mps' in first:
+            spec['initial_speed_mps'] = first['speed_mps']
+        if 'yaw_rad' in first:
+            spec.update(yaw_mode='explicit', yaw_rad=first['yaw_rad'])
+        return [None, spec]
 
     def _eligible_pose_specs(self, specs):
         from initial_pose_edit import adjusted_seed
@@ -306,15 +327,17 @@ class ControlSearch:
         return integrate_controls(self.editor.times, self.active_seed_xy, self.active_seed_yaw,
             self.times, self.editor.target['size_m'], controls, self.boundary, acceptance=self.editor.constraints.get('acceptance_policy'))
 
-    def route_start(self,values, first_edit_time=None):
+    def route_start(self,values, first_edit_time=None, *, rear_route=None):
         """Follow the recorded route by geometric lookahead, not wall time.
 
         This cheap seed estimate obeys the same acceleration ramp. It is not a
         substitute for integrate_controls or full motion/road acceptance.
         """
         wheelbase=.6*float(self.editor.target['size_m'][0])
-        route=self.editor.seed_xy-wheelbase/2*np.column_stack([
-            np.cos(self.editor.seed_yaw),np.sin(self.editor.seed_yaw)])
+        route = rear_route
+        if route is None:
+            route=self.editor.seed_xy-wheelbase/2*np.column_stack([
+                np.cos(self.editor.seed_yaw),np.sin(self.editor.seed_yaw)])
         distance=np.r_[0.,np.cumsum(np.linalg.norm(np.diff(route,axis=0),axis=1))]
         if distance[-1]<.5 or np.any(np.diff(distance)<1e-6):return values.copy()
         initial=initial_state(self.editor.times,self.active_seed_xy,self.active_seed_yaw,
@@ -365,6 +388,28 @@ class ControlSearch:
         result[self.n:]=10*angles[self.editable]
         return result.clip(self.lower,self.upper)
 
+    def waypoint_start(self):
+        """Seed the existing steering search from the requested points and their times."""
+        points = np.asarray([row['position_m'] for row in self.waypoints])
+        times = np.array([sum(time_bounds(row))/2 for row in self.waypoints])
+        segments = np.diff(points, axis=0)
+        speeds = np.linalg.norm(segments, axis=1) / np.diff(times)
+        speeds = np.r_[speeds, speeds[-1]]
+        for i, row in enumerate(self.waypoints):
+            speeds[i] = row.get('speed_mps', speeds[i])
+        rates = np.diff(speeds) / np.diff(times)
+        guess = self.initial.copy()
+        query = self.control_times[self.editable]
+        guess[:self.n] = np.interp(query, (times[:-1]+times[1:])/2, rates, left=rates[0], right=0.)
+        # The lookahead seed follows rear-axle positions. Translate the body-center
+        # points using the requested heading, or the tangent of the proposed path.
+        directions = np.vstack((segments, segments[-1]))
+        yaw = np.arctan2(directions[:, 1], directions[:, 0])
+        for i, row in enumerate(self.waypoints):
+            yaw[i] = row.get('yaw_rad', yaw[i])
+        rear = points - .3*self.editor.target['size_m'][0]*np.column_stack([np.cos(yaw), np.sin(yaw)])
+        return self.route_start(guess.clip(self.lower, self.upper), rear_route=rear)
+
     def residual(self, arrays, state):
         self.last_metrics={}
         xy, yaw = arrays[2:]
@@ -384,7 +429,11 @@ class ControlSearch:
                 _, start, end = best_hold(self.times, frame['time_window_s'], frame['hold_duration_s'], errors)
                 # Fixed residual length across changing best hold locations.
                 residuals.extend(weight*np.sqrt(np.mean(errors[start:end+1]**2, axis=0)+1e-12))
+            if current.get('waypoints'):
+                _, errors = measure_waypoints(self.times, xy, yaw, relative[3], current['waypoints'])
+                residuals.extend(max(6., weight)*errors)
         objective = contract['objective'] if contract else self.arguments['objective']
+        waypoint_route = bool(self.arguments['objective'].get('waypoints'))
         gap = signed_box_gap(xy, yaw, self.editor.target['size_m'], self.ego_center, self.ego_yaw, [EGO_FRONT+EGO_REAR, EGO_WIDTH])
         window=self.editor.constraints.get('event_window_s',objective['interaction_window_s'])
         event_indices=np.flatnonzero((self.times>=window[0]-.001)&(self.times<=window[1]+.001))
@@ -395,7 +444,7 @@ class ControlSearch:
             # Reference contact guides search only; acceptance remains measurement- and VAD-based.
             window=self.editor.constraints.get('event_window_s',objective['interaction_window_s'])
             guidance,metrics=event_window_guidance(self.times,gap,window,
-                required=self.editor.constraints.get('require_reference_contact',False))
+                required=self.editor.constraints.get('require_reference_contact',False) and not waypoint_route)
             residuals.extend(guidance)
             self.last_metrics=metrics
             forbidden=self.times < getattr(self.editor,'danger_start_s',0.)-.001
@@ -467,7 +516,8 @@ class ControlSearch:
         self.last_metrics['geometry_motion_guidance_feasible']=bool(
             not self.last_metrics['road_guidance_violation'] and not overlap_count and
             not metrics['motion_guidance_violation_count'] and
-            (not self.editor.constraints.get('require_reference_contact') or self.last_metrics.get('window_reference_contact')))
+            (waypoint_route or not self.editor.constraints.get('require_reference_contact')
+             or self.last_metrics.get('window_reference_contact')))
         if self.arguments.get('preserve_outside_window'):
             lower, upper = self.arguments['edit_window_s']
             outside = (self.times < lower) | (self.times > upper)
@@ -522,7 +572,9 @@ class ControlSearch:
             records.append((float(residual @ residual), values.copy(), record))
             return residual
 
+        # A timed route needs a full-horizon fit across all of its waypoints.
         staged = (self.editor.constraints.get('require_reference_contact', False)
+                  and not self.arguments['objective'].get('waypoints')
                   and not self.arguments.get('preserve_outside_window')
                   and not self.editor.constraints.get('stationary_target'))
         self.search_phase = 'approach' if staged else None
@@ -542,7 +594,10 @@ class ControlSearch:
             def branch_fun(values):
                 if len(records)>=branch_limit:raise BudgetReached
                 return fun(values)
-            for start in starts:
+            branch_starts = starts
+            if getattr(self, 'waypoints', None):
+                branch_starts = [starts[0], self.waypoint_start(), *starts[1:]]
+            for start in branch_starts:
                 if len(records)>=branch_limit:break
                 branch_fun(start)
             # Keep the current pose fixed. Derive release proposals from freshly

@@ -36,6 +36,8 @@ from action_validation import prevalidate_action, invalid_action_result
 from agent_tool_view import compact_action_feedback
 from attack_budget import BudgetedArchive, AttackBudgetExhausted, constructor_budget_path
 from attack_plan_options import shared_auto_session
+from trajectory_waypoints import SCHEMA as WAYPOINTS
+from connector_route import SCHEMA as CONNECTOR_ROUTE
 
 
 def function_tool(name, description, properties, required=None):
@@ -55,6 +57,12 @@ OBJECT_TOOLS = [
                   {'asset_id':{'type':'string'}, 'x_m':NUMBER, 'y_m':NUMBER,
                    'yaw_rad':NUMBER, 'speed_mps':NUMBER, 'reason':REASON}),
 ]
+CONNECTOR_PREVIEW_TOOL = function_tool('preview_connector_route',
+    'Get initial pose, entry/exit lanes and nominal arrival times for a mapped connector at the requested distances and speed. '
+    'This only reads the map and does not check placement or create a candidate.',
+    {'connector_route': CONNECTOR_ROUTE, 'reason': REASON})
+
+
 def placement_preview_tool():
     common={'option_id':{'type':'string'},'operation':{'type':'string'}}
     existing=dict(type='object',properties=dict(common,operation={'const':'edit_existing'},track_id={'type':'string'}),
@@ -94,6 +102,11 @@ KEYFRAME = dict(type='object', properties={
 TRAJECTORY_TOOLS.insert(0, function_tool('construct_attack_candidates',
     'Optimize a parent acceleration/steering control sequence with continuous official-road and observed-obstacle guidance. '
     'Declare body-center position intervals in the recorded ego BODY-center frame, heading and/or speed keyframes. '
+    'For scene-local path goals use objective.waypoints: start, optional intermediate points, and destination. '
+    'Alternatively set connector_route to generate those waypoints from a mapped entry lane, connector and exit lane. '
+    'Supply only one of connector_route and objective.waypoints. Keyframes may still express relative motion preferences. '
+    'Each has position_m=[x,y], one of time_s/time_window_s, and optional speed_mps and yaw_rad. '
+    'Set explicit tolerances when needed (defaults: 0.5 m, 0.5 m/s, 0.25 rad). A missed waypoint is reported and cannot qualify the candidate. '
     'Supports stationary/slow lead, merging, crossing or opposite-heading objectives without maneuver templates. '
     'New first calls use seed_000. Further calls truly start from parent controls. '
     'Optional edit_window_s limits changed control knots; preserve_outside_window additionally requires reconnection '
@@ -105,9 +118,10 @@ TRAJECTORY_TOOLS.insert(0, function_tool('construct_attack_candidates',
     'Returns fully checked candidates separately from optimization guidance. Motion may be edited from edit_start_s (0s in new runs). No implicit 3-second event delay applies; respect explicit task windows and physical/map checks.',
     {'parent_candidate_id':{'type':'string'},
      'objective':dict(type='object', properties={
-         'keyframes':dict(type='array', items=KEYFRAME, minItems=0, maxItems=6)},
+         'keyframes':dict(type='array', items=KEYFRAME, minItems=0, maxItems=6),
+         'waypoints':WAYPOINTS},
          required=[],additionalProperties=False),
-     'edit_window_s':INTERVAL, 'preserve_outside_window':{'type':'boolean'},
+     'connector_route':CONNECTOR_ROUTE, 'edit_window_s':INTERVAL, 'preserve_outside_window':{'type':'boolean'},
      'initial_pose_search':POSE_SEARCH,
      'max_candidates':dict(type='integer',minimum=1,maximum=3), 'reason':REASON},
     required=['parent_candidate_id','objective','max_candidates','reason']))
@@ -146,6 +160,9 @@ initial-pose adjustment requires a selected object. Rejected initial placements 
 operation and measured check. Choose an available actor or a different proposed placement after a rejection. A newly
 placed stationary car should use add_vehicle with speed_mps=0 and a supported initial pose.
 Coordinates are metres in the initial ego frame: x forward, y left, yaw counterclockwise radians.
+When the plan names an other-actor connector, preview_connector_route can provide the entry lane,
+initial pose and approximate arrival times. Read nominal_connector_entry_s and nominal_connector_exit_s
+against the measured ego reference and event window before committing the initial placement.
 Consider the full ego timeline and stopped traffic before selecting the initial state. A safe initial
 pose alone does not guarantee room to merge later. Use vehicle_planning_hints to compare
 stopping/turning space with observed front traffic; choose a lower speed or smaller side offset
@@ -161,7 +178,11 @@ render or tested policy rollout. Recorded ego is a reference. Original cameras a
 GOALS: explicit caller task_contract and configured event window are hard. New runs require sampled reference target-body contact inside the event window for constructor/VAD eligibility; near-miss alone is insufficient. New attack events default to 1.5–7.5s;
 editing/braking/steering may start at 0s. Agent-generated keyframes are optimization preferences unless an
 explicit contract makes them required. Read reference_contact_evidence and actual measurements; reference contact is only setup evidence, not proof that VAD will collide. Do not change caller requirements.
-TOOLS: first use construct_attack_candidates with achievable optional motion keyframes. No near-miss/either class is used.
+TOOLS: first use construct_attack_candidates with optional absolute waypoints or relative motion keyframes.
+For a route through a named connector, set connector_route (connector_id, approach_m, exit_m, speed_mps)
+instead of explicit waypoints. Use the same route parameters as the placement preview when applicable.
+For an observed vehicle choose an approach distance consistent with its current position on the entry lane.
+Connector passage measures vehicle centers in native frames. Motion, road and other checks still apply.
 Only structured fields guide construction; reason is a brief explanation. Every hold_duration_s must fit its
 own time_window_s. Use edit_speed_profile for signed speed targets; use edit_route for smooth lateral offsets
 and return. Select an objective-bearing parent exposed by the tool enum. Preview checks do not create a candidate.
@@ -348,6 +369,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                   timeout_seconds, max_tokens, required_operation=None, required_track=None):
     from attack_plan_options import selection_tools, choice
     from attack_scene_evidence import initial_road_failure
+    from connector_route import nearby_connectors, plan_connector_route
     options=constraints.get('plan_options',[])
     frames = json.loads((scene / 'metadata/frames.json').read_text())
     times, ego, yaw = ego_path_from_frames(frames)
@@ -376,10 +398,12 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                         yaw_rad=sequence[index]['yaw'])
                    for index in sorted(set([0, len(times) // 2, len(times) - 1]))]))
     ego_speeds = np.linalg.norm(np.diff(ego, axis=0), axis=1) / np.diff(times)
+    map_connectors = nearby_connectors(scene, frames, ego)
     context = dict(instruction=instruction, scene=str(scene), assets=assets,
         existing_vehicles=catalog, required_operation=required_operation, required_track=required_track,
         plan_options=options,previous_object_feedback=constraints.get('object_selection_feedback',[]),
         constraints=constraints,
+        nearby_connectors=map_connectors,
         ego_reference_point='rear axle',ego_body_center_shift_m=(EGO_FRONT-EGO_REAR)/2,
         ego_body_dimensions_m=dict(length=EGO_FRONT+EGO_REAR,width=EGO_WIDTH,front_from_rear_axle=EGO_FRONT,rear_from_rear_axle=EGO_REAR),
         ego_timeline=[dict(time_s=float(moment), xy_m=position.tolist(), yaw_rad=float(angle),
@@ -422,6 +446,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
     decision_context['visual_guidance']=GUIDANCE
     decision_context=selection_view(decision_context)
     feedback = None
+    connector_preview = None
     for turn in range(1, 7):
         available = [row for row in catalog if ('select_vehicle', row['track_id']) not in rejections
                      and required_track in (None, row['track_id'])]
@@ -433,6 +458,8 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 if tool['function']['name'] == 'select_vehicle':
                     tool['function']['parameters']['properties']['track_id']['enum'] = [row['track_id'] for row in available]
         object_tools.append(placement_preview_tool())
+        if map_connectors:
+            object_tools.append(CONNECTOR_PREVIEW_TOOL)
         if turn == 1:
             atomic_json(folder/'tools.json', object_tools)
         decision_context['existing_vehicles'] = available
@@ -474,6 +501,17 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 raise ValueError('Unknown coarse option_id')
             if not isinstance(args.get('reason'), str) or not args['reason'].strip():
                 raise ValueError('A nonempty selection reason is required')
+            if name == 'preview_connector_route' and map_connectors and set(args) == {'connector_route', 'reason'}:
+                acceptance = policy.resolve(constraints.get('acceptance_policy'))
+                start_s = float(constraints.get('attack_prefix_lock_s', policy.edit_start(acceptance)))
+                plan = plan_connector_route(scene, frames, args['connector_route'], start_s, float(times[-1]))
+                first = plan['waypoints'][0]
+                feedback = dict(status='route_preview', connector_route={k: v for k, v in plan.items() if k != 'waypoints'},
+                    initial_state=dict(x_m=first['position_m'][0], y_m=first['position_m'][1],
+                        yaw_rad=first['yaw_rad'], speed_mps=first['speed_mps'], time_s=first['time_s']))
+                connector_preview = feedback
+                archive_exchange(folder, turn, call, dict(feedback, waypoints=plan['waypoints']), started=tool_started)
+                continue
             if name=='preview_attack_options':
                 if set(args)!={'options','reason'}:raise ValueError('Preview requires options and reason')
                 from attack_scene_evidence import preview_options
@@ -586,6 +624,8 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 selection_reason=args['reason'],initial_relation=initial_relation, annotation_changes=dict(operation='none',
                     note='Identity and motion seed only; full scene is materialized after trajectory acceptance'))
             selection['editing_scene']=str(scene)
+            if connector_preview is not None:
+                selection['connector_route_preview'] = connector_preview
             forecast_editor = AttackEditor(scene, selection, folder / f'placement_check_{turn:02d}', constraints)
             selection['geometry_feedback'] = forecast_editor.public('seed_000')
             atomic_json(folder / 'output.json', selection)
@@ -603,7 +643,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
 @timed_operation('attack.vehicle_editing',None)
 def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_turns, stage_timeout_s=420):
     from attack_budget import BudgetedArchive, AttackBudgetExhausted
-    from attack_tool_contract import candidate_eligibility
+    from attack_tool_contract import candidate_eligibility, submission_ready_candidates
     from streaming_requests import request_protocol_details,request_timeout_details
     folder = editor.run_dir
     atomic_json(folder / 'input.json', dict(selection=selection, constraints=editor.constraints))
@@ -625,6 +665,7 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
         available_tools=[tool for tool in available_tools if tool['function']['name']!='probe_vadv2']
     if (not editor.constraints.get('prepare_ego_history') or editor.constraints.get('ego_history_revision_count',0)>=1
             or editor.constraints.get('expert_margin_revision_count',0)>=1
+            or editor.constraints.get('ego_history_route') is not None
             or editor.constraints.get('ego_history_target_speed_mps') is not None):
         available_tools=[tool for tool in available_tools if tool['function']['name']!='request_ego_history_revision']
     atomic_json(folder / 'tools.json', available_tools)
@@ -674,12 +715,21 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 termination = dict(reason='Attack trajectory stage exceeded its wall-clock budget.',
                     stage_timeout_seconds=stage_timeout_s,scope='current_tools_and_budget',global_infeasibility_proven=False)
                 break
+            pending_records=[] if pending is None else pending.get('batch',[pending])
+            delivered = getattr(editor,'inspected',set()) | {record['candidate_id'] for record in pending_records
+                if record.get('purpose') not in ('pdm_probe','vadv2_probe','scene_layout')}
             context = dict(instruction=selection['instruction'], **editor.context(),
                            plan_choice=selection.get('plan_choice'),
                            last_tool_result=feedback, turns_remaining=max(0,max_turns - turn + 1),
                            finalization_only=closing,stage_seconds_remaining=round(remaining,1))
             if closing:
-                context['finalization_instruction']='Review and submit an existing qualified candidate, or finish honestly. No more construction or edits.'
+                ready = submission_ready_candidates(editor, qualified, delivered)
+                context['ready_to_submit_candidate_ids'] = ready
+                context['finalization_instruction'] = (
+                    'Submit one listed candidate or finish_search with a concrete reason for declining it. '
+                    'The listed candidates have passed all submission checks; their trajectory images have been delivered or are attached.'
+                    if ready else 'Review or test an existing qualified candidate to meet submission checks, or finish_search. '
+                    'Inspect only trajectories whose images have not been delivered.')
             if timeout_recovery is not None:
                 context['request_timeout_recovery']=timeout_recovery
             if protocol_recovery is not None:
@@ -698,31 +748,32 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 prompt=PDM_PROBE_PROMPT+'\n'+prompt
                 if editor.constraints.get('pdm_defense_feedback'):
                     prompt=DEFENSE_FEEDBACK_PROMPT+'\n'+prompt
-            pending_records=[] if pending is None else pending.get('batch',[pending])
             content = prompt if not pending_records else [{'type':'text', 'text':prompt}, *[image_part(record['path']) for record in pending_records]]
             if editor.policy_probe is not None:
                 if isinstance(content,str):content=VADV2_PROBE_PROMPT+'\n'+content
                 else:content[0]['text']=VADV2_PROBE_PROMPT+'\n'+content[0]['text']
             probe_context = editor.pdm_probe.context() if editor.pdm_probe is not None else {}
             if editor.policy_probe is not None:probe_context=editor.policy_probe.context()
-            delivered = getattr(editor,'inspected',set()) | {record['candidate_id'] for record in pending_records
-                if record.get('purpose') not in ('pdm_probe','vadv2_probe','scene_layout')}
             turn_tools = trajectory_tools(available_tools,editor.nodes,evaluated_candidates,
                 set(probe_context.get('candidates',{})),probe_context.get('remaining',0),
                 constructor_remaining=context.get('constructor_budget',{}).get('remaining_evaluations'),
                 reselections_remaining=max(0,(2 if editor.constraints.get('plan_options') else 1)-editor.constraints.get('object_reselection_count',0)),
                 inspected=delivered)
             if closing:
-                turn_tools=[tool for tool in turn_tools if tool['function']['name'] in
-                    {'inspect_trajectory','submit_candidate','probe_pdm','probe_vadv2','finish_search'}]
+                allowed = {'submit_candidate','finish_search'} if ready else {
+                    'inspect_trajectory','probe_pdm','probe_vadv2','finish_search'}
+                turn_tools=[tool for tool in turn_tools if tool['function']['name'] in allowed]
                 for tool in turn_tools:
-                    if tool['function']['name']=='submit_candidate':
-                        tool['function']['parameters']['properties']['candidate_id']['enum']=[key for key in qualified if key in delivered]
-                turn_tools=[tool for tool in turn_tools if tool['function']['name']!='submit_candidate'
+                    if tool['function']['name'] == 'submit_candidate':
+                        tool['function']['parameters']['properties']['candidate_id']['enum'] = ready
+                    elif tool['function']['name'] == 'inspect_trajectory':
+                        tool['function']['parameters']['properties']['candidate_id']['enum'] = [
+                            key for key in qualified if key not in delivered]
+                turn_tools=[tool for tool in turn_tools if tool['function']['name']!='inspect_trajectory'
                     or tool['function']['parameters']['properties']['candidate_id']['enum']]
             from agent_tool_view import creation_contract
             choice, turn_tools = creation_contract(turn_tools, feedback)
-            if fast_stationary:
+            if fast_stationary and not closing:
                 name = 'submit_candidate' if 'seed_000' in delivered else 'inspect_trajectory'
                 turn_tools = [tool for tool in turn_tools if tool['function']['name']==name]
                 choice = {'type':'function', 'function':{'name':name}}
@@ -732,7 +783,7 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
             if (not closing and turn == 1 and not imported_count and not editor.constraints.get('stationary_target')
                     and not editor.constraints.get('agent_decides_interaction') and 'construct_attack_candidates' in turn_names):
                 choice = {'type':'function', 'function':{'name':'construct_attack_candidates'}}
-            elif turn == 1 and imported_count and not fast_stationary:
+            elif not closing and turn == 1 and imported_count and not fast_stationary:
                 choice = {'type':'function', 'function':{'name':'inspect_trajectory'}}
             if isinstance(choice, dict):
                 # The API may use auto for thinking; the selected phase remains exact locally.
@@ -790,7 +841,7 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
                 call, name, args = decode_call(attempt)
                 if name not in turn_names:
                     raise ValueError('Tool unavailable for the current candidate eligibility or resource state')
-                if name in ('inspect_trajectory','evaluate_candidate','probe_pdm','probe_vadv2'):
+                if name in ('inspect_trajectory','evaluate_candidate','probe_pdm','probe_vadv2') or (closing and name == 'submit_candidate'):
                     schema = next(tool['function']['parameters'] for tool in turn_tools if tool['function']['name']==name)
                     if args.get('candidate_id') not in schema['properties']['candidate_id']['enum']:
                         raise ValueError('Candidate is not eligible for this tool in the current state')
@@ -909,6 +960,7 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
             stop = 'request_or_execution_failed'
             raise
     finally:
+        resumable = [key for key,node in editor.nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible']]
         atomic_json(folder / 'output.json', dict(schema_version='attack_trajectory.v1',
             status='completed' if editor.submitted else 'not_submitted', stop_reason=stop,
             selected_candidate_id=editor.submitted, target_track=editor.target['track_id'],
@@ -918,7 +970,8 @@ def edit_object(editor, selection, archive, timeout_seconds, max_tokens, max_tur
             imported_candidate_count=imported_count, new_candidate_count=len(editor.history) - imported_count,
             constructor_budget=editor.context()['constructor_budget'],
             api_budget=archive.context() if isinstance(archive,BudgetedArchive) else None,
-            resumable_candidate_ids=[key for key,node in editor.nodes.items() if candidate_eligibility(node['result'])['pdm_probe_eligible']],
+            resumable_candidate_ids=resumable,
+            ready_to_submit_candidate_ids=submission_ready_candidates(editor, resumable, getattr(editor, 'inspected', set())),
             finalization_grace_used=finalization_grace_used,
             request_timeout_recovery=timeout_recovery,
             request_protocol_recovery=protocol_recovery,
@@ -1083,10 +1136,11 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
                 prior_scene=prior_choice.get('editing_scene',archived_input.get('editing_scene',archived_input['scene']))
             stage='ego_history_prepare'
             from attack_ego_preparation import prepare_acceleration
+            route_arguments = {'route': config['ego_history_route']} if config.get('ego_history_route') is not None else {}
             preparation=prepare_acceleration(scene,output/'ego_history',effective,
                 enabled=config['prepare_ego_history'],
                 target_speed_mps=config.get('_ego_history_revision_target',config.get('ego_history_target_speed_mps')),
-                previous_scene=prior_scene)
+                previous_scene=prior_scene, **route_arguments)
             summary['ego_history_preparation']=preparation
             if preparation['status']=='unavailable':
                 summary.update(status='not_submitted',stop_reason='ego_history_unavailable',reason=preparation['reason'],search_stage=stage)

@@ -56,6 +56,8 @@ def attack_output(arguments, output_dir):
     constraints['generated_objectives_are_preferences'] = True
     constraints['prepare_ego_history']=arguments.get('prepare_ego_history',True)
     constraints['ego_history_target_speed_mps']=arguments.get('ego_history_target_speed_mps')
+    if arguments.get('ego_history_route') is not None:
+        constraints['ego_history_route'] = arguments['ego_history_route']
     required_operation=None if arguments['operation']=='auto' else arguments['operation']
     if arguments.get('plan_options'):
         constraints['plan_options']=arguments['plan_options']
@@ -144,6 +146,9 @@ def attack_output(arguments, output_dir):
     if history_path.is_file():
         history=json.loads(history_path.read_text())
         shared_history={key:history[key] for key in ('takeover_s','targets','requested_takeover_speed_mps','delivered_takeover_speed_mps')}
+        if history.get('mode') == 'endpoint_route':
+            shared_history.update({key: history[key] for key in ('mode', 'route', 'takeover_xy_m', 'takeover_yaw_rad',
+                'continuous_takeover_speed_mps', 'errors', 'reference_rejoin_s')})
         shared_history['manifest_path']=str(history_path)
     preparation=result.get('ego_history_preparation')
     if preparation is not None:

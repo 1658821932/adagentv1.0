@@ -43,6 +43,23 @@ def test_ready_plan_binds_actual_scene_and_preserves_global_ego_goal(scene):
     assert result['result']['edit_plan']['target_track']=='vehicle-A'
     assert result['result']['evidence']['frame_indices']==[0]
 
+
+@pytest.mark.parametrize('ego_plan,expected', [
+    (dict(mode='keep'), dict(prepare_ego_history=False)),
+    (dict(mode='speed', target_speed_mps=2.5), dict(prepare_ego_history=True, ego_history_target_speed_mps=2.5)),
+    (dict(mode='route', route=dict(end_xy_m=[2.35, -.18], connector_id='18210')),
+     dict(prepare_ego_history=True, ego_history_route=dict(end_xy_m=[2.35, -.18], connector_id='18210'))),
+])
+def test_ego_history_plan_has_its_own_validated_handoff(scene, ego_plan, expected):
+    data = arguments(scene)
+    data['ego_input_edit_strategy'] = 'A separate instruction for the ego prefix.'
+    data['_llm_client'] = client(dict(response(), ego_history_plan=ego_plan))
+    result = run(data)
+    assert result['status'] == 'success', result
+    attack = result['result']['attack_input']
+    assert {key: attack[key] for key in expected} == expected
+    assert data['ego_input_edit_strategy'] not in attack['instruction']
+
 def test_missing_assets_returns_information_request_without_calling_model(scene):
     Path(scene['asset_path']).rmdir()
     def fail(messages):raise AssertionError('Do not spend a model request on missing prerequisites')
@@ -532,6 +549,22 @@ def test_missing_added_asset_does_not_block_existing_option(scene):
     assert 'vehicle' not in result['result']['attack_input']
     assert result['result']['evidence']['option_resources']==[
         {'option_id':'existing','available':True},{'option_id':'added','available':False}]
+
+
+def test_generic_added_vehicle_route_reaches_auto_editor_without_a_maneuver_label(scene,tmp_path):
+    asset=tmp_path/'vehicle.ply';asset.write_text('offline fixture asset')
+    response=option_response()
+    option=response['edit_options'][1]
+    option.pop('maneuver')
+    option['instruction']='Add a vehicle on the approach and follow the mapped connector through the turn.'
+    response['edit_options']=[option]
+    value=arguments(scene);value.update(vehicle={'asset_path':str(asset),'size_m':[4.2,1.8,1.6]},_llm_client=client(response))
+    result=run(value)
+    assert result['status']=='success', result
+    handoff=result['result']['attack_input']
+    assert handoff['operation']=='auto'
+    assert handoff['plan_options'][0]['maneuver'] is None
+    assert handoff['plan_options'][0]['instruction']==option['instruction']
 
 
 def test_only_added_options_without_asset_keep_options_but_no_executable_handoff(scene):

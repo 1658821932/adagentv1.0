@@ -11,7 +11,8 @@ from agent_tool_view import candidate_card, compact_action_feedback
 def constraints_view(value):
     value=value or {}
     hidden={'acceptance_policy','plan_options','policy_source_scene_ref','vadv2_policy_config',
-        'object_selection_feedback','pdm_probe_root','vadv2_probe_root','revision_feedback','pdm_reselection_feedback'}
+        'object_selection_feedback','pdm_probe_root','vadv2_probe_root','revision_feedback','pdm_reselection_feedback',
+        'prepare_ego_history','ego_history_target_speed_mps','ego_history_route','ego_history_revision_count'}
     result={key:deepcopy(item) for key,item in value.items() if key not in hidden and not key.startswith('_')}
     policy=value.get('acceptance_policy') or {}
     result['physical_limits']={key:deepcopy(item) for key,item in policy.items()
@@ -41,12 +42,15 @@ def feedback_view(value):
                 'options','remaining_hypotheses','ranked','scope','code','operation','track_id','option_id',
                 'initial_state','measurements','repeated','next_action',
                 'min_body_clearance_m','peak_planar_acceleration_mps2','planar_acceleration_limit_mps2',
-                'acceleration_limit_fraction','reserve_reference_m','feedback_path'):
+                'acceleration_limit_fraction','reserve_reference_m','feedback_path','connector_route'):
         if key in value:result[key]=deepcopy(value[key])
     if isinstance(value.get('candidates'),list):
         result['candidates']=[candidate_card(dict(row,
             reference_screen_passed=row.get('reference_screen_passed',row.get('reference_geometry_passed'))))
             for row in value['candidates'] if isinstance(row,dict)]
+        for card, row in zip(result['candidates'], (row for row in value['candidates'] if isinstance(row, dict))):
+            if 'connector_passage' in row:
+                card['connector_passage'] = deepcopy(row['connector_passage'])
     metrics=value.get('metrics')
     if isinstance(metrics,dict):
         result['candidate']=candidate_details(metrics)
@@ -77,11 +81,16 @@ def _probe_view(value):
     return result
 
 
+def _fixed_history_view(constraints):
+    state = constraints.get('_fixed_ego_history') or {}
+    return {key: deepcopy(state[key]) for key in ('frozen', 'end_s', 'status', 'takeover') if key in state} or None
+
+
 def selection_view(context):
     result=deepcopy(context)
     constraints=context.get('constraints') or {}
     result['constraints']=constraints_view(constraints)
-    result['fixed_ego_history']=deepcopy(constraints.get('_fixed_ego_history'))
+    result['fixed_ego_history']=_fixed_history_view(constraints)
     result.pop('actors_at_start',None)
     timeline=context.get('ego_timeline') or []
     if timeline:
@@ -97,7 +106,7 @@ def editing_view(context,detail_provider=None):
     result=deepcopy(context)
     constraints=context.get('constraints') or {}
     result['constraints']=constraints_view(constraints)
-    result['fixed_ego_history']=deepcopy(constraints.get('_fixed_ego_history'))
+    result['fixed_ego_history']=_fixed_history_view(constraints)
     result['vadv2_self_test']=_probe_view(context.get('vadv2_self_test'))
     feedback=context.get('last_tool_result') or {}
     active=feedback.get('candidate_id')

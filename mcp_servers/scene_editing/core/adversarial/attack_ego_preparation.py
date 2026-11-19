@@ -31,12 +31,12 @@ def history_state(scene):
 
 
 @timed_operation('attack.ego_history_prepare','output')
-def prepare_acceleration(scene,output,acceptance,*,enabled=True,target_speed_mps=None,previous_scene=None):
+def prepare_acceleration(scene,output,acceptance,*,enabled=True,target_speed_mps=None,previous_scene=None,route=None):
     """No LLM or policy call. Explicit targets are never silently weakened."""
     output=Path(output);output.mkdir(parents=True,exist_ok=False)
     source=source_scene(scene)
     atomic_json(output/'input.json',dict(source_scene=str(source),enabled=enabled,
-        target_speed_mps=target_speed_mps,previous_scene=None if previous_scene is None else str(previous_scene)))
+        target_speed_mps=target_speed_mps,route=route,previous_scene=None if previous_scene is None else str(previous_scene)))
     report=dict(stage='ego_history_prepare',attempts=[],api_calls=0,policy_tests=0,
         report_path=str(output/'report.json'))
 
@@ -45,7 +45,7 @@ def prepare_acceleration(scene,output,acceptance,*,enabled=True,target_speed_mps
         atomic_json(output/'report.json',report)
         return report
 
-    if previous_scene is None and enabled and target_speed_mps is None and (Path(scene)/'ego-history.json').is_file():
+    if previous_scene is None and enabled and target_speed_mps is None and route is None and (Path(scene)/'ego-history.json').is_file():
         previous_scene=scene
     if previous_scene is not None:
         chosen=clone(previous_scene,output/'scene')
@@ -53,6 +53,18 @@ def prepare_acceleration(scene,output,acceptance,*,enabled=True,target_speed_mps
         return finish('reused',chosen,'Preserved the exact history of the checkpoint; no second acceleration.')
     if not enabled:
         return finish('unchanged',source,'Ego history preparation was explicitly disabled.')
+    if route is not None:
+        report['route'] = route
+        if target_speed_mps is not None:
+            return finish('unavailable',source,'Specify ego route end_speed_mps inside the route request only.')
+        try:
+            chosen = prepare(source, output/'route', None, acceptance, route=route)
+            verify(chosen)
+        except ValueError as error:
+            report['attempts'].append(dict(status='rejected', reason=str(error)))
+            return finish('unavailable',source,str(error))
+        report['attempts'].append(dict(status='prepared', mode='endpoint_route'))
+        return finish('prepared',chosen,'Fitted and froze the fixed-start ego route through 1.5s.')
     if target_speed_mps is not None and (type(target_speed_mps) not in (int,float) or not np.isfinite(target_speed_mps)):
         return finish('unavailable',source,'Explicit ego speed target must be a finite number.')
     state=history_state(source);initial=float(state['initial_speed_mps'])
@@ -68,9 +80,9 @@ def prepare_acceleration(scene,output,acceptance,*,enabled=True,target_speed_mps
         if target_speed_mps is None else float(target_speed_mps))
     report.update(requested_target_speed_mps=desired,baseline_takeover_speed_mps=baseline_speed,preferred_peak_acceleration_mps2=preferred_peak,
         target_source='profile_acceleration_preference' if target_speed_mps is None else 'explicit_target')
-    if not np.isfinite(desired) or desired<initial-1e-8:
-        return finish('unavailable',source,'Acceleration target must be finite and at least the inherited initial speed.')
-    if desired<=initial+1e-8:
+    if not np.isfinite(desired) or desired < 0.:
+        return finish('unavailable',source,'Ego speed target must be finite and nonnegative.')
+    if target_speed_mps is None and desired<=initial+1e-8:
         return finish('unchanged',source,'The inherited speed already reaches the requested/preferred speed.')
     for number in range(1,2 if target_speed_mps is not None else 4):
         if target_speed_mps is None and desired<=baseline_speed+1e-8:break
@@ -81,12 +93,12 @@ def prepare_acceleration(scene,output,acceptance,*,enabled=True,target_speed_mps
         except ValueError as error:
             report['attempts'].append(dict(target_speed_mps=desired,status='rejected',reason=str(error)))
             if target_speed_mps is not None:
-                return finish('unavailable',source,'Explicit ego acceleration target is infeasible; inspect the preparation report.')
+                return finish('unavailable',source,'Explicit ego speed target is infeasible; inspect the preparation report.')
             desired=(initial+desired)/2
             continue
         report['attempts'].append(dict(target_speed_mps=desired,status='prepared'))
         report['prepared_target_speed_mps']=desired
         if target_speed_mps is None and history_state(chosen)['takeover']['speed_mps']<=baseline_speed+1e-8:
             return finish('unchanged',source,'The feasible preparation did not increase sampled takeover speed; source history is retained.')
-        return finish('prepared',chosen,'Generated and froze a feasible acceleration history before actor selection.')
+        return finish('prepared',chosen,'Generated and froze a feasible speed history before actor selection.')
     return finish('unchanged',source,'No tested acceleration passed the existing checks; source history is retained.')

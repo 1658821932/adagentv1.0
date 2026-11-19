@@ -31,6 +31,8 @@ def build(scene, output, track_id=None, max_samples=24):
     sys.path.insert(0,str(CORE))
     from run_ego_reference import ego_path_from_frames, observed_objects_from_frames
     from ego_road_checks import load_official_drivable
+    from ego_trajectory_edit import start_state
+    from connector_route import nearby_connectors
     from decision_scene_view import render_overview, actor_view
     scene=Path(scene);output=Path(output)
     frames=json.loads((scene/'metadata/frames.json').read_text())
@@ -60,6 +62,11 @@ def build(scene, output, track_id=None, max_samples=24):
         vehicle_catalog=list(roster.values()),
         ego_summary=dict(duration_s=round(float(times[-1]),3),recorded_path_length_m=round(float(np.linalg.norm(np.diff(ego,axis=0),axis=1).sum()),2)),
         report_path=str(output/'spatial-evidence.json'))
+    if times[-1] >= 1.5:
+        samples = [start_state(times, ego, yaw, t) for t in (0., .5, 1., 1.5)]
+        report['ego_history_geometry'] = dict(points=[dict(time_s=row['time_s'], rear_axle_xy_m=row['xy_m'],
+            yaw_rad=row['yaw_rad'], speed_mps=row['signed_speed_mps']) for row in samples],
+            nearby_connectors=nearby_connectors(scene, frames, ego))
     if track_id is not None:
         indices=np.linspace(0,len(times)-1,min(max_samples,len(times)),dtype=int)
         points=[]

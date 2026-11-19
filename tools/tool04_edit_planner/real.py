@@ -10,7 +10,7 @@ ELIGIBLE_MAX_DISTANCE_M = 30.0
 ELIGIBLE_BEHIND_TOLERANCE_M = 10.0
 from mcp_servers.scene_editing.adapter.schemas import AttackInput
 from tools.llm_runtime import LLMTool, validation_details
-from .schemas import Input, Decision, Output
+from .schemas import Input, Decision, Output, EgoHistoryPlan
 from .observations import settings, sample_indices, Observation, ViewClient, ACTIVE_OBSERVATION
 from . import observations
 
@@ -159,6 +159,7 @@ def inspect_scene(data):
         actors=list(catalog.values()),snapshots=snapshots,evidence=evidence,
         box_coordinates='Original source annotation coordinates; transforms are supplied where available.',
         scene_requirement=data.scene_requirement,target_effect=data.target_effect,edit_strategy=data.edit_strategy,
+        ego_input_edit_strategy=data.ego_input_edit_strategy,
         editing_capabilities=dict(
             edit_existing='Edit a fully observed vehicle from its recorded initial state by default. Tool05 can create a bounded initial-position/yaw-adjusted version and must regenerate or rigidly transform the trajectory, then rerun every check.',
             add_vehicle='With a supplied asset, choose a new initial pose and speed; stationary can keep the new vehicle at that pose for the whole scene.',
@@ -179,6 +180,10 @@ def enrich(data,response):
     result=dict(response,scene_id=data.scene_ref.scene_id,scene_token=data.scene_ref.scene_token,
         target_effect=data.target_effect,evidence=summary['evidence'],attack_input=None)
     options=response.get('edit_options') or []
+    ego_plan = None
+    if result['suitability'] == 'ready' and (options or result['edit_plan'] is not None):
+        ego_plan = EgoHistoryPlan.model_validate(response.get('ego_history_plan') or {'mode': 'keep'})
+        result['ego_history_plan'] = ego_plan.model_dump(mode='json', exclude_none=True)
     if result['suitability']=='ready' and options:
         for option in options:
             if option['operation']=='edit_existing' and option.get('target_track') is not None and option['target_track'] not in eligible:
@@ -198,6 +203,7 @@ def enrich(data,response):
                     '\nCorrect ego behavior to preserve for expert editing: '+data.target_effect+
                     '\nChoose or adapt a coarse alternative, test VADv2 and use its actual avoidance feedback to refine the attack. Alternatives are not hard contracts; needing to brake alone is not attack success.')
             if has_asset:arguments['vehicle']=data.vehicle.model_dump(mode='json')
+            arguments.update(ego_plan.attack_arguments())
             AttackInput.model_validate(arguments)
             result['attack_input']=arguments
         return result
@@ -214,6 +220,7 @@ def enrich(data,response):
             arguments=dict(scene_ref=data.retrieval_result_ref or data.scene_ref.model_dump(mode='json'),operation=plan['operation'],instruction=plan['instruction'])
             if plan['operation']=='edit_existing':arguments['target_track']=plan['target_track']
             else:arguments.update(maneuver=plan['maneuver'],vehicle=data.vehicle.model_dump(mode='json'))
+            arguments.update(ego_plan.attack_arguments())
             AttackInput.model_validate(arguments)
             result['attack_input']=arguments
     return result

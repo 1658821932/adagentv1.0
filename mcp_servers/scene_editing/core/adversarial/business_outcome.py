@@ -83,8 +83,13 @@ def bounded_outcome(stage, detail, search_dir):
     reason = detail.get('reason') or stored.get('reason') or (reasons[-1] if reasons else 'No accepted candidate was submitted within the current tools and search budget.')
     detail=dict(detail,**{key:stored[key] for key in
         ('api_budget','constructor_budget','resumable_candidate_ids','termination_evidence',
+         'ready_to_submit_candidate_ids',
          'finalization_grace_used','request_timeout_recovery','editing_timeout_recovery_used') if key in stored})
     if stage=='attack_editing':
+        ready = detail.get('ready_to_submit_candidate_ids') or []
+        if ready:
+            reason = ('Candidates passed all submission checks but none was submitted: '
+                      + ', '.join(ready) + '. ' + reason)
         selection = directory/'object_selection/output.json'
         detail.pop('reuse_completed_from', None)
         if selection.is_file() and json.loads(selection.read_text()).get('status') == 'completed':

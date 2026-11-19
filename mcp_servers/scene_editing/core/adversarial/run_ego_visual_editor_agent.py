@@ -26,6 +26,11 @@ from ego_tool_transport import (require_native_call, validate_exposed_call,
 
 INSPECT = {'type':'function','function':{'name':'inspect_trajectory', 'description':'Inspect a generated map and candidate/parent trajectory diagram, not a camera image.', 'parameters':{'type':'object','properties':{'candidate_id':{'type':'string'}},'required':['candidate_id'],'additionalProperties':False}}}
 
+FOCUSED_CONTEXT = 'focused_defense.v2'
+NATIVE_ACTION = ('Return exactly one native function call from the supplied tools for this turn. '
+    'Use any attached diagram to choose the action. Put the rationale in reason when the tool accepts it. '
+    'Do not return a prose answer or a JSON code block.')
+
 
 @timed_operation('ego.visual_agent', 'run_dir')
 def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_turns=10, max_edit_candidates=5, max_inspections=2, point_only=False, max_tokens=6144, target_track=DEFAULT_TARGET_TRACK, conflict_brief=None, resume=False, allow_timeout_change=False, controlled_generation=False, target_effect=None, foci_enabled=True, stage_timeout_s=900):
@@ -49,9 +54,10 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
         validate_brief(brief, float(editor.times[-1]))
     archived = json.loads((run_dir/'config.json').read_text()) if resume else None
     profile = load_llm_profile()
-    context_view = archived.get('context_view_version') if resume else 'lossless_context.v1'
-    if context_view != 'lossless_context.v1':
+    context_view = archived.get('context_view_version') if resume else FOCUSED_CONTEXT
+    if context_view not in ('lossless_context.v1', FOCUSED_CONTEXT):
         raise ValueError('Unsupported archived context view version')
+    editor.focus_selected_context = context_view == FOCUSED_CONTEXT
     candidate_view = archived.get('candidate_view_version') if resume else ('unranked_motion.v2' if controlled_generation else None)
     if candidate_view not in (None,'unranked_motion.v2'):
         raise ValueError('Unsupported candidate comparison view')
@@ -305,6 +311,11 @@ def run(input_dir, constructor_run, foci_run, run_dir, timeout_seconds=240, max_
             choice, tools = require_native_call(choice, tools, messages=messages,
                 image_tool_choice=profile.get('image_tool_choice','required'),
                 tool_choice_policy=profile.get('tool_choice_policy','preserve'))
+            if context_view == FOCUSED_CONTEXT and choice == 'auto':
+                if isinstance(content, list):
+                    content.append({'type': 'text', 'text': NATIVE_ACTION})
+                else:
+                    messages[0]['content'] = content + '\n' + NATIVE_ACTION
             if resume and prior_request is not None and turn == resume_turn:
                 payload = prior_request['payload']
                 expected = normalize_kimi_parameters(profile['model'], dict(messages=messages,

@@ -161,3 +161,24 @@ def test_timeout_evidence_reaches_main_agent_compact_view(tmp_path):
     feedback=summarize('attack_vehicle_editor',result)['recovery_feedback']
     assert feedback['termination_evidence']==evidence
     assert feedback['retry_allowed'] is False and feedback['recovery_action']=='stop_and_report'
+
+
+def test_finalization_timeout_reports_checked_candidate_separately_from_earlier_failures(tmp_path):
+    from agent.context import summarize
+
+    search = tmp_path/'trajectory_editing'
+    search.mkdir()
+    (search/'output.json').write_text(json.dumps(dict(status='not_submitted',
+        stop_reason='stage_timeout_exhausted', reason='model deadline', finalization_grace_used=True,
+        resumable_candidate_ids=['candidate_005','candidate_006'],
+        ready_to_submit_candidate_ids=['candidate_006'])))
+    earlier = search/'tool_calls'/'turn_01'
+    earlier.mkdir(parents=True)
+    (earlier/'result.json').write_text(json.dumps(dict(failed_checks=['official_road'])))
+    outcome = bounded_outcome('attack_editing', dict(status='not_submitted'), tmp_path)
+    compact = summarize('attack_vehicle_editor', outcome)
+
+    assert compact['recovery_feedback']['ready_to_submit_candidate_ids']==['candidate_006']
+    assert compact['recovery_feedback']['retry_allowed'] is False
+    assert compact['failed_requirements']==['official_road']
+    assert 'candidate_006' in compact['reason'] and 'none was submitted' in compact['reason']

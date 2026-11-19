@@ -99,12 +99,21 @@ def test_no_collision_uses_actual_road_compliance(
 
 
 def test_success_is_cached_and_bound_to_the_exact_candidate(tmp_path,monkeypatch):
+    from attack_tool_contract import submission_ready_candidates
+
     probe=make_probe(tmp_path,monkeypatch);runner=fake_native(probe,monkeypatch)
+    editor=probe.editor
+    editor.constraints['vadv2_self_test']=True
+    editor.policy_probe=probe
+    editor.pdm_probe=None
     assert probe.probe('a')['policy_attack_success'] is True
     assert probe.probe('a')['cached'] is True
     runner.assert_called_once()
     assert probe.require_challenge('a')['candidate_id']=='a'
-    probe.editor.nodes['a']['xy'][1,0]=2
+    assert submission_ready_candidates(editor,['a','b'],{'b'})==[]
+    assert submission_ready_candidates(editor,['a','b'],{'a','b'})==['a']
+    editor.nodes['a']['xy'][1,0]=2
+    assert submission_ready_candidates(editor,['a','b'],{'a','b'})==[]
     with pytest.raises(ValueError,match='different candidate'):probe.require_challenge('a')
     with pytest.raises(ValueError,match='different candidate'):probe.probe('a')
 
@@ -198,21 +207,19 @@ def test_native_tool_eligibility_and_main_handoff(tmp_path,monkeypatch):
 
 
 def test_real_submit_method_enforces_native_probe_before_accepting(tmp_path,monkeypatch):
-    import ast
-    source=CORE/'attack_editor.py'
-    cls=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.ClassDef) and n.name=='AttackEditor')
-    function=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='submit')
-    function.decorator_list=[]
+    monkeypatch.syspath_prepend(str(CORE))
+    import attack_editor
+
     writes=Mock()
-    namespace=dict(atomic_json=writes)
-    exec(compile(ast.Module(body=[function],type_ignores=[]),str(source),'exec'),namespace)
+    monkeypatch.setattr(attack_editor,'atomic_json',writes)
+    submit=attack_editor.AttackEditor.submit.__wrapped__
     gate=Mock(side_effect=ValueError('untested native candidate'))
     editor=SimpleNamespace(submitted=None,inspected={'a'},nodes={'a':{'result':dict(reference_screen_passed=True)}},
-        constraints=dict(vadv2_self_test=True),policy_probe=SimpleNamespace(require_challenge=gate),run_dir=tmp_path,
+        constraints=dict(vadv2_self_test=True),pdm_probe=None,policy_probe=SimpleNamespace(require_challenge=gate),run_dir=tmp_path,
         public=lambda key:dict(candidate_id=key))
-    with pytest.raises(ValueError,match='untested native'):namespace['submit'](editor,'a','candidate')
+    with pytest.raises(ValueError,match='untested native'):submit(editor,'a','candidate')
     assert editor.submitted is None
     writes.assert_not_called()
     gate.side_effect=None
-    assert namespace['submit'](editor,'a','candidate')['status']=='accepted'
+    assert submit(editor,'a','candidate')['status']=='accepted'
     assert editor.submitted=='a'

@@ -99,18 +99,7 @@ def generate(frames, targets, acceptance):
         raise ValueError('Curved ego history exceeds lateral acceleration limit')
     if np.max(abs(np.gradient(np.unwrap(angles),query)[mask]))>acceptance['max_yaw_rate_radps']+.02:
         raise ValueError('Ego history exceeds yaw-rate limit')
-    actors=observed_objects_from_frames(frames)
-    for t,p,a in zip(query[mask],positions[mask],angles[mask]):
-        center=p+(EGO_FRONT-EGO_REAR)/2*np.array([np.cos(a),np.sin(a)])
-        ego=polygon(*center,a,EGO_FRONT+EGO_REAR,EGO_WIDTH)
-        right=min(int(np.searchsorted(times,t)),len(times)-1);left=max(0,right-1)
-        weight=0. if times[right]==times[left] else (t-times[left])/(times[right]-times[left])
-        before={o['track']:o for o in actors[left]};after={o['track']:o for o in actors[right]}
-        for track in before.keys()&after.keys():
-            x,y=[before[track][k]*(1-weight)+after[track][k]*weight for k in ('x','y')]
-            other=before[track];angle=other['yaw']+weight*np.arctan2(np.sin(after[track]['yaw']-other['yaw']),np.cos(after[track]['yaw']-other['yaw']))
-            if ego.intersects(polygon(x,y,angle,other['length'],other['width'])):
-                raise ValueError('Ego history contacts an existing actor before policy takeover')
+    check_history_actors(frames, times, query[mask], positions[mask], angles[mask])
     native_xy=np.column_stack([np.interp(times,query,positions[:,i]) for i in range(2)])
     native_yaw=np.interp(times,query,np.unwrap(angles))
     native_xy[0]=xy[0];native_yaw[0]=yaw[0]
@@ -126,6 +115,24 @@ def generate(frames, targets, acceptance):
         source_route_end_s=float(route_times[-1]),source_route_trimmed_before_reverse=route_count<len(times),
         delivered_speed_method='Completed history interval on the nominal native time grid; body centre',
         scope='Forward speed history; source initial pose/speed inherited; no lateral maneuver or route extrapolation')
+
+
+def check_history_actors(frames, times, query, positions, angles):
+    actors = [{obj['track']: obj for obj in row} for row in observed_objects_from_frames(frames)]
+    for moment, position, yaw in zip(query, positions, angles):
+        center = position + (EGO_FRONT - EGO_REAR)/2 * np.array([np.cos(yaw), np.sin(yaw)])
+        ego = polygon(*center, yaw, EGO_FRONT + EGO_REAR, EGO_WIDTH)
+        right = min(int(np.searchsorted(times, moment)), len(times)-1)
+        left = max(0, right-1)
+        weight = 0. if right == left else (moment-times[left]) / (times[right]-times[left])
+        before, after = actors[left], actors[right]
+        for track in before.keys() & after.keys():
+            other = before[track]
+            x, y = [other[key]*(1-weight) + after[track][key]*weight for key in ('x', 'y')]
+            delta = after[track]['yaw'] - other['yaw']
+            angle = other['yaw'] + weight*np.arctan2(np.sin(delta), np.cos(delta))
+            if ego.intersects(polygon(x, y, angle, other['length'], other['width'])):
+                raise ValueError(f'Ego history contacts observed actor {track} at {moment:.3f}s before policy takeover')
 
 
 def reproject_frames(frames,xy,yaw):
@@ -172,10 +179,14 @@ def verify(scene):
         raise ValueError('Prepared ego history was changed after generation')
     original=json.loads((source/'metadata/frames.json').read_text())
     edited=json.loads((scene/'metadata/frames.json').read_text())
-    xy,yaw,_=generate(original,data['targets'],data['acceptance_policy'])
+    if data.get('mode') == 'endpoint_route':
+        from ego_history_route import generate as generate_route
+        xy, yaw, _, _ = generate_route(source, original, data['route'], data['acceptance_policy'], controls=data['controls'])
+    else:
+        xy,yaw,_=generate(original,data['targets'],data['acceptance_policy'])
     _,actual_xy,actual_yaw=ego_path_from_frames(edited)
     if not np.allclose(xy,actual_xy,atol=1e-7,rtol=0) or not np.allclose(yaw,actual_yaw,atol=1e-7,rtol=0):
-        raise ValueError('Prepared ego history does not reproduce its speed request')
+        raise ValueError('Prepared ego history does not reproduce its motion request')
     return source.is_dir()
 
 
@@ -197,22 +208,32 @@ def attach(scene,frozen):
     if manifest.is_file():shutil.copyfile(manifest,Path(frozen)/'ego-history.json')
 
 
-def prepare(scene,output,targets,acceptance):
+def prepare(scene,output,targets,acceptance,*,route=None):
     """Write a new scene; never modify source data or accumulated prefix edits."""
     scene=Path(scene).resolve()
-    if targets is None:return scene
+    if targets is None and route is None:return scene
     source=source_scene(scene)
-    if not targets:return source
+    if not targets and route is None:return source
     frames=json.loads((source/'metadata/frames.json').read_text())
-    xy,yaw,evidence=generate(frames,targets,acceptance)
+    if route is not None:
+        from ego_history_route import generate as generate_route
+        xy, yaw, evidence, dense = generate_route(source, frames, route, acceptance)
+    else:
+        xy,yaw,evidence=generate(frames,targets,acceptance)
     from ego_road_checks import load_official_drivable,check_drivable_area_official
     times,_,_=ego_path_from_frames(frames)
     history_times=np.unique(np.r_[times[times<=TAKEOVER_S+.001],np.linspace(0.,TAKEOVER_S,61)])
     history_xy=np.column_stack([np.interp(history_times,times,xy[:,i]) for i in range(2)])
     history_yaw=np.interp(history_times,times,yaw)
-    road=check_drivable_area_official(history_times,history_xy,history_yaw,load_official_drivable(source/'metadata/map_drivable_official.json'),
-        front=EGO_FRONT,rear=EGO_REAR,width=EGO_WIDTH,min_margin_m=acceptance['official_margin_m'])
+    official = load_official_drivable(source/'metadata/map_drivable_official.json')
+    road_args = dict(front=EGO_FRONT, rear=EGO_REAR, width=EGO_WIDTH, min_margin_m=acceptance['official_margin_m'])
+    road = check_drivable_area_official(history_times,history_xy,history_yaw,official,**road_args)
     if not road['passed']:raise ValueError('Edited ego history leaves the drivable area')
+    if route is not None:
+        dense_road = check_drivable_area_official(*dense, official, **road_args)
+        if not dense_road['passed']:
+            raise ValueError('Dense ego route history leaves the drivable area')
+        check_history_actors(frames, times, history_times, history_xy, history_yaw)
     output=Path(output);output.mkdir(parents=True,exist_ok=False)
     shutil.copytree(source/'metadata',output/'metadata')
     for name in ('source_asset','original_images'):

@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from defense_generation_contract import TOOLS, validate_request, normalize_request
+from edit_continuity import parent_motion, state_at
 from experiment_runtime import atomic_json
 
 
@@ -73,6 +74,24 @@ class DefenseGeneration:
             raise ValueError('Unknown parent candidate')
         return key
 
+    def _braking_operation(self, parent, start, strength, target_speed):
+        editor = self.editor
+        node = editor.nodes[parent]
+        boundary = policy.edit_start(editor.effective_policy)
+        curve = parent_motion(editor.times, editor._reference_arrays, parent,
+            node['result'].get('generation_curve'), boundary, start)
+        state = state_at(editor.times, node['xy'], node['yaw'], start, curve)
+        speed = float(np.linalg.norm(state['velocity_xy_mps']))
+        if state['signed_speed_mps'] <= 0 or speed <= target_speed:
+            raise ValueError('Speed reduction requires a forward start faster than the requested target speed')
+        end = start + (speed - target_speed) / strength
+        if end > editor.times[-1]:
+            raise ValueError('Requested deceleration cannot reach the target speed before scene end')
+        return dict(mode='point_edit', edit_mode='speed_schedule', generation_source='constructor',
+            parent_candidate_id=parent, operation='set_speed_targets', start_time_s=start,
+            targets=[dict(time_s=end, speed_mps=target_speed)], transition_style='constant_acceleration',
+            path_source='parent', reason='Agent-requested bounded braking construction')
+
     def execute(self,name,args):
         editor=self.editor
         args=normalize_request(name,args,float(editor.times[-1]),editor.effective_policy.get('time_rounding_s',.001))
@@ -101,18 +120,21 @@ class DefenseGeneration:
                 starts=np.linspace(*args['start_time_range_s'],count) if count>1 else [sum(args['start_time_range_s'])/2]
                 strengths=np.linspace(*args['deceleration_range_mps2'],count) if count>1 else [sum(args['deceleration_range_mps2'])/2]
                 for start,strength in zip(starts,strengths):
-                    operation=dict(mode='point_edit',edit_mode='brake_profile',generation_source='constructor',
-                        parent_candidate_id=parent,path_candidate_id=key,start_time_s=float(start),
-                        deceleration_mps2=float(strength),target_speed_mps=args['target_speed_mps'],
-                        motion_intent='forward_stop' if args['target_speed_mps']==0 else 'forward',
-                        end_behavior=args['end_behavior'],reason='Agent-requested bounded construction')
-                    result=editor.edit(operation)
-                    if result['status']=='invalid':
-                        self.state['rejected_attempts']+=1
-                        failures.append(dict(start_time_s=float(start),deceleration_mps2=float(strength),reason=result['error']))
+                    start, strength = float(start), float(strength)
+                    try:
+                        operation = self._braking_operation(parent, start, strength, args['target_speed_mps'])
+                    except ValueError as error:
+                        result = {'error': str(error)}
                     else:
-                        results.append(editor._public(result['candidate_id']))
-                        call['candidate_ids'].append(result['candidate_id'])
+                        result = editor.edit(operation)
+                    candidate_id = result.get('candidate_id')
+                    if candidate_id is None:
+                        self.state['rejected_attempts']+=1
+                        failures.append(dict(start_time_s=start, deceleration_mps2=strength,
+                            reason=result.get('error') or result.get('error_summary') or result['status']))
+                    else:
+                        results.append(editor._public(candidate_id))
+                        call['candidate_ids'].append(candidate_id)
                     self.save()
             else:
                 self.state['foci_calls']+=1
