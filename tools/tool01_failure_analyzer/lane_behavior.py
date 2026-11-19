@@ -7,7 +7,6 @@ import math
 LANE_KEEP_TOLERANCE_M = 0.5
 TURN_DEG = 25.0
 CURVE_DEG = 8.0
-INTERSECTION_RANGE_M = 40.0
 
 
 def lane_keeping(offset_m):
@@ -62,8 +61,8 @@ def classify_interaction(origin, same_direction, entered_ego_lane, ego_changed_l
     return None
 
 
-def analyze(map_location, frames, ego, sequences, selected, violation, collision_confirmed=True):
-    """Return measured lane-relative behavior; a target without a lane is an error."""
+def analyze(map_location, frames, ego, sequences, selected, violation, collision_confirmed=True, outcome_kind=None):
+    """Resolve exact lane/intersection entities and measured conflict relations."""
     from . import structure_facts as sf
 
     try:
@@ -120,8 +119,7 @@ def analyze(map_location, frames, ego, sequences, selected, violation, collision
         row = contained.loc[order[0]]
         line = lines.get(int(row["lane_fid"]))
         if line is None:
-            return dict(group=int(row["lane_group_fid"]), lane=int(row["lane_fid"]),
-                        line=None, offset=None, tangent=None)
+            raise sf.FactsError(f"lane {int(row['lane_fid'])} has no baseline geometry")
         nearest = nearest_points(point, line)[1]
         station = line.project(nearest)
         span = min(0.5, max(line.length / 2.0, 1e-6))
@@ -130,13 +128,20 @@ def analyze(map_location, frames, ego, sequences, selected, violation, collision
         tangent = (after.x - before.x, after.y - before.y)
         norm = math.hypot(*tangent)
         if norm <= 0.0:
-            return dict(group=int(row["lane_group_fid"]), lane=int(row["lane_fid"]),
-                        line=line, offset=None, tangent=None)
+            raise sf.FactsError(f"lane {int(row['lane_fid'])} has no tangent at the vehicle")
         tangent = (tangent[0] / norm, tangent[1] / norm)
         delta = (point.x - nearest.x, point.y - nearest.y)
         offset = tangent[0] * delta[1] - tangent[1] * delta[0]
-        return dict(group=int(row["lane_group_fid"]), lane=int(row["lane_fid"]),
-                    line=line, offset=float(offset), tangent=tangent, point=nearest)
+        return dict(group=int(row["lane_group_fid"]), lane=int(row["lane_fid"]), line=line,
+                    offset=float(offset), tangent=tangent, point=nearest)
+
+    def intersection_at(point):
+        distances = intersections.geometry.distance(point)
+        contained = intersections[distances <= 0.02]
+        if contained.empty:
+            return None
+        return dict(fids=[str(value) for value in contained.index],
+                    geometry=contained.geometry.unary_union)
 
     def body(point, heading, length, width):
         cos, sin = math.cos(heading), math.sin(heading)
@@ -156,173 +161,202 @@ def analyze(map_location, frames, ego, sequences, selected, violation, collision
             except (TypeError, ValueError):
                 continue
 
-    ego_length, ego_width, _ = sf.ego_geometry()
-    home_point = metric_point(*ego["positions"][0])
-    home = lane_at(home_point)
-    if home is None and selected is not None:
-        raise sf.FactsError("ego vehicle is not inside an official lane at the first frame")
-    violation_point = metric_point(*ego["positions"][violation])
-    current = lane_at(violation_point)
-    ego_polygon = body(violation_point, ego["yaw"][violation], ego_length, ego_width)
-    ego_segment = group_segments.get(home["group"]) if home is not None else None
+    ego_entities = []
+    for index in range(violation + 1):
+        point = metric_point(*ego["positions"][index])
+        lane = lane_at(point)
+        intersection = intersection_at(point)
+        if lane is None and intersection is None:
+            if index != violation or outcome_kind not in ("road_departure", "collision_and_departure"):
+                raise sf.FactsError(
+                    f"ego vehicle is outside both official lanes and intersections at frame {index}")
+        ego_entities.append(dict(frame=index, lane=lane, intersection=intersection))
 
-    def side_of(point_or_geometry):
-        if home is None or home.get("line") is None or home.get("tangent") is None:
-            return None
-        if hasattr(point_or_geometry, "centroid"):
-            point = point_or_geometry.centroid
+    current = ego_entities[violation]["lane"]
+    violation_intersection = ego_entities[violation]["intersection"]
+    route_lanes = [entry["lane"] for entry in ego_entities if entry["lane"] is not None]
+    home = route_lanes[0] if route_lanes else None
+    last_lane = route_lanes[-1] if route_lanes else None
+    ego_off_lane = current is None and violation_intersection is None
+
+    def lane_curvature(lane):
+        line = lane.get("line") if lane else None
+        if line is None or line.length < 2.0:
+            raise sf.FactsError("ego lane has no measurable baseline")
+        coords = list(line.coords)
+        headings = [math.atan2(coords[i][1] - coords[i-1][1], coords[i][0] - coords[i-1][0])
+                    for i in range(1, len(coords))]
+        if not headings:
+            raise sf.FactsError("ego lane baseline has no direction")
+        unwrapped = [headings[0]]
+        for value in headings[1:]:
+            delta = value - unwrapped[-1]
+            while delta > math.pi: delta -= 2 * math.pi
+            while delta < -math.pi: delta += 2 * math.pi
+            unwrapped.append(unwrapped[-1] + delta)
+        return math.degrees(unwrapped[-1] - unwrapped[0])
+
+    lane_for_state = current or last_lane
+    if violation_intersection is not None:
+        polygon = violation_intersection["geometry"]
+        arms = int(segments.geometry.intersects(polygon).sum())
+        if arms == 3:
+            map_context = "t_junction"
+        elif arms >= 4:
+            map_context = "cross_intersection"
+        elif lane_for_state is not None:
+            map_context = "curve" if abs(lane_curvature(lane_for_state)) >= sf.CURVE_DEG else "straight_road"
         else:
-            point = point_or_geometry
-        nearest = nearest_points(point, home["line"])[1]
-        tangent = home["tangent"]
+            raise sf.FactsError("ego is inside a non-junction intersection without a lane for shape analysis")
+    else:
+        if lane_for_state is None:
+            raise sf.FactsError("ego is outside an intersection and has no route lane")
+        map_context = "curve" if abs(lane_curvature(lane_for_state)) >= sf.CURVE_DEG else "straight_road"
+
+    if current is not None:
+        ego_lane_state = lane_keeping(current["offset"])
+    elif ego_off_lane and last_lane is not None:
+        violation_point = metric_point(*ego["positions"][violation])
+        nearest = nearest_points(violation_point, last_lane["line"])[1]
+        tangent = last_lane["tangent"]
+        delta = (violation_point.x - nearest.x, violation_point.y - nearest.y)
+        ego_lane_state = lane_keeping(tangent[0] * delta[1] - tangent[1] * delta[0])
+    elif violation_intersection is not None:
+        ego_lane_state = "unknown"
+    else:
+        raise sf.FactsError("ego lane keeping cannot be measured")
+
+    def side_of(point_or_geometry, reference):
+        if reference is None or reference.get("line") is None or reference.get("tangent") is None:
+            raise sf.FactsError("ego reference lane has no baseline")
+        point = point_or_geometry.centroid if hasattr(point_or_geometry, "centroid") else point_or_geometry
+        nearest = nearest_points(point, reference["line"])[1]
+        tangent = reference["tangent"]
         delta = (point.x - nearest.x, point.y - nearest.y)
         cross = tangent[0] * delta[1] - tangent[1] * delta[0]
-        return "left" if cross > 0 else "right" if cross < 0 else None
+        if cross == 0.0:
+            raise sf.FactsError("target has no measurable left/right relation to ego lane")
+        return "left" if cross > 0 else "right"
 
-    ego_lane_state = "unknown"
-    if current is not None and current.get("offset") is not None:
-        ego_lane_state = lane_keeping(current["offset"])
     overlapping_groups = []
     if home is not None:
+        home_segment = group_segments.get(home["group"])
+        if home_segment is None:
+            raise sf.FactsError("ego lane has no road-segment binding")
+        violation_point = metric_point(*ego["positions"][violation])
+        ego_length, ego_width, _ = sf.ego_geometry()
+        ego_polygon = body(violation_point, ego["yaw"][violation], ego_length, ego_width)
         for group, rows in lanes.groupby("lane_group_fid"):
-            if int(group) == home["group"]:
-                continue
-            # Lanes from a crossing road can intersect the ego body at a junction;
-            # they do not describe lateral position in the ego's current road.
-            if ego_segment is not None and group_segments.get(int(group)) != ego_segment:
+            if int(group) == home["group"] or group_segments.get(int(group)) != home_segment:
                 continue
             geometry = rows.geometry.unary_union
             overlap = ego_polygon.intersection(geometry).area
-            if overlap <= 0.01:
-                continue
-            side = side_of(geometry)
-            overlapping_groups.append((int(group), float(overlap), side))
+            if overlap > 0.01:
+                side = side_of(geometry, home)
+                overlapping_groups.append((int(group), float(overlap), side))
         if overlapping_groups:
             overlapping_groups.sort(key=lambda item: (-item[1], item[0]))
-            dominant_side = overlapping_groups[0][2]
-            if dominant_side:
-                ego_lane_state = f"{dominant_side}_offset"
+            ego_lane_state = overlapping_groups[0][2] + "_offset"
 
-    def curvature_at(lane):
-        line = (lane or {}).get("line")
-        if line is None or line.length < 2.0:
-            return None
-        station = line.project((lane or {}).get("point") or line.interpolate(line.length / 2.0))
-        span = min(10.0, line.length / 3.0)
-        first = line.interpolate(max(0.0, station - span))
-        centre = line.interpolate(station)
-        last = line.interpolate(min(line.length, station + span))
-        first_angle = math.atan2(centre.y - first.y, centre.x - first.x)
-        last_angle = math.atan2(last.y - centre.y, last.x - centre.x)
-        delta = (last_angle - first_angle + math.pi) % (2 * math.pi) - math.pi
-        return math.degrees(delta)
-
-    nearest_intersection = float(intersections.geometry.distance(violation_point).min())
-    if nearest_intersection <= INTERSECTION_RANGE_M:
-        index = intersections.geometry.distance(violation_point).idxmin()
-        polygon = intersections.geometry.loc[index]
-        arms = int(segments.geometry.intersects(polygon).sum())
-        if arms >= 4:
-            map_context = "cross_intersection"
-        elif arms == 3:
-            map_context = "t_junction"
-        else:
-            curve = curvature_at(current)
-            if curve is None:
-                raise sf.FactsError("ego lane curvature could not be measured at the junction")
-            map_context = "curve" if abs(curve) >= CURVE_DEG else "straight_road"
-    else:
-        curve = curvature_at(current)
-        if curve is None:
-            raise sf.FactsError("ego lane curvature could not be measured")
-        map_context = "curve" if abs(curve) >= CURVE_DEG else "straight_road"
-
-    other_origin = None
-    other_action = None
-    other_lane_state = "unknown"
+    other_origin = "none"
+    other_action = "none"
+    other_lane_state = "none"
     other_evidence = {}
     if selected and sequences.get(selected):
         sequence = sequences[selected]
         through = [item for item in sequence if item["index"] <= violation]
-        first = through[0] if through else sequence[0]
-        # Every actor point is interpreted against the ego pose of the same frame.
+        if not through:
+            raise sf.FactsError(f"target vehicle {selected} has no observations through violation")
+        first = through[0]
         located = []
-        ego_lanes = {}
+        unmapped = []
         for item in through:
             frame_index = item["index"]
             ego_center = ego["positions"][frame_index]
             heading = sf.ego_heading(frames[frame_index], frame_index)
-            ego_lanes[frame_index] = lane_at(metric_point(*ego_center))
             world_x = ego_center[0] + item["x"] * math.cos(heading) - item["y"] * math.sin(heading)
             world_y = ego_center[1] + item["x"] * math.sin(heading) + item["y"] * math.cos(heading)
-            located.append((item, lane_at(metric_point(world_x, world_y))))
-        first_lane = located[0][1]
-        conflict_first = next((item for item in sequence if item["index"] == violation), None)
-        conflict_lane = next((lane for item, lane in located if item["index"] == violation), None)
-        if first_lane is None:
-            raise sf.FactsError(
-                f"target vehicle {selected} is not inside an official lane at first observation frame {first['index']}")
-        if conflict_lane is None:
-            raise sf.FactsError(
-                f"target vehicle {selected} is not inside an official lane at violation frame {violation}")
-        if home is None or first_lane.get("tangent") is None or home.get("tangent") is None:
-            raise sf.FactsError(
-                f"target vehicle {selected} lacks a lane baseline needed to measure its direction")
-        reference = home
-        dot = first_lane["tangent"][0] * reference["tangent"][0] + first_lane["tangent"][1] * reference["tangent"][1]
-        if dot < -0.5:
-            other_origin = "oncoming"
-        elif first_lane["group"] == reference["group"]:
-            longitudinal = first["x"]
-            other_origin = "ahead_same_lane" if longitudinal >= 0 else "behind_same_lane"
-        else:
-            side = side_of(first_lane["point"])
-            if side is None:
+            point = metric_point(world_x, world_y)
+            lane = lane_at(point)
+            intersection = intersection_at(point)
+            if lane is None and intersection is None:
+                unmapped.append(frame_index)
+            located.append(dict(item=item, lane=lane, intersection=intersection, point=point))
+        if unmapped:
+            if collision_confirmed:
                 raise sf.FactsError(
-                    f"target vehicle {selected} lane {first_lane['lane']} has no measurable left/right relation")
-            source_segment = group_segments.get(first_lane["group"])
-            ego_segment = group_segments.get(reference["group"])
-            if source_segment is None or ego_segment is None:
-                raise sf.FactsError(
-                    f"target vehicle {selected} or ego lane lacks a road-segment binding")
-            if source_segment != ego_segment:
-                connected = connectors[
-                    ((connectors["exit_lane_group_fid"].astype(str) == str(first_lane["group"]))
-                     & (connectors["entry_lane_group_fid"].astype(str) == str(reference["group"])))
-                    | ((connectors["entry_lane_group_fid"].astype(str) == str(first_lane["group"]))
-                       & (connectors["exit_lane_group_fid"].astype(str) == str(reference["group"])))
-                ]
-                if connected.empty:
-                    raise sf.FactsError(
-                        f"target vehicle {selected} lane {first_lane['lane']} is not connected to ego lane")
+                    f"target vehicle {selected} is outside both official lanes and intersections "
+                    f"at frames {unmapped}")
+            # A non-collision nearest body outside the mapped road network is not a
+            # valid interaction target. Keep the single-vehicle failure explicit.
+            located = []
+        if located:
+            first_lane_entry = next((row for row in located if row["lane"] is not None), None)
+            conflict_row = next((row for row in located if row["item"]["index"] == violation), None)
+            if conflict_row is None:
+                raise sf.FactsError(f"target vehicle {selected} has no observation at violation frame")
+            conflict_lane = conflict_row["lane"]
+            conflict_intersection = conflict_row["intersection"]
+            reference = current or last_lane
+            if reference is None:
+                raise sf.FactsError(f"ego has no lane reference for target vehicle {selected}")
+            ego_heading = sf.ego_heading(frames[violation], violation)
+            relative_heading = ((conflict_row["item"]["world_yaw"] - ego_heading + math.pi)
+                                % (2 * math.pi) - math.pi)
+            heading_dot = math.cos(relative_heading)
+            if heading_dot < 0.0:
+                other_origin = "oncoming"
+            elif conflict_lane is not None and conflict_lane["group"] == reference["group"]:
+                other_origin = ("ahead_same_lane"
+                                if conflict_row["item"]["x"] >= 0 else "behind_same_lane")
+            elif conflict_lane is not None:
+                side = side_of(conflict_lane["point"], reference)
+                source_segment = group_segments.get(conflict_lane["group"])
+                ego_segment = group_segments.get(reference["group"])
+                if source_segment is None or ego_segment is None:
+                    raise sf.FactsError("target or ego lane has no road-segment binding")
+                if source_segment == ego_segment:
+                    other_origin = f"{side}_adjacent"
+                else:
+                    connected = connectors[
+                        ((connectors["exit_lane_group_fid"].astype(str) == str(conflict_lane["group"]))
+                         & (connectors["entry_lane_group_fid"].astype(str) == str(reference["group"])))
+                        | ((connectors["entry_lane_group_fid"].astype(str) == str(conflict_lane["group"]))
+                           & (connectors["exit_lane_group_fid"].astype(str) == str(reference["group"])))
+                    ]
+                    if connected.empty:
+                        raise sf.FactsError("target lane is not topologically connected to the ego lane")
+                    other_origin = f"{side}_arm"
+            elif conflict_intersection is not None:
+                side = side_of(conflict_row["point"], reference)
                 other_origin = f"{side}_arm"
             else:
-                other_origin = f"{side}_adjacent"
-        other_evidence["first_lane_group_fid"] = first_lane["group"]
-        other_evidence["lane_direction_dot"] = round(dot, 4)
-        other_evidence["observation_frame"] = first["index"]
-        action = direction_action(sequence, violation)
-        if action not in ("straight", "turn_left", "turn_right"):
-            raise sf.FactsError(f"target vehicle {selected} has no measured direction")
-        other_action = action
-        if conflict_lane.get("offset") is None:
-            raise sf.FactsError(f"target vehicle {selected} has no measured lane offset")
-        other_lane_state = lane_keeping(conflict_lane["offset"])
-        other_evidence["lane_group_fid"] = conflict_lane["group"]
-        other_evidence["offset_m"] = round(conflict_lane["offset"], 3)
-        target_entered_ego_lane = any(
-            lane is not None and ego_lanes.get(item["index"]) is not None
-            and lane["group"] == ego_lanes[item["index"]]["group"]
-            for item, lane in located[1:]
-        )
-        ego_changed_lane = bool(home is not None and any(
-            lane is not None and lane["group"] != home["group"] for lane in ego_lanes.values()))
-        other_evidence["entered_ego_lane_before_violation"] = target_entered_ego_lane
-        other_evidence["ego_changed_lane_before_violation"] = ego_changed_lane
-        other_evidence["ahead_at_violation"] = bool(conflict_first and conflict_first["x"] >= 0)
+                raise sf.FactsError("target relation cannot be measured from map entities")
+            other_action = direction_action(sequence, violation)
+            if other_action == "unknown":
+                raise sf.FactsError(f"target vehicle {selected} has no measured direction")
+            if conflict_lane is not None:
+                other_lane_state = lane_keeping(conflict_lane["offset"])
+            ego_lane_groups = [entry["lane"]["group"] for entry in ego_entities
+                               if entry["lane"] is not None]
+            target_lane_groups = [row["lane"]["group"] for row in located if row["lane"] is not None]
+            target_entered_ego_lane = any(group in ego_lane_groups for group in target_lane_groups[1:])
+            ego_changed_lane = any(group != reference["group"] for group in ego_lane_groups)
+            first_lane = first_lane_entry["lane"] if first_lane_entry else None
+            other_evidence = dict(
+                first_lane_group_fid=None if first_lane is None else first_lane["group"],
+                conflict_heading_dot=round(heading_dot, 6),
+                observation_frame=first["index"],
+                entered_ego_lane_before_violation=target_entered_ego_lane,
+                ego_changed_lane_before_violation=ego_changed_lane,
+                ahead_at_violation=bool(conflict_row["item"]["x"] >= 0),
+                lane_group_fid=None if conflict_lane is None else conflict_lane["group"],
+                offset_m=None if conflict_lane is None else round(conflict_lane["offset"], 3),
+                conflict_intersection_fids=(None if conflict_intersection is None
+                                            else conflict_intersection["fids"]),
+            )
 
-    direction_dot = other_evidence.get("lane_direction_dot")
-    same_direction = None if direction_dot is None else direction_dot > 0.5
+    same_direction = other_evidence.get("conflict_heading_dot", 0.0) > 0
     interaction = classify_interaction(
         other_origin, same_direction,
         other_evidence.get("entered_ego_lane_before_violation"),
@@ -330,6 +364,8 @@ def analyze(map_location, frames, ego, sequences, selected, violation, collision
         other_evidence.get("ahead_at_violation"),
         collision_confirmed=collision_confirmed,
     )
+    if interaction is None:
+        raise sf.FactsError("interaction type could not be measured")
 
     return {
         "available": True,
@@ -343,9 +379,15 @@ def analyze(map_location, frames, ego, sequences, selected, violation, collision
         "evidence": {
             "home_lane_group_fid": None if home is None else home["group"],
             "violation_lane_group_fid": None if current is None else current["group"],
-            "ego_lane_offset_m": None if current is None else current.get("offset"),
+            "ego_lane_offset_m": None if current is None else current["offset"],
+            "ego_entities": [
+                dict(frame=entry["frame"],
+                     lane=None if entry["lane"] is None else dict(
+                         lane_fid=entry["lane"]["lane"], lane_group_fid=entry["lane"]["group"]),
+                     intersections=None if entry["intersection"] is None else entry["intersection"]["fids"])
+                for entry in ego_entities
+            ],
             "ego_overlapping_lane_groups": overlapping_groups,
-            "nearest_intersection_m": nearest_intersection,
             "other": other_evidence,
         },
     }

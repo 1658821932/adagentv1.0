@@ -30,7 +30,6 @@ from tools.tool01_failure_analyzer.language import ego_cause
 
 BODY_DISTANCE_LIMIT_M = 5.0
 BODY_DISTANCE_TOLERANCE_M = 1e-6
-TURN_DEG = 25.0
 INTERSECTION_RANGE_M = 40.0
 CURVE_DEG = 8.0
 DEFAULT_MAPS_ROOT = "data/navtrain_ep_per1/maps"
@@ -431,68 +430,6 @@ def map_context(map_location, conflict_xy, turn_deg):
     return "curve" if abs(turn_deg) >= CURVE_DEG else "straight_road"
 
 
-TURN_TYPE_ACTIONS = {"0": None, "1": "turn_left", "2": "turn_right"}
-
-
-def map_ego_action(map_location, frames, ego):
-    """Return the map-measured ego action; missing route data is an error."""
-    try:
-        import geopandas as gpd
-        from pyproj import Transformer
-        from shapely.geometry import Point
-
-        path = map_file(map_location)
-        lanes = map_layer(gpd, path, "lanes_polygons")
-        connectors = map_layer(gpd, path, "lane_connectors")
-        if lanes.crs is None:
-            raise FactsError("map lanes have no coordinate reference system")
-        extent = lanes.to_crs("EPSG:4326").total_bounds
-        positions = ego["positions"]
-        lonlat = utm_to_lonlat(positions[0][0], positions[0][1], extent)
-        metric = metric_crs(lanes.crs, *lonlat)
-        to_metric = Transformer.from_crs("EPSG:4326", metric, always_xy=True)
-        points = [Point(*to_metric.transform(*utm_to_lonlat(x, y, extent)))
-                  for x, y in positions]
-        lanes = lanes.to_crs(metric)
-        connectors = connectors.to_crs(metric)
-
-        def lane_group(point, frame_index):
-            distances = lanes.geometry.distance(point)
-            contained = lanes[distances <= 0.02]
-            if contained.empty:
-                raise FactsError(
-                    f"ego vehicle is not inside an official lane at route frame {frame_index}")
-            return str(contained.loc[contained.geometry.distance(point).idxmin(), "lane_group_fid"])
-
-        start_group = lane_group(points[0], 0)
-        route_groups = {lane_group(point, index) for index, point in enumerate(points[1:], start=1)}
-        route_groups.discard(start_group)
-        candidates = connectors[connectors["exit_lane_group_fid"].astype(str) == start_group]
-        candidates = candidates[candidates["entry_lane_group_fid"].astype(str).isin(route_groups)]
-        if candidates.empty:
-            return "straight"
-        candidates = candidates.copy()
-        candidates["_distance"] = [min(row.geometry.distance(point) for point in points)
-                                   for _, row in candidates.iterrows()]
-        row = candidates.sort_values("_distance").iloc[0]
-        turn_type = str(row.get("turn_type_fid"))
-        action = TURN_TYPE_ACTIONS.get(turn_type)
-        if action:
-            return action
-        coords = list(row.geometry.coords)
-        if len(coords) < 3:
-            raise FactsError("matched ego connector has no measurable geometry")
-        start_tangent = math.atan2(coords[1][1] - coords[0][1], coords[1][0] - coords[0][0])
-        end_tangent = math.atan2(coords[-1][1] - coords[-2][1], coords[-1][0] - coords[-2][0])
-        delta = (math.degrees(end_tangent - start_tangent) + 180.0) % 360.0 - 180.0
-        if abs(delta) < TURN_DEG:
-            return "straight"
-        return "turn_left" if delta > 0 else "turn_right"
-    except FactsError:
-        raise
-    except (ImportError, OSError, ValueError, TypeError, KeyError) as error:
-        raise FactsError(f"ego action cannot be measured from the map: {error}") from None
-
 # ------------------------------------------------------------------ derive
 def frame_images(archive, frames):
     """Frame index -> camera -> absolute image path, taken from the scene metadata."""
@@ -529,20 +466,22 @@ def facts(archive, token):
     collision_confirmed = outcome_kind in ("collision", "collision_and_departure")
     lanes = analyze_lanes(frames[0]["map_location"], frames, ego, tracks,
                           None if sequence is None else selected, violation_step,
-                          collision_confirmed=collision_confirmed)
+                          collision_confirmed=collision_confirmed, outcome_kind=outcome_kind)
     if sequence is None:
         attack = {"other_origin": "none", "other_action": "none"}
     else:
         if not lanes["other_origin"] or not lanes["other_action"]:
             raise FactsError(f"target vehicle {selected} has no measured lane origin or action")
-        if lanes["other_lane_keeping"] == "unknown":
-            raise FactsError(f"target vehicle {selected} has no measured lane-keeping value")
         attack = {"other_origin": lanes["other_origin"],
                   "other_action": lanes["other_action"]}
     if not lanes["map_context"]:
         raise FactsError("map context could not be measured")
     attack["map_context"] = lanes["map_context"]
-    ego_action = map_ego_action(frames[0]["map_location"], frames, ego)
+    ego_action = direction_action(
+        [dict(index=index, world_yaw=ego["yaw"][index]) for index in range(violation_step + 1)],
+        through=violation_step)
+    if ego_action not in ("straight", "turn_left", "turn_right"):
+        raise FactsError("ego action could not be measured from the recorded trajectory")
     ego_lane_keeping = lanes["ego_lane_keeping"]
     if ego_lane_keeping == "unknown":
         raise FactsError("ego lane-keeping could not be measured")

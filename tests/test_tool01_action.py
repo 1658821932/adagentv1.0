@@ -238,9 +238,8 @@ class EntryPointTests(unittest.TestCase):
         with mock.patch.object(facts, "scene_pickle", return_value=(frames, "synthetic-token")):
             with mock.patch.object(facts, "outcome", return_value=("collision", None, 1)):
                 with mock.patch.object(facts, "analyze_lanes", side_effect=self.measured_lanes):
-                    with mock.patch.object(facts, "map_ego_action", return_value="straight"):
-                        with mock.patch.object(facts, "frame_images", return_value=[]):
-                            return facts.facts("archive", "token")
+                    with mock.patch.object(facts, "frame_images", return_value=[]):
+                        return facts.facts("archive", "token")
 
     def test_facts_entry_reports_the_actor_turn(self):
         frames = scene(0.0, math.radians(-30.0), 0.0, math.radians(-360.0), start=(4.0, 0.0, 0.0))

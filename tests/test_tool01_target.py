@@ -198,9 +198,8 @@ class TargetEntryPointTests(unittest.TestCase):
         with mock.patch.object(facts, "scene_pickle", return_value=(frames, "synthetic")):
             with mock.patch.object(facts, "outcome", return_value=("collision", None, 7)):
                 with mock.patch.object(facts, "analyze_lanes", side_effect=measured):
-                    with mock.patch.object(facts, "map_ego_action", return_value="straight"):
-                        with mock.patch.object(facts, "frame_images", return_value=[]):
-                            return facts.facts("archive", "token")
+                    with mock.patch.object(facts, "frame_images", return_value=[]):
+                        return facts.facts("archive", "token")
 
     def test_facts_reports_no_target_and_says_so(self):
         lane_data = {
