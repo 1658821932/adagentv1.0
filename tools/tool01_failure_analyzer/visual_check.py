@@ -1,8 +1,7 @@
-"""Visual checks for tool01 measured failure facts.
+"""Optional environment description from the violation-frame camera overview.
 
-The BEV image supplies only road context. The violation-frame camera overview
-supplies only weather and environmental text. Deterministic actor and map
-geometry measurements are not changed by these image classifications.
+All structural and interaction fields are measured deterministically before
+this check. This is the only visual-model step in tools 01-04.
 """
 from __future__ import annotations
 
@@ -22,7 +21,6 @@ LAYOUT = (
 TILE_W, TILE_H, LABEL_H = 320, 180, 18
 IMAGE_QUALITY = 82
 WEATHER = ("clear", "cloudy", "rainy", "foggy", "snowy", "unknown")
-MAP_CONTEXTS = ("straight_road", "curve", "t_junction", "cross_intersection", "merge")
 REQUIRED_FIELDS = ("weather", "extra", "notes")
 ENVIRONMENT_FORBIDDEN = ("直路", "弯道", "丁字", "十字", "路口", "汇流", "车道",
                          "自车", "他车", "车辆", "左转", "右转", "直行")
@@ -44,16 +42,6 @@ PROMPT = """你的唯一任务是根据首次违规帧的八相机总览补充�
 看不清天气时 weather 填 unknown。不要返回任何其他字段。
 必须返回 JSON：
 {{"weather":"unknown","extra":"","notes":[]}}
-"""
-
-
-BEV_REQUIRED_FIELDS = ("map_context", "notes")
-BEV_PROMPT = """你只根据这张连续轨迹 BEV 证据图判断自车在违规帧所在道路的整体形态。
-图中浅色区域是官方车道，黑色边界是路口；蓝线和青绿色车身是自车轨迹和车身，橙色线和车身是目标车，黑色箭头是车头方向，数字是帧号，红色表示首次违规帧。
-- map_context：只能是 straight_road / curve / t_junction / cross_intersection / merge。
-- notes：可选的简短核对依据，字符串数组。
-只返回：
-{"map_context":"curve","notes":[]}
 """
 
 
@@ -145,66 +133,6 @@ def contact_sheet(images, index, target, rows):
 def data_url(path, mime="image/jpeg"):
     """Encode an already prepared image without recompressing it."""
     return "data:" + mime + ";base64," + base64.b64encode(Path(path).read_bytes()).decode("ascii")
-
-
-def check_bev(facts, run_dir):
-    """Classify road context from the measured BEV sequence."""
-    import shutil
-    from agent.llm_client import LLMClient
-    from tools.tool01_failure_analyzer import evidence
-
-    source = Path(str(facts.get("bev_image") or ""))
-    if not source.is_file():
-        raise VisualCheckError("facts do not contain a readable BEV evidence image", stage="bev")
-    try:
-        return _check_bev(source, Path(run_dir), shutil.copyfile, LLMClient, evidence)
-    finally:
-        source.unlink()
-
-
-def _check_bev(source, run_dir, copyfile, client_type, evidence):
-    target = run_dir / "bev_route.png"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    copyfile(source, target)
-    url = data_url(target, "image/png")
-    evidence.write_manifest(run_dir, stage="bev_vlm", bev_image=str(target))
-    try:
-        client = client_type(component="failure_analyzer")
-        raw = client.chat([
-            {"role": "system", "content": "只输出一个 JSON 对象，不要 Markdown，不要解释。"},
-            {"role": "user", "content": [
-                {"type": "text", "text": BEV_PROMPT},
-                {"type": "image_url", "image_url": {"url": url}},
-            ]},
-        ])
-    except Exception as error:
-        timed_out = isinstance(error, TimeoutError) or type(error).__name__ in {
-            "APITimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout"}
-        evidence.write_manifest(run_dir, stage="bev_vlm", error=type(error).__name__)
-        raise VisualCheckError("BEV model request failed (" + type(error).__name__ + ")",
-                               stage="bev_vlm", timeout=timed_out) from None
-    (run_dir / "bev_response.txt").write_text(raw if isinstance(raw, str) else "")
-    if not isinstance(raw, str) or not raw.strip():
-        evidence.write_manifest(run_dir, stage="bev_vlm", error="empty response")
-        raise VisualCheckError("BEV model returned no text", stage="bev_vlm")
-    try:
-        answer = parse_json_object(raw)
-    except (TypeError, ValueError) as error:
-        evidence.write_manifest(run_dir, stage="bev_vlm", error="invalid JSON")
-        raise VisualCheckError("BEV model returned invalid JSON", stage="bev_vlm") from error
-    if not isinstance(answer, dict) or set(answer) != set(BEV_REQUIRED_FIELDS):
-        raise VisualCheckError("BEV model response must contain exactly map_context and notes",
-                               stage="bev_vlm")
-    context = answer["map_context"]
-    notes = answer["notes"]
-    if context not in MAP_CONTEXTS:
-        raise VisualCheckError("BEV model map_context is invalid: " + repr(context), stage="bev_vlm")
-    if not isinstance(notes, list) or not all(isinstance(note, str) and note.strip() for note in notes):
-        raise VisualCheckError("BEV model notes must be a list of non-empty strings", stage="bev_vlm")
-    notes = [note.strip() for note in notes]
-    evidence.write_manifest(run_dir, stage="bev_verification",
-                            decisions={"map_context": context}, notes=notes)
-    return {"map_context": context, "notes": notes}
 
 
 def check(archive, token, facts, run_dir=None):

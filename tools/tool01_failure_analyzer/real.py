@@ -1,15 +1,16 @@
-"""Failure analyzer: measure, verify road context, and supplement environment.
+"""Failure analyzer: measure failure facts and supplement environment.
 
-The map and archive produce deterministic interaction facts. One BEV route image is
-reviewed for map context only; one violation-frame camera overview supplies
-weather and environmental text. The whole analysis runs in a dedicated worker
-process so timeout remains a hard budget for data reading and every model
-request.
+The map and archive produce every structural and interaction field
+deterministically. The BEV route image is retained as evidence only. One
+violation-frame camera overview supplies weather and environmental text. The
+whole analysis runs in a dedicated worker process so timeout remains a hard
+budget for data reading and every model request.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -21,9 +22,8 @@ from mcp_servers.process import run_logged
 from mcp_servers.worldengine_failure_analysis.adapter.service import WfaError, failure_facts
 
 from . import evidence
-from .language import ego_cause
 from .schemas import Output
-from .visual_check import VisualCheckError, check as visual_check, check_bev
+from .visual_check import VisualCheckError, check as visual_check
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TIMEOUT_S = 300.0
@@ -62,6 +62,20 @@ def _timeout_of(error) -> bool:
                 or getattr(error, "details", {}).get("timeout", False))
 
 
+def _persist_bev(facts, run_dir):
+    """Keep the generated BEV as evidence without passing it to a model."""
+    source = Path(str(facts.get("bev_image") or ""))
+    if not source.is_file():
+        raise OSError("facts do not contain a readable BEV evidence image")
+    target = Path(run_dir) / "bev_route.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copyfile(source, target)
+    finally:
+        source.unlink()
+    return target
+
+
 def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
     """Measure, verify and describe one scene; every artefact stays in ``run_dir``."""
     run_dir = Path(run_dir)
@@ -84,24 +98,13 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
     evidence.write_manifest(run_dir, stage="bev", resolved_token=facts["token"],
                             simulation=facts.get("simulation_record"))
     try:
-        bev = check_bev(facts, run_dir=run_dir)
-    except (VisualCheckError, OSError, ValueError) as error:
-        stage = getattr(error, "stage", "bev")
-        evidence.write_manifest(run_dir, status="failed", stage=stage, error=str(error))
-        return _failure("bev_check_error", run_dir, stage, str(error))
-
-    measured_context = facts["attack"]["map_context"]
-    corrections = []
-    if bev["map_context"] != measured_context:
-        corrections.append(dict(field="map_context", measured=measured_context,
-                                final=bev["map_context"]))
-        facts["attack"]["map_context"] = bev["map_context"]
-        facts["failure"]["ego_cause"] = ego_cause(
-            facts["failure"]["interaction"], facts["attack"], facts["attack"]["ego_action"],
-            facts["attack"]["ego_lane_keeping"], facts["failure"]["outcome"])
+        bev_image = _persist_bev(facts, run_dir)
+    except (OSError, ValueError) as error:
+        evidence.write_manifest(run_dir, status="failed", stage="bev", error=str(error))
+        return _failure("bev_evidence_error", run_dir, "bev", str(error))
 
     evidence.write_manifest(run_dir, stage="images", resolved_token=facts["token"],
-                            simulation=facts.get("simulation_record"))
+                            simulation=facts.get("simulation_record"), bev_image=str(bev_image))
     try:
         visual = visual_check(facts["archive"], facts["token"].split("-")[-1], facts, run_dir=run_dir)
     except (VisualCheckError, OSError, ValueError) as error:
@@ -114,7 +117,7 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
         run_dir,
         stage="verification",
         final=facts["attack"],
-        corrections=corrections,
+        corrections=[],
     )
 
     evidence.write_manifest(run_dir, status="success", stage="done", finished_at=evidence.stamp())
@@ -133,9 +136,10 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
                             "weather": visual["weather"],
                             "extra": visual["extra"]},
             "verification": {
+                "bev_image": str(bev_image),
                 "sample_frames": visual["sample_frames"],
-                "corrections": corrections + list(visual["corrections"]),
-                "notes": list(bev["notes"]) + list(visual["notes"]),
+                "corrections": list(visual["corrections"]),
+                "notes": list(visual["notes"]),
             },
         },
     }

@@ -48,12 +48,10 @@ def facts_for(archive="archive", simulation="run/sim", images=None, root=None):
 
 
 FINAL = {"weather": "cloudy", "extra": "白天", "notes": []}
-BEV_FINAL = {"map_context": "t_junction", "notes": []}
 
 
 class StubClient:
     answer = json.dumps(FINAL, ensure_ascii=False)
-    bev_answer = json.dumps(BEV_FINAL, ensure_ascii=False)
     calls = []
     inspect = None
 
@@ -64,9 +62,6 @@ class StubClient:
         StubClient.calls.append(messages)
         if StubClient.inspect is not None:
             StubClient.inspect()
-        content = messages[1]["content"]
-        if content and content[0].get("type") == "text" and "BEV" in content[0].get("text", ""):
-            return self.bev_answer
         if isinstance(self.answer, BaseException):
             raise self.answer
         return self.answer
@@ -86,6 +81,7 @@ class ManifestTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.run_dir = Path(self.tmp.name) / "run"
+        StubClient.calls = []
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -118,6 +114,10 @@ class ManifestTests(unittest.TestCase):
         original = evidence.sha256_file(manifest["selected"][0]["sources"]["CAM_F0"])
         self.assertNotEqual(sent[0]["sha256"], original)
         self.assertTrue((self.run_dir / "response.txt").is_file())
+        self.assertTrue((self.run_dir / "bev_route.png").is_file())
+        self.assertEqual(result["result"]["verification"]["bev_image"],
+                         str(self.run_dir / "bev_route.png"))
+        self.assertEqual(len(StubClient.calls), 1)
 
     def test_model_timeout_keeps_measured_data_and_degrades_environment(self):
         StubClient.answer = TimeoutError("request timed out")
@@ -158,20 +158,6 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(result["result"]["verification"]["corrections"], [])
         self.assertEqual(result["result"]["environment"]["weather"], "unknown")
         self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "success")
-
-    def test_bev_road_context_correction_rebuilds_the_cause(self):
-        StubClient.bev_answer = json.dumps(
-            {"map_context": "curve", "notes": ["车道连续弯曲"]}, ensure_ascii=False)
-        try:
-            result = analyze(self.run_dir)
-        finally:
-            StubClient.bev_answer = json.dumps(BEV_FINAL, ensure_ascii=False)
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(result["result"]["attack"]["map_context"], "curve")
-        self.assertEqual(result["result"]["verification"]["corrections"], [
-            {"field": "map_context", "measured": "t_junction", "final": "curve"},
-        ])
-        self.assertTrue(result["result"]["failure"]["ego_cause"].startswith("在弯道上"))
 
     def test_data_failure_is_reported_with_its_stage(self):
         with mock.patch.object(real, "failure_facts",
@@ -216,15 +202,16 @@ class AnalysisStageTests(unittest.TestCase):
         self.assertEqual(result["result"]["environment"]["weather"], "unknown")
         self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "success")
 
-    def test_bev_client_construction_failure_is_fatal(self):
+    def test_client_construction_failure_degrades_only_environment(self):
         class BrokenClient:
             def __init__(self, component=None):
                 raise RuntimeError("no api key")
 
         result = analyze(self.run_dir, client=BrokenClient)
-        self.assertEqual(result["status"], "error")
-        self.assertEqual(result["error"]["type"], "bev_check_error")
-        self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "failed")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["result"]["environment"]["weather"], "unknown")
+        self.assertTrue((self.run_dir / "bev_route.png").is_file())
+        self.assertEqual(evidence.read_manifest(self.run_dir)["status"], "success")
 
     def test_empty_and_non_string_replies_degrade_only_environment(self):
         for reply in ("", "   ", None):
