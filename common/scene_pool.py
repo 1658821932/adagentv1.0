@@ -63,32 +63,50 @@ def record_used_scene_token(
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    existing_tokens = set(load_excluded_scene_tokens(file_path))
-    records: list[dict[str, Any]] = []
-    if file_path.is_file():
+    lock_path = file_path.with_name(file_path.name + ".lock")
+    lock_fd = None
+    try:
         try:
-            parsed = json.loads(file_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict) and isinstance(parsed.get("records"), list):
-                records = list(parsed["records"])
-        except json.JSONDecodeError:
-            pass
+            import fcntl
+            lock_fd = open(lock_path, "a+", encoding="utf-8")
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            lock_fd = None
 
-    existing_tokens.add(token)
-    entry: dict[str, Any] = {"scene_token": token}
-    if source_token:
-        entry["source_token"] = str(source_token)
-    if metadata:
-        entry.update(metadata)
-    records.append(entry)
+        existing_tokens = set(load_excluded_scene_tokens(file_path))
+        records: list[dict[str, Any]] = []
+        if file_path.is_file():
+            try:
+                parsed = json.loads(file_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict) and isinstance(parsed.get("records"), list):
+                    records = list(parsed["records"])
+            except json.JSONDecodeError:
+                pass
 
-    payload = {
-        "used_scene_tokens": sorted(existing_tokens),
-        "records": records,
-    }
-    tmp = file_path.with_name(file_path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, file_path)
-    return payload["used_scene_tokens"]
+        existing_tokens.add(token)
+        entry: dict[str, Any] = {"scene_token": token}
+        if source_token:
+            entry["source_token"] = str(source_token)
+        if metadata:
+            entry.update(metadata)
+        records.append(entry)
+
+        payload = {
+            "used_scene_tokens": sorted(existing_tokens),
+            "records": records,
+        }
+        tmp = file_path.with_name(f"{file_path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, file_path)
+        return payload["used_scene_tokens"]
+    finally:
+        if lock_fd is not None:
+            try:
+                import fcntl
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            lock_fd.close()
 
 
 def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: float = 0.5, min_violation_step: int = 6) -> str | None:
@@ -150,3 +168,18 @@ def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: fl
         if tok:
             return tok
     return None
+
+
+def record_run_if_configured(run_dir: str | Path, *, run_id: str | None = None) -> str | None:
+    """If ADAGENT_EXCLUDE_SCENE_TOKENS_FILE is set and run produced a verified failure scene, record its base token."""
+    pool_path = (os.getenv(EXCLUDE_ENV_VAR) or "").strip()
+    if not pool_path:
+        return None
+    base_token = extract_succeeded_base_scene_token(run_dir)
+    if not base_token:
+        return None
+    meta = {"run_dir": str(Path(run_dir).resolve())}
+    if run_id:
+        meta["run_id"] = str(run_id)
+    record_used_scene_token(pool_path, base_token, metadata=meta)
+    return base_token

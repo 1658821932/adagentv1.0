@@ -318,3 +318,42 @@ def test_scene_pool_rejects_high_pdm_tool06_runs(tmp_path):
         "status": "success", "result": {"pdm_subscores": {"score": 0.0, "first_violation_step": 8.0}},
     }))
     assert extract_succeeded_base_scene_token(r_high) == "tok_high_pdm"
+
+
+def test_record_run_if_configured_only_records_actually_used(tmp_path, monkeypatch):
+    from common.scene_pool import EXCLUDE_ENV_VAR, load_excluded_scene_tokens, record_run_if_configured
+
+    pool_file = tmp_path / "used_base_scenes.json"
+    monkeypatch.setenv(EXCLUDE_ENV_VAR, str(pool_file))
+
+    # 1. Run where Tool 06 did NOT trigger failure (PDM=0.9) -> must NOT be recorded
+    r_unused = tmp_path / "run_unused"
+    (r_unused / "tools" / "step_01_attack_vehicle_editor").mkdir(parents=True)
+    (r_unused / "tools" / "step_01_attack_vehicle_editor" / "input.json").write_text(json.dumps({
+        "scene_ref": {"scene_token": "tok_unused_scene"},
+    }))
+    (r_unused / "tools" / "step_01_attack_vehicle_editor" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"status": "completed"},
+    }))
+    (r_unused / "tools" / "step_02_policy_runner").mkdir(parents=True)
+    (r_unused / "tools" / "step_02_policy_runner" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"pdm_subscores": {"score": 0.9}},
+    }))
+    assert record_run_if_configured(r_unused, run_id="run_unused") is None
+    assert load_excluded_scene_tokens(pool_file) == []
+
+    # 2. Run where Tool 06 verified failure (PDM=0.0, step=8) -> recorded into pool
+    r_used = tmp_path / "run_used"
+    (r_used / "tools" / "step_01_attack_vehicle_editor").mkdir(parents=True)
+    (r_used / "tools" / "step_01_attack_vehicle_editor" / "input.json").write_text(json.dumps({
+        "scene_ref": {"scene_token": "tok_actually_used"},
+    }))
+    (r_used / "tools" / "step_01_attack_vehicle_editor" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"status": "completed"},
+    }))
+    (r_used / "tools" / "step_02_policy_runner").mkdir(parents=True)
+    (r_used / "tools" / "step_02_policy_runner" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"pdm_subscores": {"score": 0.0, "first_violation_step": 8}},
+    }))
+    assert record_run_if_configured(r_used, run_id="run_used") == "tok_actually_used"
+    assert load_excluded_scene_tokens(pool_file) == ["tok_actually_used"]

@@ -154,6 +154,13 @@ class Agent:
                     self.state.mark_finished()
                     final_state = self.state.to_dict()
                     self.logger.finalize(final_state)
+                    try:
+                        from common.scene_pool import record_run_if_configured
+                        recorded = record_run_if_configured(self.logger.run_dir, run_id=self.logger.run_id)
+                        if recorded:
+                            print(f"Recorded used base scene token to exclusion pool: {recorded}")
+                    except Exception as exc:
+                        print(f"Warning: failed to record used base scene token: {exc}")
                     print("Agent finished.")
                     return final_state
 
