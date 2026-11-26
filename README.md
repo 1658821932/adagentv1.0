@@ -65,6 +65,56 @@ environments/agent/.venv/bin/python -m agent.main \
 tool03 real 要求索引源视频带有效 `.scene.json`。结果包含 `scene_ref`：场景身份、相机清单、同步图像元数据、标注与高斯资产路径。未绑定直接报错；未下载文件明确标记缺失。
 tool04 根据实际场景做可编辑性检查及粗规划，tool05/06 再执行详细轨迹搜索和编辑。
 
+## 前端控制台
+
+前端为原生 HTML/JS + Node 服务（`frontend/server.mjs`，无需构建步骤），默认监听 `127.0.0.1:5173`（支持 `HOST`、`PORT`、`ADAGENT_PROJECT_ROOT` 环境变量）：
+
+```bash
+# 在项目根目录启动
+node frontend/server.mjs
+
+# 自定义端口或后台启动
+nohup env HOST=127.0.0.1 PORT=5173 node frontend/server.mjs > frontend/frontend.log 2>&1 &
+```
+
+若部署在远端 GPU 服务器，可在本地建立 SSH 端口转发后在浏览器打开 `http://127.0.0.1:5173`：
+
+```bash
+ssh -N -L 5173:127.0.0.1:5173 -p <SSH_PORT> <USER>@<HOST>
+```
+
+- 点击页面右上角 **「示例」** 可直接查看内置的 8 工具完整演示时间线（`frontend/demo/run.json`），不消耗模型额度。
+- 点击右上角 **「配置」** 可在线切换主 Agent / 各工具的模型、思考强度与 `real / mock` 模式。
+
+### 测试样例
+
+**1. 前端与契约测试**
+
+```bash
+# 运行全部前端单元与 HTTP 集成测试（97 项）
+node --test frontend/*.test.mjs
+
+# 单独校验 Tool 01 证据与 Tool 02/03 后端契约
+node --test frontend/tool01-evidence.test.mjs frontend/tool01-evidence-http.test.mjs frontend/tool23-http.test.mjs
+```
+
+**2. 对话框 / CLI 测试样例**
+
+在前端输入框或 `environments/agent/.venv/bin/python -m agent.main "<指令>"` 中可直接输入以下测试任务：
+
+- **单步失败分析（轻量）**：
+  ```text
+  分析仿真记录 <experiment>/<batch> 中的失败场景 <scene_token>，给出失败诱因、BEV 证据和运动学摘要。
+  ```
+- **造数链路（工具 01 → 05，不含后训练）**：
+  ```text
+  分析 <experiment>/<batch> 中的失败场景 <scene_token>，生成三套候选场景需求、检索匹配底场景并完成编辑规划与场景编辑。
+  ```
+- **完整 8 工具闭环（工具 01 → 08）**：
+  ```text
+  针对 <experiment>/<batch> 的失败场景 <scene_token>，完成失败分析、场景构造、视频检索、编辑规划、场景编辑、闭环评测、失败筛选，并执行一轮 RLFT 后训练。
+  ```
+
 ## 验证与测试
 
 ```bash
