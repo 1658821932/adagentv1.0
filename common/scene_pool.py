@@ -91,11 +91,33 @@ def record_used_scene_token(
     return payload["used_scene_tokens"]
 
 
-def extract_succeeded_base_scene_token(run_dir: str | Path) -> str | None:
-    """Return the base scene_token ONLY if Tool 05 (attack_vehicle_editor) succeeded in run_dir."""
+def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: float = 0.5) -> str | None:
+    """Return the base scene_token ONLY if Tool 05 succeeded AND (if Tool 06 ran) closed-loop PDM < max_pdm_score."""
     tools_dir = Path(run_dir) / "tools"
     if not tools_dir.is_dir():
         return None
+    # If policy_runner (Tool 06) ran in this run, require at least one evaluation with score < max_pdm_score
+    t06_dirs = sorted(tools_dir.glob("step_*_policy_runner"))
+    if t06_dirs:
+        passed_failure_gate = False
+        for t06_dir in reversed(t06_dirs):
+            out_p = t06_dir / "output.json"
+            if not out_p.is_file():
+                continue
+            try:
+                out = json.loads(out_p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if out.get("status") != "success":
+                continue
+            res = out.get("result") or {}
+            sub = res.get("pdm_subscores") or res.get("metrics") or {}
+            score = sub.get("score")
+            if isinstance(score, (int, float)) and float(score) < max_pdm_score:
+                passed_failure_gate = True
+                break
+        if not passed_failure_gate:
+            return None
     step_dirs = sorted(tools_dir.glob("step_*_attack_vehicle_editor"))
     for step_dir in reversed(step_dirs):
         out_path = step_dir / "output.json"

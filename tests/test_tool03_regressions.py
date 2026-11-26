@@ -285,3 +285,29 @@ def test_scene_pool_only_extracts_completed_tool05_base_scene(tmp_path):
         "status": "success", "result": {"status": "completed", "scene_id": "2021.09-tok_success"},
     }))
     assert extract_succeeded_base_scene_token(r3) == "tok_success"
+
+
+def test_scene_pool_rejects_high_pdm_tool06_runs(tmp_path):
+    from common.scene_pool import extract_succeeded_base_scene_token
+
+    # Tool 05 completed, but Tool 06 returned PDM=0.85 (>=0.5) -> not a failure scene, do not record
+    r_high = tmp_path / "run_t06_high_pdm"
+    (r_high / "tools" / "step_01_attack_vehicle_editor").mkdir(parents=True)
+    (r_high / "tools" / "step_01_attack_vehicle_editor" / "input.json").write_text(json.dumps({
+        "scene_ref": {"scene_token": "tok_high_pdm"},
+    }))
+    (r_high / "tools" / "step_01_attack_vehicle_editor" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"status": "completed"},
+    }))
+    (r_high / "tools" / "step_02_policy_runner").mkdir(parents=True)
+    (r_high / "tools" / "step_02_policy_runner" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"pdm_subscores": {"score": 0.85}},
+    }))
+    assert extract_succeeded_base_scene_token(r_high) is None
+
+    # Tool 06 returned PDM=0.0 (<0.5) -> genuine failure, record base token
+    (r_high / "tools" / "step_03_policy_runner").mkdir(parents=True)
+    (r_high / "tools" / "step_03_policy_runner" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"pdm_subscores": {"score": 0.0}},
+    }))
+    assert extract_succeeded_base_scene_token(r_high) == "tok_high_pdm"

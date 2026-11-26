@@ -11,7 +11,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CACHE_BASE = PROJECT_ROOT / "data/navtrain_ep_per1/vad_baseline_cache"
@@ -65,6 +67,7 @@ def resolve_baseline_frames_path(
 
 
 def _ego_path_in_origin(frames: list[dict[str, Any]], origin_ego2global: np.ndarray, t0_us: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    import numpy as np
     timestamps = np.array([f["timestamp"] for f in frames], dtype=float)
     times = (timestamps - t0_us) / 1e6
     if len(times) < 2 or np.any(np.diff(times) <= 0):
@@ -120,6 +123,7 @@ def reference_ego_path_from_scene(
     simulation horizon if recorded_frames is longer. Falls back to recorded_frames
     only when no baseline simulation cache exists.
     """
+    import numpy as np
     origin = np.array(recorded_frames[0]["ego2global"], dtype=float)
     t0_us = float(recorded_frames[0]["timestamp"])
     rec_times, rec_xy, rec_yaw = _ego_path_in_origin(recorded_frames, origin, t0_us)
