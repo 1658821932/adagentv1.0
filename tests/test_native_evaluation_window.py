@@ -8,7 +8,7 @@ import pytest
 
 from mcp_servers.worldengine.adapter import client, config
 from mcp_servers.worldengine.adapter.launch import build_commands
-from tools.tool07_policy_runner.schemas import Input
+from tools.tool06_policy_runner.schemas import Input
 
 
 def test_collision_only_launcher_skips_products_but_preserves_closed_loop(tmp_path):

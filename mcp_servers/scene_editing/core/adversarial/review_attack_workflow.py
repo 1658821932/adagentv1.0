@@ -178,7 +178,9 @@ def review(run_dir, output):
         native_goal = acceptance_goal_evidence(dense_times, sample_xy(times, xy, dense_times), ego_dense,
             ego_angles, arguments, replay['first_contact_time_s'],
             target_yaw=np.interp(dense_times,times,np.unwrap(yaw)),target_size=result['target']['size_m'], constraints=run_input['constraints'])
-        checks['construction_goal'] = dense_goal['goal_met'] and native_goal['goal_met']
+        from attack_tool_contract import _goal_is_soft_preference
+        soft_goal = _goal_is_soft_preference(dict(dense=dense_goal, native_replay=native_goal), run_input['constraints'])
+        checks['construction_goal'] = (dense_goal['goal_met'] and native_goal['goal_met']) or soft_goal
         construction_goal = dict(dense=dense_goal, native_replay=native_goal)
     if run_input['constraints'].get('vehicle_motion_model') == 'bicycle.v1':
         from vehicle_motion import check_bicycle

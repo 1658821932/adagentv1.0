@@ -50,7 +50,8 @@ def normalize_constraints(constraints=None):
             effective[key] = config[key]
             continue
         value = supplied[key]
-        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        min_allowed = -0.5 if key == 'official_margin_m' else 0.0
+        if type(value) not in (int, float) or not math.isfinite(value) or value < min_allowed:
             raise AttackConfigurationError('Invalid attack configuration: '+key,
                 setting=key, task_value=value)
         if key in explicit_policy and effective[key] != value:

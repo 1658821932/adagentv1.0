@@ -295,10 +295,17 @@ async function getRunDetail(runId) {
       const evidenceDetail = tool === 'failure_analyzer'
         ? failureAnalyzerEvidence(output, { projectRoot: ROOT }) : null;
 
+      // An executed tool can return an unsuccessful outcome in a successful response.
+      const outcome = output?.result?.status;
+      const outcomeFailed = outcome === 'unable_to_complete' || outcome === 'defense_not_found';
+      const status = output
+        ? (output.status === 'success' && outcomeFailed ? 'error' : (output.status || 'done'))
+        : (runState.active ? 'running' : 'interrupted');
+
       steps.push({
         step: stepNum,
         tool,
-        status: output ? (output.status || 'done') : (runState.active ? 'running' : 'interrupted'),
+        status,
         decision,
         duration,
         elapsed_seconds: runState.active ? elapsedSeconds : null,

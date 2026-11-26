@@ -11,7 +11,6 @@ from typing import Any, Dict, Optional
 
 TOOL_STAGE_MAP = {
     "attack_vehicle_editor": "attack_editing",
-    "ego_trajectory_editor": "ego_editing",
     "failure_analyzer": "failure_analysis",
     "scene_instance_generator": "requirement_generation",
     "video_retriever": "retrieval",

@@ -23,13 +23,16 @@ def test_client_import_does_not_read_credentials():
 
 @pytest.fixture
 def api_file(tmp_path, monkeypatch):
+    from common import api_profiles
     config = json.loads(api_config.API_CONFIG_PATH.read_text())
     config["active_profile"] = "kimi"
+    config["tool_profiles"] = {}
     path = tmp_path / "api.json"
     path.write_text(json.dumps(config))
     env = tmp_path / ".env"
     env.write_text('API_KEY_1 = "offline-fake-credential-one"\nAPI_KEY_2=offline-fake-credential-two\n')
     monkeypatch.setattr(api_config, "API_CONFIG_PATH", path)
+    monkeypatch.setattr(api_profiles, "API_CONFIG", path)
     monkeypatch.setattr(api_config, "ENV_PATH", env)
     monkeypatch.setenv("OPENAI_API_KEY", "offline-original-credential")
     for name in ("API_KEY_1", "API_KEY_2"):

@@ -10,6 +10,7 @@ PositiveFloat = Annotated[float, Field(gt=0)]
 class Input(InputModel):
     model_config = ConfigDict(json_schema_extra={'required': []})
 
+    attack_result: dict[str, Any] | NonEmptyStr | None = Field(default=None, description='Optional Tool 05 attack_vehicle_editor result, envelope or result_ref path; automatically populates scenario_data_folder_path, asset_folder_path, scenario_pkl_file_name and collision_target_track.')
     execution_mode: Literal['native', 'pdm_closed_loop'] = Field(default='native', description='Native full simulation or the independent PDM closed-loop challenge.')
     collision_target_track: NonEmptyStr | None = Field(default=None, description='Native mode: exact attack track from tool05. Return actual post-takeover body-contact evidence independently of PDM score, fault attribution and road compliance. Use tool05 simulation_input with original ego history for attack testing.')
     config_path: NonEmptyStr | None = Field(default=None, description='Optional existing AlgEngine configuration override. Omit to use the policy_config configured in the WorldEngine adapter.')
@@ -45,6 +46,30 @@ class Input(InputModel):
     agent_client: NonEmptyStr | None = Field(default=None, description='Optional native background-agent client override.')
     timeout: PositiveInt = Field(default=86400, description='Simulation process timeout in seconds.')
 
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_attack_result(cls, value):
+        if not isinstance(value, dict) or value.get("attack_result") is None:
+            return value
+        from common.artifacts import load_tool_result
+        data = dict(value)
+        atk = data.pop("attack_result")
+        if isinstance(atk, str):
+            atk = load_tool_result(atk, "attack_vehicle_editor")
+        elif isinstance(atk, dict) and ("tool" in atk or ("status" in atk and "result" in atk)):
+            if atk.get("tool") != "attack_vehicle_editor" or atk.get("status") != "success":
+                raise ValueError("attack_result must be a successful attack_vehicle_editor result")
+            atk = atk["result"]
+        if isinstance(atk, dict):
+            sim = atk.get("simulation_input") or {}
+            for k in ("scenario_data_folder_path", "asset_folder_path", "scenario_pkl_file_name"):
+                if not data.get(k) and sim.get(k):
+                    data[k] = sim[k]
+            if not data.get("collision_target_track") and atk.get("target_track") and data.get("execution_mode", "native") == "native":
+                data["collision_target_track"] = atk["target_track"]
+        return data
+
     @model_validator(mode="after")
     def horizon(self):
         if self.num_history >= self.max_frame_per_scene:
@@ -75,6 +100,6 @@ class Output(OutputModel):
     rollout_dir: NonEmptyStr | None = Field(default=None, description='WorldEngine openscene_format directory for rollout-based training.')
     reward_dir: NonEmptyStr | None = Field(default=None, description='Dense candidate-reward directory including actual plan_idx.csv when collected.')
     candidate_rewards_present: bool = Field(default=False, description='Whether candidate rewards were exported by this run.')
-    rlft_training_data: RLTrainingData | None = Field(default=None, description="Ready RL annotation/reward package for tool09.training_data; null when dense rewards were not requested or no PDM-zero scene is eligible.")
+    rlft_training_data: RLTrainingData | None = Field(default=None, description="Ready RL annotation/reward package for tool08.training_data; null when dense rewards were not requested or no PDM-zero scene is eligible.")
     rlft_data_report: dict[str, Any] | None = Field(default=None, description="Annotation export status, counts and manifest_path; no_eligible_scenes is not a failed simulation.")
     pdm_challenge: dict | None = Field(default=None, description='Independent baseline/attack PDM outcomes; not an official native PDM score.')

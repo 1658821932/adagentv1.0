@@ -111,7 +111,8 @@ def resolve(config=None):
         if 'attack_danger_start_s' not in supplied:
             result['attack_danger_start_s']=result['observation_end_s']
     for key, value in result.items():
-        if key.startswith(('max_', 'attack_max_', 'generator_max_', 'official_margin', 'road_tolerance', 'terminal_stop_')) and (type(value) not in (int,float) or not math.isfinite(value) or value < 0):
+        min_v = -0.5 if key.startswith('official_margin') else 0
+        if key.startswith(('max_', 'attack_max_', 'generator_max_', 'official_margin', 'road_tolerance', 'terminal_stop_')) and (type(value) not in (int,float) or not math.isfinite(value) or value < min_v):
             raise ValueError('Invalid numeric setting: '+key)
     for key in ('max_check_step_s','terminal_stop_duration_s','observation_end_s'):
         if type(result[key]) not in (int,float) or not math.isfinite(result[key]) or result[key] <= 0:

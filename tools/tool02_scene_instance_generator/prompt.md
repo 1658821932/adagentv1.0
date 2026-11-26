@@ -1,43 +1,31 @@
 # Task
-You receive one verified failure analysis from failure_analyzer. Design exactly three ways to build and solve THE SAME target scene. Answer in the language of the input.
+You receive one verified failure analysis from `failure_analyzer` (with `failure`, `kinematics`, and `environment`). Design exactly three distinct implementation candidates (`cand_1`, `cand_2`, `cand_3`) to reproduce and solve THE SAME target scene. Answer in the language of the input.
 
-# target_scene: one fixed sentence
-Cover only weather and time of day, road layout, the ego direction and lane position, and where the other vehicle comes from, which way it drives and its lane position.
-- When `attack.other_origin` is `none`, omit the other vehicle from target_scene and do not add one to any base-video requirement.
-- Take weather and time from environment. If the weather is unknown, say unknown or leave it out.
-- Never turn a UTC timestamp into a local day or night claim without evidence.
-- Do not mention collisions, danger, violations, failures or failure causes.
-- Example: "多云白天，丁字路口，自车右转并保持在本车道，右侧支路一辆车左转并保持在本车道".
+# target_scene (one concise sentence)
+- Describe only weather/time (if known), minimal road layout (`failure.map_context`), ego behavior/phase, and (when a target vehicle exists) the unique target vehicle's class, direction, and relative timing.
+- When `failure.failure_driver` is `departure_ego_only` or `collision_non_vehicle`, omit any other vehicle.
+- Do not mention collisions, violations, failures, brands, colors, cities, or street names.
+- Never infer local day/night from a UTC timestamp without evidence in `environment.extra`.
 
-# attack: copy the measurement
-Repeat the input attack unchanged: map_context, ego_action, ego_lane_keeping, other_origin, other_action, other_lane_keeping. All three candidates share it; never invent another road, direction or lane offset. When other_origin is none there is no target vehicle: other_action and other_lane_keeping are none, attack_edit_strategy must be null, and ego_input_edit_strategy still follows what building the dangerous scene needs.
+# Prioritize adding a vehicle (`add_vehicle` first)
+When `failure.failure_driver` is `collision_with_vehicle` or `departure_by_other`:
+- **Priority**: Prefer finding a clear, editable base video and **adding** the target vehicle (`asset_requirement != null`).
+- **`cand_1` (primary)** MUST add the target vehicle into clear road space (`asset_requirement = {"vehicle_class": "<car|bus|truck>"}`).
+- **`cand_2`** should also prefer adding the target vehicle via a different base-video/ego-input combination (e.g., different clear space or ego approach adjustment).
+- **`cand_3`** may either add the target vehicle via a third distinct combination OR edit an existing vehicle already in the base video (`asset_requirement = null`).
+- Match `asset_requirement.vehicle_class` to upstream `failure.target_class` (`car` / `bus` / `truck`).
 
-Actions describe direction only: straight, turn_left, turn_right. A lane change or lane departure is represented by lane_keeping=left_offset/right_offset with action=straight. Do not infer speed or braking as an action.
+When `failure.failure_driver` is `departure_ego_only` or `collision_non_vehicle`:
+- All three candidates MUST have `asset_requirement = null` and `attack_edit_strategy = null`.
+- Differentiate the three candidates by base-video road/clearance requirements and `ego_input_edit_strategy`.
 
-# Three implementation paths
-For each candidate
-- attack_edit_strategy: how to edit the other vehicle so the scene becomes dangerous, or null when the source already provides it.
-- ego_input_edit_strategy: how to adjust the ego approach speed and timing so the ego reaches the conflict with the edited attack vehicle at the same time. Preserve a realistic driving speed and meaningful difficulty; do not stop early, crawl, or make the conflict trivial. Null only when the recorded ego input already produces that synchronized conflict.
-These two edits together build the dangerous scene: the other vehicle's timing and the ego timing must meet at the conflict.
-- ego_correct_trajectory_strategy: how the ego drives to handle that danger safely. It must not remove the task by stopping unconditionally or avoiding the drive.
+# Per-candidate fields
+- `base_video_requirement`: one sentence stating what the source video must already contain after subtracting the edits. If `asset_requirement != null`, require clear road space where the vehicle will be added (do not require an existing vehicle there). If editing an existing vehicle (`asset_requirement == null` and `attack_edit_strategy != null`), require an editable existing vehicle in that lane/arm.
+- `retrieval_query`: compact search phrase (12–30 Chinese characters, max 48) for the local video index. Include ONLY visible source-video conditions: weather/time if material, minimal road form, ego direction, and required clear space. NEVER include speed, timing, synchronization, conflict, collision, danger, editing, trajectory, lane offset, or other-vehicle actions.
+- `asset_requirement`: `{"vehicle_class": "car" | "bus" | "truck"}` when adding a vehicle, otherwise `null`.
+- `attack_edit_strategy`: one sentence describing how to add/edit the unique target vehicle (incorporating its speed/stationary state, turning, and relative timing from `failure` and `kinematics`), or `null` when no target vehicle exists.
+- `ego_input_edit_strategy`: one sentence on how to adjust ego approach speed/timing so ego reaches the conflict at realistic speed and difficulty, or `null` when recorded ego motion suffices.
 
-# base_video_requirement: what the source video must already contain
-Subtract whatever the two edits will create, then write one sentence with the remaining conditions: road layout, weather, and the vehicle or clear space the edits rely on. Prefer a clear editable area where a vehicle can be added. If a vehicle is edited, the video must contain an editable vehicle; if a vehicle is added, the video must not be required to have it.
-
-# retrieval_query: compact query for video search
-Write a separate, compressed query for the local video index, not a copy of target_scene.
-- Keep only visible source-video conditions: weather/time if material, road form, ego direction, and the required road arm or space being clear.
-- Prefer constructing the conflict by adding a vehicle into clear space. Describe the clear space rather than the future attack vehicle's action.
-- Target 12-30 Chinese characters and never exceed 48.
-- Omit other-vehicle direction, lane offset, speed, timing, synchronization, conflict, editing and trajectory.
-- Example for a right-arm failure: `白天丁字路口，自车右转，右侧支路清晰`.
-- Example for a straight-road failure: `白天城市直路，自车直行，同车道前方清晰`.
-- When `attack.other_origin` is `none`, omit any other-vehicle or insertion-space clause.
-
-# Rules
-- The three candidates share target_scene and attack and differ only in implementation path. Do not design three different roads, and do not fake variety by rewording the correct-behaviour sentence.
-- Vehicles are generic: no brand, colour, city, street or landmark. Keep the background sparse, with no unrelated participants.
-- One short sentence per field; no parameters, timestamps or trajectory points.
-- `retrieval_query` is a short phrase, not a sentence, and the schema enforces its size and banned downstream-editing terms.
-- No editing needed means null; keep ego_correct_trajectory_strategy for post-conflict safe behavior, not for compensating for a mistimed ego_input_edit_strategy.
-- The ego input edit must preserve a meaningful approach speed and the intended task difficulty.
+# Hard rules
+- All three candidates must differ in `(base_video_requirement, attack_edit_strategy, ego_input_edit_strategy)`.
+- Output ONLY a single valid JSON object matching the response schema (`target_scene`, `candidates`). Do not echo `failure_context` or `kinematics`; the runtime attaches them automatically.

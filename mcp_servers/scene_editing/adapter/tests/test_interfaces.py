@@ -73,7 +73,7 @@ def test_existing_target_can_be_selected_inside_backend(source):
 @pytest.mark.parametrize("changes",[
     {"operation":"remove_vehicle"},
     {"operation":"add_vehicle","target_track":None},
-    {"maneuver":"left_cut_in"},
+    {"maneuver":"moving"},
     {"unknown_parameter":1},
     {"constraints":{"target_window_s":[8.0,3.0]}},
 ])
@@ -81,7 +81,7 @@ def test_invalid_editing_inputs_are_rejected(source,changes):
     result=call_tool("attack_vehicle_editor",{**attack_args(source),**changes},mode="real")
     assert result["error"]["type"]=="input_validation_error"
 
-@pytest.mark.parametrize("maneuver",["stationary","left_cut_in"])
+@pytest.mark.parametrize("maneuver",["stationary","moving"])
 def test_added_vehicle_requires_explicit_asset_dimensions_and_maneuver(source,maneuver):
     args={"scene_ref":source,"instruction":"Add a vehicle ahead.","operation":"add_vehicle","maneuver":maneuver,"vehicle":{"asset_path":"/assets/car.ply","size_m":[4.4,2.0,1.6]}}
     result=call_tool("attack_vehicle_editor",args,mode="mock")
@@ -157,15 +157,15 @@ def test_geometry_only_bridge_cannot_claim_default_vad_self_test_success(source,
 def test_mock_expert_csv_cannot_be_passed_as_il_labels(source):
     attack=call_tool("attack_vehicle_editor",attack_args(source),mode="mock")
     ego=call_tool("ego_trajectory_editor",{"attack_result":attack,"target_effect":"Stop."},mode="mock")
-    from tools.tool09_policy_trainer.schemas import Input
+    from tools.tool08_policy_trainer.schemas import Input
     with pytest.raises(ValueError):
         Input.model_validate({"training_mode":"ilft","training_data":{"expert_trajectory_path":ego["result"]["expert_trajectory_path"]},"base_checkpoint":"/base.pth"})
 
 
 def test_optional_handoff_blocks_match_existing_downstream_schemas():
     from mcp_servers.scene_editing.adapter.schemas import SimulationInput,ILTrainingData
-    from tools.tool07_policy_runner.schemas import Input as SimInput
-    from tools.tool09_policy_trainer.schemas import Input as TrainInput
+    from tools.tool06_policy_runner.schemas import Input as SimInput
+    from tools.tool08_policy_trainer.schemas import Input as TrainInput
     s=SimulationInput(scenario_data_folder_path="/native/scenes",asset_folder_path="/native/assets")
     # Source frame_count is package metadata, not a policy_runner argument or
     # an override of its standard 16-frame rollout budget.

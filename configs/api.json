@@ -64,25 +64,34 @@
     "tool_choice_policy": "auto"
   },
   "tool_profiles": {
-    "failure_analyzer": "qwen_flash",
-    "attack_editor": "kimi",
-    "ego_editor": "kimi",
-    "edit_planner": "kimi"
+    "failure_analyzer": "kimi",
+    "edit_planner": "kimi",
+    "attack_editor": "kimi"
   },
   "reasoning_effort": "medium",
   "tool_efforts": {
     "failure_analyzer": "low",
-    "edit_planner": "high",
-    "attack_editor": "low",
-    "ego_editor": "low"
+    "edit_planner": "low",
+    "attack_editor": "low"
   },
   "kimi": {
     "base_url": "https://apicz.boyuerichdata.com/v1",
-    "model": "kimi-k3",
-    "api_key_env": "OPENAI_API_KEY",
+    "model": "kimi-k3.1-pro",
+    "api_key_env": "KIMI_K31_PRO_API_KEY",
     "timeout": 300,
     "max_tokens": 65536,
-    "reasoning_effort": "high",
+    "reasoning_effort": "low",
+    "request_dialect": "kimi",
+    "thinking_mode": "enabled",
+    "tool_choice_policy": "auto"
+  },
+  "kimi_k3": {
+    "base_url": "https://apicz.boyuerichdata.com/v1",
+    "model": "kimi-k3.1-pro",
+    "api_key_env": "KIMI_K31_PRO_API_KEY",
+    "timeout": 300,
+    "max_tokens": 65536,
+    "reasoning_effort": "low",
     "request_dialect": "kimi",
     "thinking_mode": "enabled",
     "tool_choice_policy": "auto"

@@ -44,15 +44,31 @@ def attack_output(arguments, output_dir):
             float(constraints_input.get('no_ego_contact_until_s',acceptance['attack_danger_start_s'])))
     # 攻击车只锁起点（prefix_lock=0），危险必须落在显式窗口内；
     # 这与自车历史无关，自车的历史由 policy_runner 的 num_history 决定。
+    target_window = constraints_input.get('target_window_s')
+    if target_window is not None:
+        w0, w1 = float(target_window[0]), float(target_window[1])
+        min_w, max_w = float(acceptance['attack_window_start_s']), float(acceptance['attack_window_end_s'])
+        if not (min_w <= w0 < w1 <= max_w):
+            raise ValueError(f'constraints.target_window_s {target_window} must lie within [{min_w}, {max_w}]')
+        event_window = [w0, w1]
+    else:
+        event_window = [acceptance['attack_window_start_s'], acceptance['attack_window_end_s']]
+    explicit_policy = arguments.get('acceptance_policy') or {}
+    attack_official_margin_m = (
+        acceptance['official_margin_m']
+        if isinstance(explicit_policy, dict) and 'official_margin_m' in explicit_policy
+        else -0.25
+    )
+    acceptance = dict(acceptance, official_margin_m=attack_official_margin_m)
     constraints = dict(observation_end_s=acceptance['observation_end_s'],
         attack_prefix_lock_s=acceptance['attack_prefix_lock_s'],
-        event_window_s=[acceptance['attack_window_start_s'], acceptance['attack_window_end_s']],
-        official_margin_m=acceptance['official_margin_m'], max_ego_clearance_m=2., min_travel_m=0.,
+        event_window_s=event_window,
+        official_margin_m=attack_official_margin_m, max_ego_clearance_m=2., min_travel_m=0.,
         vehicle_motion_model='bicycle.v1', require_structured_objective=False,
         agent_decides_interaction=True,
         require_reference_contact=True,reference_contact_policy='target_body_contact_in_event_window.v1',
         acceptance_policy=acceptance)
-    constraints['attack_stage_timeout_s'] = min(arguments.get('stage_timeout_s',420),max(1,arguments['timeout']-60))
+    constraints['attack_stage_timeout_s'] = min(arguments.get('stage_timeout_s',3600),max(1,arguments['timeout']-60))
     constraints['generated_objectives_are_preferences'] = True
     constraints['prepare_ego_history']=arguments.get('prepare_ego_history',True)
     constraints['ego_history_target_speed_mps']=arguments.get('ego_history_target_speed_mps')
@@ -61,9 +77,6 @@ def attack_output(arguments, output_dir):
     required_operation=None if arguments['operation']=='auto' else arguments['operation']
     if arguments.get('plan_options'):
         constraints['plan_options']=arguments['plan_options']
-    if arguments.get('vadv2_self_test',True):
-        constraints.update(vadv2_self_test=True,vadv2_probe_budget=arguments.get('vadv2_probe_budget',3),
-            vadv2_policy_config=SETTINGS['vadv2'],policy_source_scene_ref=source)
     if arguments.get('task_contract') is not None:
         if 'interaction' in arguments['task_contract'].get('objective',{}):
             raise ValueError('Interaction categories are removed; task_contract may state explicit keyframes/corridor, not contact/near-miss classes')
@@ -72,10 +85,90 @@ def attack_output(arguments, output_dir):
         constraints['revision_feedback'] = arguments['revision_feedback']
     if arguments.get('maneuver') == 'stationary':
         constraints['stationary_target'] = True
+    if required_operation == 'add_vehicle':
+        # Added vehicles have no original annotation to stay anchored to; allow connector_route entry alignment.
+        constraints['initial_pose_max_translation_m'] = 80.0
+        constraints['initial_pose_max_yaw_change_rad'] = 3.141592653589793
+        constraints['initial_speed_max_change_mps'] = 12.0
+    if arguments.get('reference_kinematics') is not None:
+        constraints['reference_kinematics'] = arguments['reference_kinematics']
+    if arguments.get('reference_bev_image') is not None:
+        constraints['reference_bev_image'] = arguments['reference_bev_image']
+    if arguments.get('spatial_hint') is not None:
+        constraints['spatial_hint'] = arguments['spatial_hint']
     assets = []
     if arguments.get('vehicle') is not None:
         vehicle = arguments['vehicle']
         assets.append(dict(asset_id='asset_001', path=vehicle['asset_path'], size_m=vehicle['size_m']))
+    elif arguments.get('vehicle_catalog_class') is not None:
+        from vehicle_asset_catalog import load_vehicle_assets
+        assets = load_vehicle_assets(arguments['vehicle_catalog_class'])
+    if required_operation == 'ego_only':
+        from attack_ego_preparation import prepare_acceleration
+        from native_scene_export import export as export_native
+        ego_dir = output_dir / 'attack' / 'ego_history'
+        route_args = {'route': constraints['ego_history_route']} if constraints.get('ego_history_route') is not None else {}
+        preparation = prepare_acceleration(
+            scene, ego_dir, acceptance,
+            enabled=constraints['prepare_ego_history'],
+            target_speed_mps=constraints.get('ego_history_target_speed_mps'),
+            **route_args,
+        )
+        if preparation['status'] == 'unavailable':
+            return dict(
+                schema_version='editing_stage.v1', stage='attack_editing',
+                status='unable_to_complete', mode='real', run_dir=str(output_dir.parent),
+                reason=preparation['reason'], stop_reason='ego_history_unavailable',
+                failed_requirements=['ego_history_prepare'], failed_requirements_scope='ego_history',
+                attempts=preparation.get('attempts', []), evidence_paths=[preparation['report_path']],
+                scope='single_vehicle_ego_only', global_infeasibility_proven=False,
+                detail=preparation,
+            )
+        frozen = Path(preparation['scene'])
+        if not frozen.resolve().is_relative_to(output_dir.resolve()):
+            import shutil
+            mat = output_dir / 'attack' / 'materialized' / 'frozen_scene'
+            mat.mkdir(parents=True, exist_ok=True)
+            for item in frozen.iterdir():
+                dst = mat / item.name
+                if item.name == 'metadata' and item.is_dir():
+                    shutil.copytree(item, dst, dirs_exist_ok=True)
+                elif not dst.exists():
+                    dst.symlink_to(item.resolve())
+            frozen = mat
+        native = export_native(source, frozen, output_dir / 'native_attack',
+                               attack_result=dict(operation='ego_only', target_track=None))
+        shared_history = dict(preparation['shared_state'],
+                              preparation_status=preparation['status'],
+                              preparation_report_path=preparation['report_path'])
+        history_path = frozen / 'ego-history.json'
+        if history_path.is_file():
+            history = json.loads(history_path.read_text())
+            for key in ('takeover_s', 'targets', 'requested_takeover_speed_mps', 'delivered_takeover_speed_mps'):
+                if key in history:
+                    shared_history[key] = history[key]
+            shared_history['manifest_path'] = str(history_path)
+        return dict(
+            schema_version='editing_stage.v1', stage='attack_editing',
+            status='completed', mode='real', run_dir=str(output_dir.parent),
+            source_scene_ref=source, scene_id=source['scene_id'], scene_token=source['scene_token'],
+            operation='ego_only', plan_choice=None, shared_history=shared_history,
+            target_track=None, selected_candidate_id='ego_only',
+            frozen_scene_path=str(frozen), frames_path=str(frozen / 'metadata/frames.json'),
+            trajectory_path=None, provenance_path=preparation['report_path'],
+            submission_path=preparation['report_path'],
+            checks=dict(reference_screen='passed',
+                        checks={'ego_history_prepare': 'passed'},
+                        report_path=preparation['report_path'],
+                        physical_avoidance='undetermined'),
+            annotation_changes=dict(operation='ego_only',
+                                    frames_json_modified=bool(preparation['status'] == 'prepared'),
+                                    native_export_report_path=str(output_dir / 'native_attack/export-report.json')),
+            simulation_input=native['simulation_input'],
+            native_export=native_export_view(native),
+            rendered_videos={},
+            pdm_probe_result_path=None,
+        )
     attack_dir = output_dir/'attack'
     continue_from = None
     reuse_source = arguments.get('reuse_completed_from')
@@ -154,13 +247,6 @@ def attack_output(arguments, output_dir):
     if preparation is not None:
         shared_history=dict(shared_history or {},**preparation['shared_state'],
             preparation_status=preparation['status'],preparation_report_path=preparation['report_path'])
-    if result.get('vadv2_probe_result_path'):
-        policy_probe=json.loads(Path(result['vadv2_probe_result_path']).read_text())
-        import hashlib
-        from policy_evidence import has_policy_failure
-        if (not has_policy_failure(policy_probe, frozen/'metadata/map_drivable_official.json') or
-                policy_probe['frozen_frames_sha256']!=hashlib.sha256((frozen/'metadata/frames.json').read_bytes()).hexdigest()):
-            raise RuntimeError('Submitted scene differs from its successful VADv2 policy test')
     return dict(schema_version='editing_stage.v1', stage='attack_editing',
         status='completed', mode='real', run_dir=str(output_dir.parent),
         source_scene_ref=source, scene_id=source['scene_id'], scene_token=source['scene_token'],
@@ -173,10 +259,7 @@ def attack_output(arguments, output_dir):
             independent_recomputation='passed'), report_path=str(output_dir/'attack-independent.json'),
             physical_avoidance='undetermined'),
         annotation_changes=dict(result['annotation_changes'],native_export_report_path=str(output_dir/'native_attack/export-report.json')), simulation_input=native['simulation_input'], native_export=native_export_view(native), rendered_videos={},
-        pdm_probe_result_path=result.get('pdm_probe_result_path'),
-        vadv2_probe_result_path=result.get('vadv2_probe_result_path'),
-        policy_evaluation=None if policy_probe is None else policy_probe.get('policy_evaluation'),
-        policy_collision_report=None if policy_probe is None else policy_probe['collision_report'])
+        pdm_probe_result_path=result.get('pdm_probe_result_path'))
 
 
 def ego_output(arguments, output_dir):

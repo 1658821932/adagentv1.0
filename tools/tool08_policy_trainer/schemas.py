@@ -5,7 +5,7 @@ from tools.contracts import InputModel, OutputModel, NonEmptyStr
 PositiveInt = Annotated[int, Field(gt=0)]
 
 class TrainingData(InputModel):
-    manifest_path: NonEmptyStr | None = Field(default=None, description="RL annotation package manifest returned by tool07; verifies frame/image/plan/reward lineage before training.")
+    manifest_path: NonEmptyStr | None = Field(default=None, description="RL annotation package manifest returned by tool06; verifies frame/image/plan/reward lineage before training.")
     ann_file: NonEmptyStr | None = Field(default=None, description='ILFT converted annotation file; expert trajectory CSV alone is not this file.')
     token_file: NonEmptyStr = Field(description='Token-selection file matching the training scenes.')
     rollout_dir: NonEmptyStr | None = Field(default=None, description='RLFT openscene_format directory with meta_datas/, sensor_blobs/, pdms_pkl/, plan_idx.csv and official all_scenes_pdm_averages_*.csv.')
@@ -22,6 +22,21 @@ class Input(InputModel):
     work_dir: NonEmptyStr | None = Field(default=None, description='Optional export parent; execution uses an isolated runtime task.')
     timeout: PositiveInt = Field(default=86400, description='Training process timeout in seconds.')
     seed: Annotated[int, Field(ge=0)] = Field(default=0, description='Random seed for this training run.')
+    max_pdm_score: float | None = Field(default=None, description='Optional upper bound for RLFT failure scene selection (score < max_pdm_score); None keeps default <= 0.0.')
+    kl_weight: Annotated[float, Field(ge=0.0)] | None = Field(default=None, description='Optional Reverse KL anchor weight D_KL(pi_theta || pi_ref) in TrajScoringHeadRL.')
+    samples_per_gpu: PositiveInt | None = Field(default=None, description='Optional batch size per GPU override.')
+    workers_per_gpu: Annotated[int, Field(ge=0)] | None = Field(default=None, description='Optional dataloader workers per GPU override.')
+    warmup_iters: Annotated[int, Field(ge=0)] | None = Field(default=None, description='Optional LR warmup iterations override.')
+
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_training_mode(cls, value):
+        if isinstance(value, dict) and "training_mode" not in value:
+            td = value.get("training_data")
+            if isinstance(td, dict) and td.get("rollout_dir") and not td.get("ann_file"):
+                return {**value, "training_mode": "rlft"}
+        return value
 
     @model_validator(mode="after")
     def validate_mode(self):

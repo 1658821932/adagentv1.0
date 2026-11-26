@@ -108,6 +108,7 @@ TRAJECTORY_TOOLS.insert(0, function_tool('construct_attack_candidates',
     'Each has position_m=[x,y], one of time_s/time_window_s, and optional speed_mps and yaw_rad. '
     'Set explicit tolerances when needed (defaults: 0.5 m, 0.5 m/s, 0.25 rad). A missed waypoint is reported and cannot qualify the candidate. '
     'Supports stationary/slow lead, merging, crossing or opposite-heading objectives without maneuver templates. '
+    'When using connector_route, omit objective.waypoints (map connector generates waypoints automatically). '
     'New first calls use seed_000. Further calls truly start from parent controls. '
     'Optional edit_window_s limits changed control knots; preserve_outside_window additionally requires reconnection '
     '(outside position<=0.05m, yaw<=0.05rad, velocity<=0.1m/s); failure is reported, never spliced away. '
@@ -203,7 +204,7 @@ drivable-area violation separately. When policy tests are disabled, report refer
 BUDGET: read cumulative_api_budget, constructor_budget and stage_seconds_remaining. In finalization_only,
 choose an existing qualified candidate for review/submission or finish_search; do not restart construction.
 A new tool call cannot reset cumulative budgets. If no candidate can meet the task, finish honestly with the
-measured cause. Use one exposed native tool call and a short reason per turn."""
+measured cause. Lateral intrusion strategy: prefer shallow lateral encroachment into ego's lane (encroaching across the lane edge / clipping ego's near side by ~0.2-0.5m) rather than a full-body total intrusion that completely blocks ego's entire lane, so ego still has a feasible avoidance margin while facing a clear conflict. As soon as at least one candidate has reference_screen_passed=true, inspect and call submit_candidate on the best passing candidate instead of spending extra turns constructing another pool (closed-loop VADv2 verification is handled downstream by policy_runner). Use one exposed native tool call and a short reason per turn."""
 
 
 STATIC_EDIT_PROMPT = """Validate the selected stationary placement. Only the selected target is added or
@@ -399,6 +400,40 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                    for index in sorted(set([0, len(times) // 2, len(times) - 1]))]))
     ego_speeds = np.linalg.norm(np.diff(ego, axis=0), axis=1) / np.diff(times)
     map_connectors = nearby_connectors(scene, frames, ego)
+    road_height_bounds = None
+    try:
+        from road_height import RoadHeightMap, read_recon_translation
+        rhm = RoadHeightMap.load(scene)
+        recon = read_recon_translation(scene)
+        valid_mask = np.isfinite(rhm.heights)
+        if valid_mask.any():
+            py, px = np.nonzero(valid_mask)
+            pts_asset = (np.column_stack([px, py]) / rhm.scale - rhm.translation) @ rhm.rotation
+            pts_world = pts_asset + recon[:2]
+            origin = np.asarray(frames[0]['ego2global'], float)
+            yaw0 = float(np.arctan2(origin[1, 0], origin[0, 0]))
+            rot_inv = np.array([[np.cos(yaw0), np.sin(yaw0)], [-np.sin(yaw0), np.cos(yaw0)]])
+            pts_local = (pts_world - origin[:2, 3]) @ rot_inv.T
+            road_height_bounds = dict(
+                x_min_m=round(float(pts_local[:, 0].min()), 1),
+                x_max_m=round(float(pts_local[:, 0].max()), 1),
+                y_min_m=round(float(pts_local[:, 1].min()), 1),
+                y_max_m=round(float(pts_local[:, 1].max()), 1),
+                note='All added-vehicle placements must stay inside this reconstructed 3DGS road-height coverage.',
+            )
+            filtered_connectors = []
+            for conn in map_connectors:
+                pt = conn.get('entry_xy_m') or conn.get('center_xy_m') or conn.get('xy_m')
+                if isinstance(pt, (list, tuple)) and len(pt) == 2:
+                    if (road_height_bounds['x_min_m'] <= pt[0] <= road_height_bounds['x_max_m']
+                            and road_height_bounds['y_min_m'] <= pt[1] <= road_height_bounds['y_max_m']):
+                        filtered_connectors.append(conn)
+                else:
+                    filtered_connectors.append(conn)
+            if filtered_connectors:
+                map_connectors = filtered_connectors
+    except Exception:
+        pass
     context = dict(instruction=instruction, scene=str(scene), assets=assets,
         existing_vehicles=catalog, required_operation=required_operation, required_track=required_track,
         plan_options=options,previous_object_feedback=constraints.get('object_selection_feedback',[]),
@@ -443,6 +478,12 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
     decision_context['conflict_evidence']=conflict
     decision_context['placement_preview_budget']=dict(max_evaluated_hypotheses=6,scope='shared across attack object revisions and retries')
     decision_context['scene_layout']=actor_view(times,ego,actors,required_track)
+    if constraints.get('reference_kinematics'):
+        decision_context['reference_kinematics']=constraints['reference_kinematics']
+    if constraints.get('spatial_hint'):
+        decision_context['spatial_hint']=constraints['spatial_hint']
+    if road_height_bounds is not None:
+        decision_context['road_height_bounds_m']=road_height_bounds
     decision_context['visual_guidance']=GUIDANCE
     decision_context=selection_view(decision_context)
     feedback = None
@@ -465,6 +506,7 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
         decision_context['existing_vehicles'] = available
         decision_context['rejected_initial_placements'] = list(rejections.values())
         preview_guidance=('Use conflict_evidence and the time-labelled map to locate interactions inside the event window. '
+            'When spatial_hint.attack_start_xy_m is provided (green star start_hint on the map), prioritize placing add_vehicle naturally centered inside its own lane (e.g. oncoming or adjacent lane, aligned with lane direction, never straddling the ego lane or angled artificially) near start_hint inside road_height_bounds_m rather than spending turns probing distant connector IDs. '
             'When alternatives are uncertain, preview_attack_options compares up to3 hypotheses without VAD or candidate creation. '
             'Reference-path contact is not policy failure; assess slower/coasting/braking estimates without treating them as policy predictions. '
             'Preserve an expert defense opportunity; moving an obstacle arbitrarily close is not the objective. '
@@ -485,7 +527,12 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
         # Requests are rebuilt independently: a preview response must not drop
         # the only layout image from the following selection decision.
         if isinstance(content,str): content=[{'type':'text','text':content}]
-        messages=[{'role':'user','content':[*content,image_part(conflict_map)]}]
+        ref_bev = constraints.get('reference_bev_image')
+        extra_images = []
+        if ref_bev and Path(ref_bev).is_file():
+            extra_images.append({'type':'text','text':'Reference failure BEV (imitate this interaction geometry on the current scene conflict map below):'})
+            extra_images.append(image_part(ref_bev))
+        messages=[{'role':'user','content':[*content,*extra_images,image_part(conflict_map)]}]
         _, attempt = archive.complete(f'object_{turn:02d}', messages, total_seconds=timeout_seconds,
             no_output_seconds=min(60, timeout_seconds), retries=2,
             max_tokens=max_tokens, extra_body={'thinking':{'type':'enabled'}}, reasoning_effort=reasoning_effort(),
@@ -509,6 +556,41 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 feedback = dict(status='route_preview', connector_route={k: v for k, v in plan.items() if k != 'waypoints'},
                     initial_state=dict(x_m=first['position_m'][0], y_m=first['position_m'][1],
                         yaw_rad=first['yaw_rad'], speed_mps=first['speed_mps'], time_s=first['time_s']))
+                if assets:
+                    try:
+                        from road_height import RoadHeightMap, read_recon_translation
+                        surface = RoadHeightMap.load(scene)
+                        recon = read_recon_translation(scene)
+                        origin = np.asarray(frames[0]['ego2global'], float)
+                        yaw0 = float(np.arctan2(origin[1, 0], origin[0, 0]))
+                        rotation = np.array([[np.cos(yaw0), -np.sin(yaw0)], [np.sin(yaw0), np.cos(yaw0)]])
+                        ref_size = assets[0]['size_m'][:2]
+                        supported = []
+                        for wp in plan['waypoints']:
+                            pos_local = np.asarray(wp['position_m'], float)
+                            pos_recon = pos_local @ rotation.T + origin[:2, 3] - recon[:2]
+                            try:
+                                plane = surface.placement_plane(*pos_recon, *ref_size, yaw0 + float(wp['yaw_rad']))
+                                if plane['max_corner_residual_m'] <= 0.1:
+                                    supported.append(wp)
+                            except Exception:
+                                pass
+                        feedback['initial_state_has_road_height'] = bool(supported and supported[0] is first)
+                        if not feedback['initial_state_has_road_height']:
+                            if supported:
+                                s0 = supported[0]
+                                feedback['first_supported_initial_state'] = dict(
+                                    x_m=s0['position_m'][0], y_m=s0['position_m'][1],
+                                    yaw_rad=s0['yaw_rad'], speed_mps=s0['speed_mps'], time_s=s0['time_s'])
+                                feedback['road_height_guidance'] = (
+                                    'Route start is outside reconstructed road-height coverage. '
+                                    'Place add_vehicle at first_supported_initial_state (or reduce approach_m).')
+                            else:
+                                feedback['road_height_guidance'] = (
+                                    'No waypoint along this preview has reconstructed road-height support; '
+                                    'choose a closer connector or smaller approach_m.')
+                    except Exception:
+                        pass
                 connector_preview = feedback
                 archive_exchange(folder, turn, call, dict(feedback, waypoints=plan['waypoints']), started=tool_started)
                 continue
@@ -557,13 +639,22 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 track = f'synthetic_vehicle_{track_index:03d}'
                 if constraints.get('stationary_target') and args['speed_mps'] != 0:
                     raise ValueError('User requires a stationary added vehicle: initial speed must be zero')
-                direction = np.array([np.cos(args['yaw_rad']), np.sin(args['yaw_rad'])])
-                seed = np.array([args['x_m'], args['y_m']]) + (times - times[0])[:, None] * args['speed_mps'] * direction
-                angles = np.full(len(times), args['yaw_rad'])
+                from connector_route import lane_centerline_seed
+                goal_xy = [float(ego[len(ego)//2, 0]), float(ego[len(ego)//2, 1])] if len(ego) else None
+                lane_seed = (None if constraints.get('stationary_target') or args['speed_mps'] <= 0
+                             else lane_centerline_seed(scene, frames, args['x_m'], args['y_m'], args['yaw_rad'], args['speed_mps'], times, goal_xy=goal_xy))
+                if lane_seed is not None:
+                    seed, angles, start_xy, start_yaw = lane_seed
+                    init_state = dict(x_m=float(start_xy[0]), y_m=float(start_xy[1]), yaw_rad=float(start_yaw))
+                else:
+                    direction = np.array([np.cos(args['yaw_rad']), np.sin(args['yaw_rad'])])
+                    seed = np.array([args['x_m'], args['y_m']]) + (times - times[0])[:, None] * args['speed_mps'] * direction
+                    angles = np.full(len(times), args['yaw_rad'])
+                    init_state = dict(x_m=args['x_m'], y_m=args['y_m'], yaw_rad=args['yaw_rad'])
                 size = asset['size_m']
                 target = dict(operation='add_vehicle', track_id=track, size_m=size,
-                              asset_path=asset['path'], initial_speed_mps=args['speed_mps'],
-                              initial_state=dict(x_m=args['x_m'], y_m=args['y_m'], yaw_rad=args['yaw_rad']))
+                              asset_id=asset['asset_id'], asset_path=asset['path'], initial_speed_mps=args['speed_mps'],
+                              initial_state=init_state)
                 placement_key = (name, args['asset_id'], *numbers)
             else:
                 raise ValueError('Unknown object-selection tool')
@@ -576,6 +667,15 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
             rejection = rejections.get(placement_key)
             if rejection is None:
                 rejection = initial_road_failure(prefix_times, prefix_xy, prefix_yaw, size, road, margin)
+                if rejection is not None and name == 'add_vehicle' and len(assets) > 1:
+                    from attack_scene_evidence import find_road_compatible_asset
+                    compatible = find_road_compatible_asset(
+                        assets, asset, prefix_times, prefix_xy, prefix_yaw, road, margin)
+                    if compatible is not None:
+                        size = compatible['size_m']
+                        target.update(asset_id=compatible['asset_id'], asset_path=compatible['path'],
+                                      size_m=size, requested_asset_id=asset['asset_id'])
+                        rejection = None
                 if rejection is not None:
                     rejections[placement_key] = dict(rejection, operation=target['operation'], track_id=track,
                         **({'initial_state': target['initial_state']} if name == 'add_vehicle' else {}))
@@ -611,10 +711,17 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
                 rotation=np.array([[np.cos(yaw0),-np.sin(yaw0)],[np.sin(yaw0),np.cos(yaw0)]])
                 support_xy = prefix_xy[:1] if constraints.get('stationary_target') else prefix_xy
                 support_yaw = prefix_yaw[:1] if constraints.get('stationary_target') else prefix_yaw
-                for position,angle in zip(support_xy@rotation.T+origin[:2,3]-recon[:2],support_yaw):
-                    plane=surface.placement_plane(*position,*size[:2],yaw0+angle)
+                for local_pt, position, angle in zip(support_xy, support_xy@rotation.T+origin[:2,3]-recon[:2], support_yaw):
+                    try:
+                        plane=surface.placement_plane(*position,*size[:2],yaw0+angle)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Road height map has missing/sparse coverage near scene local ({local_pt[0]:.2f}, {local_pt[1]:.2f}) "
+                            f"for start ({args['x_m']:.2f}, {args['y_m']:.2f}) [{exc}]. "
+                            "Do NOT repeat this exact start; move closer to the main road/intersection or choose a different start coordinate."
+                        ) from exc
                     if plane['max_corner_residual_m']>.1:
-                        raise ValueError('Initial prefix has non-planar road support; choose another initial state')
+                        raise ValueError(f"Initial prefix near scene local ({local_pt[0]:.2f}, {local_pt[1]:.2f}) has non-planar road support; choose another initial state")
             initial_relation=check_initial_relation(times,seed,angles,ego,yaw,size,constraints.get('initial_relation'))
             seed_path = folder / 'placements' / f'attempt_{turn:02d}' / 'seed_trajectory.csv'
             write_trajectory(seed_path, times, seed, angles, size)
@@ -1053,7 +1160,8 @@ def run(scene, output, instruction, assets=None, constraints=None, timeout_secon
     frames = json.loads((scene / 'metadata/frames.json').read_text())
     times, _, _ = ego_path_from_frames(frames)
     for key in ('observation_end_s', 'attack_prefix_lock_s', 'official_margin_m', 'max_ego_clearance_m', 'min_travel_m'):
-        if type(config[key]) not in (int, float) or not np.isfinite(config[key]) or config[key] < 0:
+        min_v = -0.5 if key == 'official_margin_m' else 0
+        if type(config[key]) not in (int, float) or not np.isfinite(config[key]) or config[key] < min_v:
             raise ValueError(f'{key} must be finite and nonnegative')
     if not 0. <= config['observation_end_s'] < times[-1]:
         raise ValueError('WE observation horizon must fit the scene; it is not an edit boundary')

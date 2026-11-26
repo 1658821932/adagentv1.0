@@ -20,6 +20,11 @@ def initial_state(times, xy, yaw, size, boundary, acceptance):
         span=float(times[1]-times[0])
         velocity=(np.asarray(xy[1])-np.asarray(xy[0]))/span
         yaw_rate=float(np.arctan2(np.sin(yaw[1]-yaw[0]),np.cos(yaw[1]-yaw[0])))/span
+    elif len(times) >= 4:
+        from scipy.interpolate import CubicSpline
+        unwrapped = np.unwrap(yaw)
+        velocity = np.asarray(CubicSpline(times, xy, axis=0).derivative()(boundary), dtype=float)
+        yaw_rate = float(CubicSpline(times, unwrapped).derivative()(boundary))
     else:
         velocity = (centre - sample_xy(times, xy, [before])[0]) / (boundary - before)
         before_angle = float(np.interp(before, times, np.unwrap(yaw)))

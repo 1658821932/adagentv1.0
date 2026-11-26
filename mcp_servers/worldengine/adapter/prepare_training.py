@@ -71,9 +71,10 @@ def prepare(args):
         # Failure selection: keep scenes whose closed-loop PDM total score is 0.
         allowed = set(tokens["tokens"])
         scene_scores, scores_file = load_scene_scores(rollout)
-        failed = failed_scene_anchors(scene_scores, allowed)
+        max_pdm_score = args.get("max_pdm_score")
+        failed = failed_scene_anchors(scene_scores, allowed, max_score=max_pdm_score)
         if not failed:
-            raise ValueError("No scene with a closed-loop PDM score of 0 among the requested tokens")
+            raise ValueError(f"No scene matching closed-loop PDM filter (max_score={max_pdm_score}) among the requested tokens")
         name = "agent_rollout"
         history = 3
         cache = {}
@@ -141,9 +142,16 @@ def prepare(args):
             customized_filter=None, include_real_failures=False, normal_ratio=0)
         cfg.model.planning_head.update(rl_finetuning=True, reward_shaping=True,
             vocab_path=str(runtime / "data/alg_engine/test_8192_kmeans.npy"))
+        if args.get("kl_weight") is not None:
+            rl_w = dict(cfg.model.planning_head.get("rl_loss_weight", {}))
+            rl_w["kl"] = float(args["kl_weight"])
+            cfg.model.planning_head["rl_loss_weight"] = rl_w
+            report["kl_weight"] = float(args["kl_weight"])
+        filter_desc = (f"closed-loop PDM total score < {max_pdm_score}"
+                       if max_pdm_score is not None else "closed-loop PDM total score == 0")
         report.update(metadata_frames=len(infos), reward_frames=reward_frames,
             selected_scenes=len(failed), selected_samples=selected,
-            failure_filter="closed-loop PDM total score == 0",
+            failure_filter=filter_desc,
             pdm_scores_file=str(scores_file),
             rollout_dir=str(rollout), reward_source="actual WE candidate scores",
             vocabulary_sha256=hashlib.sha256(Path(data["vocab_path"]).expanduser().read_bytes()).hexdigest())
@@ -163,7 +171,11 @@ def prepare(args):
         if not eligible:
             raise ValueError("IL token selection has no sample with the required history; select a later frame")
         report["eligible_history_samples"] = eligible
-    cfg.data.update(samples_per_gpu=1, workers_per_gpu=0)
+    bs = int(args["samples_per_gpu"]) if args.get("samples_per_gpu") is not None else 1
+    nw = int(args["workers_per_gpu"]) if args.get("workers_per_gpu") is not None else 0
+    cfg.data.update(samples_per_gpu=bs, workers_per_gpu=nw)
+    if args.get("warmup_iters") is not None and cfg.get("lr_config"):
+        cfg.lr_config["warmup_iters"] = int(args["warmup_iters"])
     cfg.load_from = args["base_checkpoint"]
     cfg.resume_from = None
     cfg.total_epochs = args["epochs"]

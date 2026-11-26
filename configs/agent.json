@@ -12,7 +12,6 @@
       "video_retriever": "real",
       "edit_planner": "real",
       "attack_vehicle_editor": "real",
-      "ego_trajectory_editor": "real",
       "policy_runner": "real",
       "failure_case_filter": "real",
       "policy_trainer": "real"

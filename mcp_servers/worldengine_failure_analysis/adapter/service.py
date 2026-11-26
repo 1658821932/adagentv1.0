@@ -60,7 +60,8 @@ def _is_archive(path: Path) -> bool:
     return path.is_dir() and (path / "scene_index.csv").is_file()
 
 
-REQUIRED_FACT_KEYS = ("token", "map_location", "violation_step", "failure", "attack",
+REQUIRED_FACT_KEYS = ("token", "map_location", "violation_step", "outcome",
+                      "ego_kinematics", "nearby_vehicles", "trajectories_path",
                       "environment", "frame_images", "bev_image")
 
 

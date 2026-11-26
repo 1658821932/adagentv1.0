@@ -6,7 +6,8 @@ def attack(arguments):
     data=AttackInput.model_validate(arguments)
     operation=data.operation;track=data.target_track;choice=None
     if operation=='auto':
-        option=next(option for option in data.plan_options if option.operation=='edit_existing' or data.vehicle is not None)
+        can_add = data.vehicle is not None or data.vehicle_catalog_class is not None
+        option=next(option for option in data.plan_options if option.operation=='edit_existing' or can_add)
         operation=option.operation;track=option.target_track
         choice=dict(option_id=option.option_id,operation=operation,reason='Deterministic mock selection; not an evaluated scene decision')
     root=Path("/mock/scene_editing/attack")

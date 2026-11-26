@@ -1,17 +1,20 @@
+"""Tool 04 purpose and invocation guidance; field contracts come from Schema."""
 from tools.llm_runtime import make_description
 from .schemas import Input, Output
 
-DESCRIPTION = make_description(name='edit_planner',
-    description='Review one selected candidate along its recorded trajectory using raw nuPlan map, lane, trajectory and annotation facts, selecting the first route junction that can support the target interaction. Produce a deterministic adapted strategy without a visual model. If the rank-1 scene is unsuitable, continue automatically with tool03 alternatives ranks 2 and 3.',
-    when_to_use='Between tool03 retrieval and the attack/ego editors.', input_model=Input, output_model=Output,
-    handoff={'input': 'scenario_result: successful tool02 envelope, result or result_ref; candidate_id: the selected candidate; retrieval_result: successful tool03 envelope, result or result_ref whose candidate_id must equal the selection.',
-             'output': 'ready: use attack_input unchanged for tool05; adapted_plan contains the human-readable three-part strategy, target_scene and attack are copied from tool02, and evidence.selected_rank identifies the scene that passed. unsuitable after all ranked alternatives: retrieve again using retrieval_suggestion. needs_information: obtain the missing map or annotation evidence, then review again.'},
-    rules=['Map facts come from the raw nuPlan map and are measured by code (physical lanes by lane_fid, turns and directions from baseline paths, recorded-route junction candidates and their lane connectors). No visual model is called.',
-           'For t_junction/cross_intersection, evaluate junctions traversed by the recorded route in route order. If the first junction lacks the required approach or target arm, test the next route-proximate junction; select the first compatible one and record all attempts. A four-arm cross can satisfy a t_junction target when the required approach, lane movements and space exist; extra arms may stay empty. straight_road, curve and merge targets do not need a junction. Do not search roads outside the recorded route corridor or gate this review on Gaussian asset coverage.',
-           'The source ego path is an editable initial condition, so its recorded turn need not equal tool01 ego_action. A target straight can describe the interaction phase: ego may approach straight, meet the other vehicle during that approach or the start of a turn, then follow the existing road through a normal turn. Do not reject for a final turn, no forward exit or no straight connector. Map support still requires a connected interaction path, usable space and no fixed boundary crossing. Arbitrary connectors are insufficient. A physical junction may span several connected intersection regions. Distance and timing are resolved in the adapted plan, not as structural rejection.',
-           'Missing evidence stays unknown. A compatible later junction on the same recorded route is valid; do not reject solely because the first junction is incompatible.',
-           'Rank-1 unsuitable triggers automatic checks of tool03 alternatives in rank order; return the first ready scene and record retrieval_attempts in evidence.',
-           'ready means the structure supports the scene and attack_input is a validated tool05 request; no attack trajectory is generated until tool05 runs.',
-           'Source positions, speeds and timings are editable, so they are reasons to adapt the plan, not to reject the scene.',
-           'ego_input_edit_strategy may adjust the ego path, direction, speed and timing to use an existing connected route and meet the edited attack vehicle during the target interaction phase. Preserve meaningful speed and difficulty; early stopping, crawling or avoiding the conflict is not valid difficulty reduction. ego_correct_trajectory_strategy is only the post-conflict correct response.',
-           'This review does not run trajectory optimization, PDM or scene rendering.'])
+DESCRIPTION = make_description(
+    name="edit_planner",
+    description="双 BEV 对照模仿规划器：将工具①的原失败仿真 BEV 与工具③新检索真实底场景的标准 16 帧 BEV 对照，结合 3DGS 原采集轨迹约束审查可编辑性，并输出可直接交给工具⑤的确定性 attack_input。",
+    when_to_use="在 video_retriever 绑定真实底场景后、进入 attack_vehicle_editor 之前，验证底场景是否能复刻原危险场景并生成针对该底场景的模仿规划。",
+    input_model=Input,
+    output_model=Output,
+    handoff={
+        "input": "传入 scenario_result（工具②结果/ref）、selected candidate_id 和 retrieval_result（工具③结果/ref）。",
+        "output": "suitability=ready 且为有车失败时，直接将返回的 attack_input 原样传给 attack_vehicle_editor；若 unsuitable，使用 retrieval_suggestion 重新检索；若为单车失败且 ready，attack_input 为 null，不调用工具⑤。",
+    },
+    rules=[
+        "3DGS 高斯点云围绕真实底场景原采集轨迹 E0..E15 重建，自车不可改道去未采集支路，只能微调速度或小幅横向偏移。",
+        "候选带 asset_requirement 时锁定 operation=add_vehicle，由工具⑤按原生尺寸和官方道路校验选择资产；仅在用户明确指定时传入车型约束；编辑既有车时锁定 operation=edit_existing。",
+        "ready 时自动输出落在 [1.5, 7.5]s 内的 target_window_s 并填入 attack_input.constraints。",
+    ],
+)

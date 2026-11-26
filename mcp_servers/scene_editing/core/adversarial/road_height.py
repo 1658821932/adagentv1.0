@@ -107,22 +107,48 @@ class RoadHeightMap:
         return 0 <= px <= cols-1 and 0 <= py <= rows-1
 
     def placement_plane(self, x, y, length, width, yaw):
-        """Fit the road plane under a vehicle footprint; returns center height,
-        the 3x3 rotation aligning local +X-forward/+Z-up to the road, and the
-        worst corner residual (road flatness over the footprint)."""
+        """Fit the road plane under a vehicle footprint; prefers all 4 corners,
+        and if any corner lacks road height data falls back to center-anchored
+        partial plane fit or flat level placement (only failing when the center
+        point itself has no road height data)."""
         c, s = math.cos(float(yaw)), math.sin(float(yaw))
         corners = np.array([(dx, dy) for dx in (length/2, -length/2) for dy in (width/2, -width/2)])
         xy = np.array([x, y]) + corners @ np.array([[c, s], [-s, c]])
-        z = np.array([self.height_at(px, py) for px, py in xy])
-        design = np.column_stack([xy, np.ones(len(xy))])
-        (a, b, base), *_ = np.linalg.lstsq(design, z, rcond=None)
-        residual = float(np.max(np.abs(z-(design @ [a, b, base]))))
-        normal = np.array([-a, -b, 1.]); normal /= np.linalg.norm(normal)
+        corner_zs = [self.try_height_at(px, py) for px, py in xy]
+        if all(v is not None for v in corner_zs):
+            fit_xy = xy
+            fit_z = np.array(corner_zs, dtype=float)
+            design = np.column_stack([fit_xy, np.ones(len(fit_xy))])
+            (a, b, base), *_ = np.linalg.lstsq(design, fit_z, rcond=None)
+            residual = float(np.max(np.abs(fit_z - (design @ [a, b, base]))))
+            z_center = float(a * x + b * y + base)
+            normal = np.array([-a, -b, 1.]); normal /= np.linalg.norm(normal)
+        else:
+            # Center point must have valid road height data
+            z_c = self.height_at(x, y)
+            valid_pts = [(float(px), float(py), float(vz)) for (px, py), vz in zip(xy, corner_zs) if vz is not None]
+            valid_pts.append((float(x), float(y), float(z_c)))
+            use_flat = True
+            if len(valid_pts) >= 3:
+                arr = np.asarray(valid_pts, dtype=float)
+                design = np.column_stack([arr[:, :2], np.ones(len(arr))])
+                coef, _, rank, _ = np.linalg.lstsq(design, arr[:, 2], rcond=None)
+                res = float(np.max(np.abs(arr[:, 2] - (design @ coef))))
+                if rank >= 3 and res <= 0.1 and np.isfinite(coef).all():
+                    a, b, base = float(coef[0]), float(coef[1]), float(coef[2])
+                    residual = res
+                    z_center = float(a * x + b * y + base)
+                    normal = np.array([-a, -b, 1.]); normal /= np.linalg.norm(normal)
+                    use_flat = False
+            if use_flat:
+                z_center = float(z_c)
+                residual = 0.0
+                normal = np.array([0., 0., 1.])
         forward = np.array([c, s, 0.])
         x_axis = forward-normal*np.dot(forward, normal); x_axis /= np.linalg.norm(x_axis)
         y_axis = np.cross(normal, x_axis)
         rotation = np.column_stack([x_axis, y_axis, normal])
-        return dict(z_center=float(a*x+b*y+base), rotation=rotation,
+        return dict(z_center=z_center, rotation=rotation,
                     pitch=float(math.asin(np.clip(x_axis[2], -1, 1))),
                     roll=float(math.asin(np.clip(y_axis[2], -1, 1))),
                     max_corner_residual_m=residual)

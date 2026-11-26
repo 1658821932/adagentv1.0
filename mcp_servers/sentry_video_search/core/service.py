@@ -296,8 +296,10 @@ def search_local(
     config: SearchConfig | None = None,
     *,
     bind_source: Callable[[str], dict[str, Any]] | None = None,
+    source_filter: Callable[[str], bool] | None = None,
+    extra_search_results: int = 0,
 ) -> VideoSearchResult:
-    """Search the local index, optionally requiring a binding for the selected source."""
+    """Search the local index, optionally filtering and binding source videos."""
     requirement = requirement.strip()
     if not requirement:
         raise ValueError("requirement must not be empty")
@@ -312,7 +314,12 @@ def search_local(
 
     try:
         stage_start = time.perf_counter()
-        hits = _search_index(requirement, config, timings=timings)
+        index_config = replace(config, search_results=config.search_results + extra_search_results)
+        hits = _search_index(requirement, index_config, timings=timings)
+        if source_filter is not None:
+            hits = [
+                hit for hit in hits if source_filter(hit["source_file"])
+            ][:config.search_results]
         timings["local_search_seconds"] = round(time.perf_counter() - stage_start, 3)
         _write_json(
             run_dir / "local_search.json",
@@ -323,6 +330,8 @@ def search_local(
         )
 
         if not hits:
+            if source_filter is not None:
+                raise RuntimeError("No eligible local matches after excluding previously rejected scenes")
             raise RuntimeError("Local index is empty or contains no matching video")
 
         if float(hits[0]["similarity_score"]) < config.match_threshold:

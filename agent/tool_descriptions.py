@@ -1,14 +1,13 @@
-"""Public tool catalog, ordered tool01 through tool09."""
+"""Public tool catalog, ordered tool01 through tool08."""
 from tools.tool01_failure_analyzer.description import DESCRIPTION as TOOL01
 from tools.tool02_scene_instance_generator.description import DESCRIPTION as TOOL02
 from tools.tool03_video_retriever.description import DESCRIPTION as TOOL03
 from tools.tool04_edit_planner.description import DESCRIPTION as TOOL04
 from tools.tool05_attack_vehicle_editor.description import DESCRIPTION as TOOL05
-from tools.tool06_ego_trajectory_editor.description import DESCRIPTION as TOOL06
-from tools.tool07_policy_runner.description import DESCRIPTION as TOOL07
-from tools.tool08_failure_case_filter.description import DESCRIPTION as TOOL08
-from tools.tool09_policy_trainer.description import DESCRIPTION as TOOL09
-TOOLS = [TOOL01, TOOL02, TOOL03, TOOL04, TOOL05, TOOL06, TOOL07, TOOL08, TOOL09]
+from tools.tool06_policy_runner.description import DESCRIPTION as TOOL06
+from tools.tool07_failure_case_filter.description import DESCRIPTION as TOOL07
+from tools.tool08_policy_trainer.description import DESCRIPTION as TOOL08
+TOOLS = [TOOL01, TOOL02, TOOL03, TOOL04, TOOL05, TOOL06, TOOL07, TOOL08]
 
 # Handoff fields are passed by reference: the LLM sends the upstream step's
 # result_ref path string, never an inlined copy of a previous tool result.
@@ -16,7 +15,7 @@ TOOLS = [TOOL01, TOOL02, TOOL03, TOOL04, TOOL05, TOOL06, TOOL07, TOOL08, TOOL09]
 REFERENCE_FIELDS = {
     "edit_planner": {"retrieval_result": "Absolute result_ref path of the successful video_retriever history step."},
     "attack_vehicle_editor": {"scene_ref": "Absolute result_ref path of the successful video_retriever history step."},
-    "ego_trajectory_editor": {"attack_result": "Absolute result_ref path of the successful attack_vehicle_editor history step."},
+    "policy_runner": {"attack_result": "Absolute result_ref path of the successful attack_vehicle_editor history step."},
 }
 
 
@@ -78,7 +77,7 @@ def get_function_tools():
                 "reason":{"type":"string","minLength":1,"description":"Why this call advances the task."},
                 "arguments":arguments,
                 "execution":{"type":"object","properties":{"retry":{"type":"boolean"},
-                    "background":{"type":"boolean","description":"For independent tool06/tool07 only: submit and return the persistent job without waiting."},
+                    "background":{"type":"boolean","description":"For policy_runner (tool06) only: submit and return the persistent job without waiting."},
                     "job_id":{"type":"string","minLength":1,"description":"Reconnect to the existing same-tool job; keep original arguments and use background=false to wait."}},
                              "additionalProperties":False,
                              "description":"Set retry=true only for a deliberate retry/new execution. Background jobs must be collected before finish."},

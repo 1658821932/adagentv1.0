@@ -81,7 +81,7 @@ def test_shared_launcher_changes_scoring_not_vad_predictor_horizon(tmp_path):
 
 
 def test_public_native_schema_derives_window_and_rejects_stale_manual_override():
-    from tools.tool07_policy_runner.schemas import Input
+    from tools.tool06_policy_runner.schemas import Input
     arguments=dict(config_path='/cfg',checkpoint_path='/weights',model_name='p',data_type='s',
         max_frame_per_scene=24,num_history=4,num_future=20)
     assert Input.model_validate(arguments).sampling_poses is None

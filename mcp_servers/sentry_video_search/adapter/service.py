@@ -9,15 +9,29 @@ def retrieve_video(input_data: dict) -> dict:
     return call(input_data)
 
 @runtime_task("sentry_video_search", "search_local")
-def search_local(requirement, config=None):
+def search_local(requirement, config=None, *, excluded_scene_tokens=()):
     from ..core.config import SearchConfig
     from ..core.service import search_local as search
     from ..core.workspace import bind_run
-    from .scene_binding import bind_scene
+    from .scene_binding import bind_scene, source_scene_token
+
+    config = config or SearchConfig()
+    excluded = set(excluded_scene_tokens)
+
+    def eligible(source):
+        try:
+            return source_scene_token(source) not in excluded
+        except (FileNotFoundError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+
     run = current_run("sentry_video_search")
     with bind_run(run), bind_profiles(get_profile, request_audit=audited_json_call):
-        return search(requirement, config or SearchConfig(),
-                      bind_source=lambda source: bind_scene(source, run.output))
+        return search(
+            requirement, config,
+            bind_source=lambda source: bind_scene(source, run.output),
+            source_filter=eligible if excluded else None,
+            extra_search_results=len(excluded) * config.search_results,
+        )
 
 @runtime_task("sentry_video_search", "index_local")
 def index_local(path, config=None):

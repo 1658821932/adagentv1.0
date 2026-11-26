@@ -132,8 +132,8 @@ def event_window_guidance(times, gap, window, required=False):
     late=0. if first_contact is None else max(0.,first_contact-upper)
     proximity_weight=10. if required else 2.5
     late_weight=8. if required else 4.
-    residuals=[proximity_weight*max(0.,minimum),late_weight*late,
-        4.*max(0.,.02-penetration) if required else 0.]
+    penetration_res = (4.*max(0.,.02-penetration) + 3.*max(0.,penetration-0.5)) if required else 0.
+    residuals=[proximity_weight*max(0.,minimum),late_weight*late,penetration_res]
     metrics=dict(window_min_signed_gap_m=minimum,window_penetration_m=penetration,
         window_contact_sample_count=int(np.count_nonzero(gap[mask]<0.)),
         window_reference_contact=bool(np.any(gap[mask]<0.)),
@@ -236,6 +236,17 @@ def motion_guidance(editor,times,xy,yaw,initial_seed=None):
 
 
 _CURRENT_POSE = object()
+_FORK_SEARCH_CTX = None
+
+
+def _fork_eval_one(item):
+    spec, values = item
+    search = _FORK_SEARCH_CTX
+    search.activate(spec)
+    controls = search.controls(values)
+    arrays, state = search.simulate(controls)
+    residual = search.residual(arrays, state)
+    return (spec, values, controls, arrays, state, residual, dict(search.last_metrics))
 
 
 class ControlSearch:
@@ -253,9 +264,24 @@ class ControlSearch:
         self.boundary = getattr(editor,'edit_start_s',policy.edit_start(editor.constraints.get('acceptance_policy') or editor.constraints))
         self.waypoints = arguments['objective'].get('waypoints', [])
         if self.waypoints and 'initial_pose_search' not in arguments:
-            specs = self._waypoint_pose_specs()
+            specs = list(self._waypoint_pose_specs())
         else:
-            specs = search_specs(arguments, editor, self.parent)
+            specs = list(search_specs(arguments, editor, self.parent))
+        if 'initial_pose_search' not in arguments:
+            hint_specs = self._hint_pose_specs()
+            if len(hint_specs) > 1:
+                seen_xy = [np.asarray(self.active_seed_xy[0], dtype=float)]
+                for sp in specs:
+                    if sp is None:
+                        continue
+                    off = (sp or {}).get('position_offset_m') or {}
+                    seen_xy.append(self.active_seed_xy[0] + np.array([float(off.get('forward_m', 0.0)), float(off.get('left_m', 0.0))]))
+                for sp in hint_specs[1:]:
+                    off = (sp or {}).get('position_offset_m') or {}
+                    pos = self.active_seed_xy[0] + np.array([float(off.get('forward_m', 0.0)), float(off.get('left_m', 0.0))])
+                    if not any(float(np.linalg.norm(pos - prev)) < 2.5 for prev in seen_xy):
+                        seen_xy.append(pos)
+                        specs.append(sp)
         self.pose_specs = self._eligible_pose_specs(specs)
         self.base = self.parent['result'].get('control_sequence') or infer_controls(self.times,
             self.parent['dense_xy'], self.parent['dense_yaw'], editor.target['size_m'], self.boundary)
@@ -274,6 +300,43 @@ class ControlSearch:
         self.initial = np.r_[np.asarray(self.base['acceleration_mps2'])[self.editable], np.asarray(self.base['steering_rad'])[self.editable]*10]
         self.lower = np.r_[np.full(self.n, -4.5), np.full(self.n, -5.5)]
         self.upper = np.r_[np.full(self.n, 2.5), np.full(self.n, 5.5)]
+
+    def _hint_pose_specs(self):
+        specs = [None]
+        if (self.editor.target.get('operation') != 'add_vehicle'
+                or self.boundary != self.editor.times[0]
+                or self.arguments.get('preserve_outside_window')):
+            return specs
+        hint = self.editor.constraints.get('spatial_hint') or {}
+        cands = hint.get('attack_start_candidates_xy_m') or []
+        if not isinstance(cands, list) or len(cands) < 2:
+            return specs
+        from connector_route import lane_centerline_seed
+        ref_yaw = float(self.active_seed_yaw[0])
+        ref_speed = max(3.0, float(self.editor.target.get('initial_speed_mps') or 6.0))
+        chosen_xy = [np.asarray(self.active_seed_xy[0], dtype=float)]
+        for pt in cands[:3]:
+            if not (isinstance(pt, (list, tuple)) and len(pt) == 2):
+                continue
+            hx, hy = float(pt[0]), float(pt[1])
+            goal_xy = [float(self.editor.ego[len(self.editor.ego)//2, 0]), float(self.editor.ego[len(self.editor.ego)//2, 1])] if len(self.editor.ego) else None
+            snapped = lane_centerline_seed(self.editor.scene, self.editor.frames, hx, hy, ref_yaw, ref_speed, self.editor.times, max_snap_m=10.0, goal_xy=goal_xy)
+            if snapped is not None:
+                sx, sy = float(snapped[2][0]), float(snapped[2][1])
+                syaw = float(snapped[3])
+            else:
+                sx, sy, syaw = hx, hy, ref_yaw
+            pos = np.array([sx, sy], dtype=float)
+            if any(float(np.linalg.norm(pos - prev)) < 2.5 for prev in chosen_xy):
+                continue
+            chosen_xy.append(pos)
+            offset = pos - self.active_seed_xy[0]
+            specs.append(dict(
+                position_offset_m=dict(forward_m=float(offset[0]), left_m=float(offset[1])),
+                yaw_mode='explicit',
+                yaw_rad=syaw,
+            ))
+        return specs
 
     def _waypoint_pose_specs(self):
         first = self.waypoints[0]
@@ -587,6 +650,29 @@ class ControlSearch:
         # actual numerical steps instead of restarting a high-dimensional fit
         # in each tiny pose branch.
         seed_limit=min(limit,max(len(self.pose_specs),limit//2))
+        def _eval_batch_parallel(batch_items):
+            """Run pure CPU simulate+residual for independent (spec, start) pairs in parallel via fork."""
+            import os, multiprocessing
+            from concurrent.futures import ProcessPoolExecutor
+            n_workers = min(6, max(1, (os.cpu_count() or 1) // 2), len(batch_items))
+            if n_workers <= 1 or 'fork' not in multiprocessing.get_all_start_methods():
+                out = []
+                for sp, vals in batch_items:
+                    self.activate(sp)
+                    ctrls = self.controls(vals)
+                    arrs, st = self.simulate(ctrls)
+                    res = self.residual(arrs, st)
+                    out.append((sp, vals, ctrls, arrs, st, res, dict(self.last_metrics)))
+                return out
+            global _FORK_SEARCH_CTX
+            _FORK_SEARCH_CTX = self
+            try:
+                ctx = multiprocessing.get_context('fork')
+                with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+                    return list(pool.map(_fork_eval_one, batch_items))
+            finally:
+                _FORK_SEARCH_CTX = None
+
         for spec_index,spec in enumerate(self.pose_specs):
             self.activate(spec)
             branch_start=len(records)
@@ -597,9 +683,26 @@ class ControlSearch:
             branch_starts = starts
             if getattr(self, 'waypoints', None):
                 branch_starts = [starts[0], self.waypoint_start(), *starts[1:]]
-            for start in branch_starts:
-                if len(records)>=branch_limit:break
-                branch_fun(start)
+            capped_starts = branch_starts[:max(0, branch_limit - len(records))]
+            if len(capped_starts) >= 3:
+                batch_results = _eval_batch_parallel([(spec, st) for st in capped_starts])
+                for sp, vals, ctrls, arrs, st, res, metrics in batch_results:
+                    if len(records) >= branch_limit or len(records) >= limit:
+                        break
+                    self.activate(sp)
+                    self.last_metrics = metrics
+                    if reserve is not None:
+                        reserve(ctrls)
+                    record = evaluate(ctrls, arrs, st, float(res @ res))
+                    record['search_metrics'] = metrics
+                    record['initial_pose_adjustment'] = self.active_pose
+                    if self.search_phase:
+                        record['search_phase'] = self.search_phase
+                    records.append((float(res @ res), vals.copy(), record))
+            else:
+                for start in capped_starts:
+                    if len(records)>=branch_limit:break
+                    branch_fun(start)
             # Keep the current pose fixed. Derive release proposals from freshly
             # evaluated rollouts in this branch, never from another attack run.
             contact_records=[item for item in records[branch_start:]

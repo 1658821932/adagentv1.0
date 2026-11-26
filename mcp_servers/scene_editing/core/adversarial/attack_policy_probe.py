@@ -24,8 +24,8 @@ class VADProbe:
 
     @staticmethod
     def _eligible(node):
-        result=node['result'];goal=result.get('construction_goal')
-        return result['reference_screen_passed'] and (goal is None or goal['goal_met'])
+        from attack_tool_contract import candidate_eligibility
+        return bool(candidate_eligibility(node['result'])['pdm_probe_eligible'])
 
     def context(self):
         state=json.loads(self.state_path.read_text())

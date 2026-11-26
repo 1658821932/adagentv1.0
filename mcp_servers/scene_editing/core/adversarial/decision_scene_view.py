@@ -55,7 +55,7 @@ def actor_view(times, ego, actors, target_track=None, target_xy=None, limit=12):
         distance_kind='reference center distance, not bumper clearance',precision='display only; full precision is used by tools')
 
 
-def render_overview(times, ego, yaw, actors, road, path, target_track=None, target_xy=None, event_window_s=None,route_time_labels=False):
+def render_overview(times, ego, yaw, actors, road, path, target_track=None, target_xy=None, event_window_s=None, route_time_labels=False, spatial_hint=None):
     """Two readable scene snapshots, without any WE/GPU/video execution."""
     import matplotlib
     matplotlib.use('Agg')
@@ -102,6 +102,19 @@ def render_overview(times, ego, yaw, actors, road, path, target_track=None, targ
             axis.text(actor['x'],actor['y'],actor['track'][:6],fontsize=7,color=color,clip_on=True)
         if usable_target:
             axis.plot(np.asarray(target_xy)[:,0],np.asarray(target_xy)[:,1],color='#d84315',label='target scene trajectory')
+        if isinstance(spatial_hint, dict):
+            cands_st = spatial_hint.get('attack_start_candidates_xy_m') or (
+                [spatial_hint['attack_start_xy_m']] if spatial_hint.get('attack_start_xy_m') else []
+            )
+            for idx_s, st in enumerate(cands_st, 1):
+                if isinstance(st, (list, tuple)) and len(st) == 2:
+                    axis.scatter([st[0]], [st[1]], s=110, marker='*', color='#2e7d32', zorder=12,
+                                 label='Tool04 start hints (S1..S3)' if idx_s == 1 else None)
+                    axis.annotate(f'S{idx_s}', st, fontsize=7.5, fontweight='bold', color='#1b5e20', xytext=(4, 4), textcoords='offset points')
+            cz = spatial_hint.get('conflict_zone_xy_m')
+            if isinstance(cz, (list, tuple)) and len(cz) == 2:
+                axis.scatter([cz[0]], [cz[1]], s=70, marker='x', color='#ff1744', zorder=12, label='Tool04 conflict hint')
+                axis.annotate('conflict_hint', cz, fontsize=7, color='#b71c1c', xytext=(4, -8), textcoords='offset points')
         axis.set_xlim(extent[:,0].min()-15,extent[:,0].max()+15)
         axis.set_ylim(extent[:,1].min()-12,extent[:,1].max()+12)
         axis.set_aspect('equal');axis.grid(alpha=.2)

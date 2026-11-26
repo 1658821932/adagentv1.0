@@ -23,7 +23,8 @@ def test_adapter_injects_project_profile(monkeypatch):
     monkeypatch.setattr(service,'get_profile',get_profile)
     env={'ADVERSARIAL_API_KEY':'stale-key','CARLA_GS_LLM_CONFIG':'/unused/old-profile'}
     injected=service.backend_api_env(['python',str(CORE/'editing_backend.py')],env)
-    assert calls==[('kimi',True)]
+    from common.api_profiles import profile_argument
+    assert calls==[(profile_argument('attack_editor'),True)]
     assert injected['ADVERSARIAL_API_KEY']=='test-project-secret'
     assert injected['ADVERSARIAL_API_MODEL']=='test-model'
     assert env['ADVERSARIAL_API_KEY']=='stale-key'

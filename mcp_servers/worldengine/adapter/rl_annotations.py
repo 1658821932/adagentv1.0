@@ -77,9 +77,10 @@ def package(rollout_dir, vocab_path, output_dir, *, config_path=None, checkpoint
     scored_anchors={name.split("-",2)[-1] for name in score_map}
     if not anchors<=scored_anchors:
         raise ValueError("Rollout scenes are missing matching official PDM scores")
-    eligible=failed_scene_anchors(score_map,anchors)
+    eligible=failed_scene_anchors(score_map,anchors,max_score=0.5)
     index=[]
     reward_count=0
+    solvability={}
     for name,rows in by_scene.items():
         rows.sort(key=lambda r:int(r["frame_idx"]))
         if [int(r["frame_idx"]) for r in rows]!=list(range(len(rows))) or len(rows)<12:
@@ -90,6 +91,7 @@ def package(rollout_dir, vocab_path, output_dir, *, config_path=None, checkpoint
         cameras=set(rows[0]["cams"])
         if not cameras:raise ValueError("No camera annotations")
         anchor=name.split("-",2)[-1]
+        solvability.setdefault(anchor, {"solvable_frames": 0, "max_score": 0.0, "max_safe_vocab_count": 0, "evaluated_frames": 0})
         for row in rows:
             step=int(row["frame_idx"])
             if set(row["cams"])!=cameras:raise ValueError("Camera set changes within a scene")
@@ -142,10 +144,28 @@ def package(rollout_dir, vocab_path, output_dir, *, config_path=None, checkpoint
                     values=np.asarray(rewards[field])
                     if values.shape!=(8192,) or not np.isfinite(values).all():
                         raise ValueError("Invalid candidate reward vector: "+field)
+                sc_vec=np.asarray(rewards["score"],dtype=float)
+                nc_vec=np.asarray(rewards["no_at_fault_collisions"],dtype=float)
+                dac_vec=np.asarray(rewards["drivable_area_compliance"],dtype=float)
+                f_max=float(sc_vec.max())
+                f_safe=int(((nc_vec>=0.99)&(dac_vec>=0.99)).sum())
+                sv=solvability[anchor]
+                sv["evaluated_frames"]+=1
+                sv["max_score"]=max(sv["max_score"],round(f_max,4))
+                sv["max_safe_vocab_count"]=max(sv["max_safe_vocab_count"],f_safe)
+                if f_max>=0.3 and f_safe>=5:
+                    sv["solvable_frames"]+=1
                 sample.update(reward_file=str(reward_path),reward_sha256=digest(reward_path),
-                              actual_plan_idx=plans[key],plan_csv_step=step+1)
+                              actual_plan_idx=plans[key],plan_csv_step=step+1,
+                              vocab_max_score=round(f_max,4),vocab_safe_count=f_safe)
                 reward_count+=1
             index.append(sample)
+    unsolvable_anchors=set()
+    for anc, sv in solvability.items():
+        sv["solvable"] = bool(sv["solvable_frames"] >= 2 or (sv["evaluated_frames"] == 1 and sv["solvable_frames"] >= 1))
+        if anc in eligible and sv["evaluated_frames"] > 0 and not sv["solvable"]:
+            unsolvable_anchors.add(anc)
+    eligible = eligible - unsolvable_anchors
     infos=[row for name in sorted(by_scene) for row in by_scene[name]]
     # Validate everything before writing a new package. Source rollout stays unchanged.
     out=Path(output_dir).resolve()
@@ -166,7 +186,7 @@ def package(rollout_dir, vocab_path, output_dir, *, config_path=None, checkpoint
         pdm_scores_file=str(scores_file.resolve()),pdm_scores_sha256=digest(scores_file),
         frame_count=len(infos),scene_count=len(by_scene),reward_frame_count=reward_count,
         eligible_scene_count=len(eligible),eligible_scene_anchors=sorted(eligible),
-        selection_rule="official closed-loop PDM total score == 0",
+        selection_rule="official closed-loop PDM total score < 0.5 and 8192-vocab solvable",
         label_source="actual WE simulation annotations and candidate rewards",
         frame_to_plan_alignment="plan_idx.csv step - 1 == metadata frame_idx",
         config_path=str(file(config_path)) if config_path else None,
@@ -177,7 +197,13 @@ def package(rollout_dir, vocab_path, output_dir, *, config_path=None, checkpoint
     return dict(rlft_training_data=training_data,rlft_data_report=dict(
         status=manifest["status"],manifest_path=str(manifest_path),frame_count=len(infos),
         reward_frame_count=reward_count,scene_count=len(by_scene),eligible_scene_count=len(eligible),
-        reason=None if eligible else "No official PDM-zero scene; annotations were exported, training selection is empty."))
+        vocab_solvability=solvability,
+        unsolvable_dead_end_scenes=sorted(unsolvable_anchors),
+        reason=None if eligible else (
+            "PDM-zero scene rejected: 8192-trajectory vocabulary has no solvable high-reward avoidance path (dead-end attack)."
+            if unsolvable_anchors else
+            "No official low-score (PDM < 0.5) scene; annotations were exported, training selection is empty."
+        )))
 
 def verify_manifest(data):
     """Validate provenance before loading the exported annotations for training."""

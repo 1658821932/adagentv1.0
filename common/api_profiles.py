@@ -61,7 +61,11 @@ def tool_profile(component: str) -> str:
 def profile_argument(component: str) -> str:
     """Argument for get_profile(): 'kimi' is the historical alias for active_profile."""
     name = tool_profile(component)
-    return "kimi" if name == DEFAULT else name
+    if name == DEFAULT:
+        return "kimi"
+    if name == "kimi" and "kimi_k3" in _config():
+        return "kimi_k3"
+    return name
 
 
 def effort_selections() -> dict:

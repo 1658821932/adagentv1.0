@@ -190,6 +190,13 @@ class JobStore:
             return value
         signature = dict(tool=tool, mode=mode, arguments=arguments, scope=scope)
         references = refs(arguments)
+        if tool == "video_retriever" and mode == "real":
+            from mcp_servers.runtime import _TRACE
+            from mcp_servers.sentry_video_search.adapter.client import rejected_scene_tokens
+
+            rejected = rejected_scene_tokens(_TRACE.get().get("agent_log_dir"))
+            if rejected:
+                references = {"arguments": references, "excluded_scene_tokens": rejected}
         key = hashlib.sha256(json.dumps(signature, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with locked(self.root / "registry.lock"):
             index_path = self.root / "index.json"

@@ -24,7 +24,7 @@ class ToolExecutor:
                 raise ValueError("_execution accepts only job_id, retry and background")
             if 'background' in control and type(control['background']) is not bool:
                 raise ValueError('_execution.background must be boolean')
-            if control.get('background') and tool_name not in ('ego_trajectory_editor','policy_runner'):
+            if control.get('background') and tool_name != 'policy_runner':
                 raise ValueError('Background execution is supported for independent 06/07 branches')
             if "retry" in control and type(control["retry"]) is not bool:
                 raise ValueError("_execution.retry must be boolean")

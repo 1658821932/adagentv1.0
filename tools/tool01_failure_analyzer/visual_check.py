@@ -1,19 +1,13 @@
-"""Visual checks for tool01 measured failure facts.
-
-The BEV image supplies only road context. The violation-frame camera overview
-supplies only weather and environmental text. Deterministic actor and map
-geometry measurements are not changed by these image classifications.
-"""
+"""Visual checks for Tool 01: BEV scenario classification and 8-camera environment."""
 from __future__ import annotations
 
 import base64
+import shutil
 from pathlib import Path
 
 from tools.llm_runtime import parse_json_object
 
 CAMERAS = ("CAM_L0", "CAM_F0", "CAM_R0", "CAM_L1", "CAM_R1", "CAM_L2", "CAM_B0", "CAM_R2")
-# Surround layout: front top-centre, back bottom-centre, left column left, right column right.
-# The centre cell stays blank, exactly like the archive overview board.
 LAYOUT = (
     ("CAM_L0", "CAM_F0", "CAM_R0"),
     ("CAM_L1", None, "CAM_R1"),
@@ -22,10 +16,14 @@ LAYOUT = (
 TILE_W, TILE_H, LABEL_H = 320, 180, 18
 IMAGE_QUALITY = 82
 WEATHER = ("clear", "cloudy", "rainy", "foggy", "snowy", "unknown")
-MAP_CONTEXTS = ("straight_road", "curve", "t_junction", "cross_intersection", "merge")
+MAP_CONTEXTS = ("straight_road", "curve", "t_junction", "cross_intersection", "merge", "roundabout")
+FAILURE_DRIVERS = ("collision_with_vehicle", "collision_non_vehicle", "departure_by_other", "departure_ego_only")
+BEV_REQUIRED_FIELDS = ("map_context", "failure_driver", "ego_behavior", "other_behavior", "summary")
 REQUIRED_FIELDS = ("weather", "extra", "notes")
 ENVIRONMENT_FORBIDDEN = ("直路", "弯道", "丁字", "十字", "路口", "汇流", "车道",
                          "自车", "他车", "车辆", "左转", "右转", "直行")
+NEARBY_PROMPT_LIMIT_M = 10.0
+COLLISION_LOCK_M = 0.5
 
 
 def environment_forbidden_terms(value):
@@ -47,18 +45,40 @@ PROMPT = """你的唯一任务是根据首次违规帧的八相机总览补充�
 """
 
 
-BEV_REQUIRED_FIELDS = ("map_context", "notes")
-BEV_PROMPT = """你只根据这张连续轨迹 BEV 证据图判断自车在违规帧所在道路的整体形态。
-图中浅色区域是官方车道，黑色边界是路口；蓝线和青绿色车身是自车轨迹和车身，橙色线和车身是目标车，黑色箭头是车头方向，数字是帧号，红色表示首次违规帧。
-- map_context：只能是 straight_road / curve / t_junction / cross_intersection / merge。
-- notes：可选的简短核对依据，字符串数组。
-只返回：
-{"map_context":"curve","notes":[]}
-"""
+BEV_PROMPT_TEMPLATE = """你是自动驾驶闭环失败场景分析员。请严格根据这张 BEV 轨迹图和下方实测物理摘要，输出客观的场景定性与简短剧本。
+
+【图例】
+- 橙色车身与轨迹：自车（EGO），标有帧号 E0..En；亮红粗框为首次违规帧。
+- 蓝色车身与轨迹：周边他车；黑色箭头为车头方向。
+- 浅灰填充：官方车道；黄色细线：车道中心线；黑色粗边界：官方路口区域。
+
+【实测物理摘要（程序硬测量，必须严格服从，不可推翻）】
+- 官方首次违规类型：{outcome}
+- 首次违规帧：第 {violation_step} 帧（t = {violation_time_s}s）
+- 自车运动（0..{violation_step}帧）：{ego_summary}
+- 违规帧近距他车：
+{nearby_summary}
+
+【输出 JSON 格式（严格只含以下 5 个字段）】
+{{
+  "map_context": "straight_road | curve | t_junction | cross_intersection | merge | roundabout",
+  "failure_driver": "collision_with_vehicle | collision_non_vehicle | departure_by_other | departure_ego_only",
+  "ego_behavior": "≤40字：客观描述自车全程到违规帧的运动变化、车道偏移与所处道路位置",
+  "other_behavior": "≤60字：仅描述导致本次失败的唯一目标车的方位、运动变化与相对时机；无目标车时填 \\"\\"",
+  "summary": "≤100字：1句话串联 最小道路形态 + 自车行为 + 唯一目标车行为或自身偏离 + 第{violation_step}帧结果"
+}}
+
+【通用原则】
+1. 最小道路形态：map_context 填写复刻亮红粗框处失败所需的最小道路几何，忽略违规前经过或远处与本次失败无关的道路结构。
+2. 致因归属：
+   - collision → collision_with_vehicle（与他车碰撞，含静止车）或 collision_non_vehicle（无他车接触）；
+   - road_departure → departure_by_other（受某辆他车逼迫/占道）或 departure_ego_only（自车自身问题）。
+3. 唯一目标车：other_behavior 和 summary 只描述导致本次失败的唯一一辆目标车，不提无关背景车；无目标车时 other_behavior 为 ""。
+4. 客观忠实：禁止编造图与摘要之外的信息（如红绿灯、天气、光线、主观评价），所有速度、静止与左右转向方向严格以摘要为准。"""
 
 
 class VisualCheckError(RuntimeError):
-    """The images could not be prepared or the model returned an unusable answer."""
+    """Images could not be prepared or the model returned an invalid answer."""
 
     def __init__(self, message, *, stage="images", timeout=False):
         super().__init__(message)
@@ -66,8 +86,183 @@ class VisualCheckError(RuntimeError):
         self.timeout = timeout
 
 
+def _yaw_text(deg):
+    """Explicit direction wording so VLM never misreads math signs."""
+    val = abs(float(deg))
+    if val < 5.0:
+        return f"近直行（偏转{val:.1f}°）"
+    return f"左转{val:.1f}°" if deg > 0 else f"右转{val:.1f}°"
+
+
+def _rel_heading_text(deg):
+    if deg is None:
+        return "未知方向"
+    a = abs(float(deg))
+    if a <= 45.0:
+        return "同向"
+    if a >= 135.0:
+        return "对向"
+    return "横向"
+
+
+def select_prompt_vehicles(facts):
+    """Select the exact nearby vehicles passed to BEV VLM (no silent fallback)."""
+    outcome = facts["outcome"]
+    candidates = []
+    for v in facts.get("nearby_vehicles") or []:
+        vd = v.get("violation_distance_m")
+        if vd is None or vd > NEARBY_PROMPT_LIMIT_M or not v.get("kinematics"):
+            continue
+        candidates.append((float(vd), v))
+    candidates.sort(key=lambda item: (item[0], str(item[1].get("track") or "")))
+    if outcome == "collision" and candidates and candidates[0][0] <= COLLISION_LOCK_M:
+        return [candidates[0][1]]
+    return [v for _, v in candidates[:3]]
+
+
+def build_bev_prompt(facts, selected_vehicles):
+    viol = int(facts["violation_step"])
+    rows = facts.get("frame_images") or []
+    t_s = float(rows[viol]["time_s"]) if 0 <= viol < len(rows) else round(viol * 0.5, 1)
+    ego_k = facts["ego_kinematics"]
+    ego_summary = (
+        f"速度 {ego_k['speed_start_mps']:.1f}→{ego_k['speed_violation_mps']:.1f} m/s，"
+        f"位移 {ego_k['displacement_m']:.1f} m，"
+        f"全程{_yaw_text(ego_k['yaw_change_deg'])}，"
+        f"末段1秒{_yaw_text(ego_k['tail_yaw_deg'])}"
+    )
+    lines = []
+    for idx, v in enumerate(selected_vehicles, start=1):
+        vd = float(v["violation_distance_m"])
+        vk = v["kinematics"]
+        pos = v.get("bearing_at_violation") or "附近"
+        size = v.get("size_m") or [4.5, 2.0, 1.6]
+        vtype = f"大型车（长{size[0]:.1f}m）" if size[0] >= 6.5 else f"普通车（长{size[0]:.1f}m）"
+        if vk["is_stationary"]:
+            motion = "静止"
+        else:
+            motion = (
+                f"速度{vk['speed_start_mps']:.1f}→{vk['speed_violation_mps']:.1f}m/s，"
+                f"全程{_yaw_text(vk['yaw_change_deg'])}，"
+                f"末段1秒{_yaw_text(vk['tail_yaw_deg'])}"
+            )
+        contact = "（接触）" if vd <= 0.05 else ""
+        rel_txt = _rel_heading_text(v.get("relative_heading_at_violation_deg"))
+        lines.append(f"  {idx}. {pos} {vd:.1f}m{contact}：{rel_txt}，{motion}，{vtype}")
+    nearby_summary = "\n".join(lines) if lines else "  无（10m 内无其他车辆）"
+    return BEV_PROMPT_TEMPLATE.format(
+        outcome=facts["outcome"],
+        violation_step=viol,
+        violation_time_s=f"{t_s:.1f}",
+        ego_summary=ego_summary,
+        nearby_summary=nearby_summary,
+    )
+
+
+def data_url(path, mime="image/jpeg"):
+    return "data:" + mime + ";base64," + base64.b64encode(Path(path).read_bytes()).decode("ascii")
+
+
+def check_bev(facts, run_dir):
+    """Classify road context, failure driver, and script from BEV + physical summary."""
+    from agent.llm_client import LLMClient
+    from tools.tool01_failure_analyzer import evidence
+
+    source = Path(str(facts.get("bev_image") or ""))
+    if not source.is_file():
+        raise VisualCheckError("facts do not contain a readable BEV evidence image", stage="bev")
+    try:
+        return _check_bev(facts, source, Path(run_dir), shutil.copyfile, LLMClient, evidence)
+    finally:
+        if source.exists():
+            source.unlink()
+
+
+def _check_bev(facts, source, run_dir, copyfile, client_type, evidence):
+    target = run_dir / "bev_overview.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    copyfile(source, target)
+    selected = select_prompt_vehicles(facts)
+    prompt = build_bev_prompt(facts, selected)
+    url = data_url(target, "image/png")
+    evidence.write_manifest(run_dir, stage="bev_vlm", bev_image=str(target))
+    try:
+        client = client_type(component="failure_analyzer")
+        raw = client.chat([
+            {"role": "system", "content": "只输出一个合法 JSON 对象，不要 Markdown 代码块，不要任何多余解释。"},
+            {"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": url}},
+            ]},
+        ])
+    except Exception as error:
+        timed_out = isinstance(error, TimeoutError) or type(error).__name__ in {
+            "APITimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout"}
+        evidence.write_manifest(run_dir, stage="bev_vlm", error=type(error).__name__)
+        raise VisualCheckError("BEV model request failed (" + type(error).__name__ + ")",
+                               stage="bev_vlm", timeout=timed_out) from None
+    (run_dir / "bev_response.txt").write_text(raw if isinstance(raw, str) else "")
+    if not isinstance(raw, str) or not raw.strip():
+        evidence.write_manifest(run_dir, stage="bev_vlm", error="empty response")
+        raise VisualCheckError("BEV model returned no text", stage="bev_vlm")
+    try:
+        answer = parse_json_object(raw)
+    except (TypeError, ValueError) as error:
+        evidence.write_manifest(run_dir, stage="bev_vlm", error="invalid JSON")
+        raise VisualCheckError("BEV model returned invalid JSON", stage="bev_vlm") from error
+    if not isinstance(answer, dict) or set(answer) != set(BEV_REQUIRED_FIELDS):
+        raise VisualCheckError(
+            "BEV model response must contain exact keys " + ", ".join(BEV_REQUIRED_FIELDS),
+            stage="bev_vlm",
+        )
+    context = answer["map_context"]
+    driver = answer["failure_driver"]
+    ego_behavior = answer["ego_behavior"]
+    other_behavior = answer["other_behavior"]
+    summary = answer["summary"]
+    if context not in MAP_CONTEXTS:
+        raise VisualCheckError(f"BEV model map_context is invalid: {context!r}", stage="bev_vlm")
+    if driver not in FAILURE_DRIVERS:
+        raise VisualCheckError(f"BEV model failure_driver is invalid: {driver!r}", stage="bev_vlm")
+    if not isinstance(ego_behavior, str) or not ego_behavior.strip():
+        raise VisualCheckError("BEV model ego_behavior must be non-empty text", stage="bev_vlm")
+    if not isinstance(other_behavior, str):
+        raise VisualCheckError("BEV model other_behavior must be a string", stage="bev_vlm")
+    if not isinstance(summary, str) or not summary.strip():
+        raise VisualCheckError("BEV model summary must be non-empty text", stage="bev_vlm")
+
+    # Strict cross-validation against official PDM outcome and physical candidates.
+    outcome = facts["outcome"]
+    if outcome == "collision" and not driver.startswith("collision_"):
+        raise VisualCheckError(f"official outcome is collision but BEV returned failure_driver={driver!r}", stage="bev_vlm")
+    if outcome == "road_departure" and not driver.startswith("departure_"):
+        raise VisualCheckError(f"official outcome is road_departure but BEV returned failure_driver={driver!r}", stage="bev_vlm")
+    if outcome == "road_departure" and not selected and driver != "departure_ego_only":
+        raise VisualCheckError(f"no vehicle within 10m for road_departure but BEV returned {driver!r}", stage="bev_vlm")
+    if driver in ("departure_ego_only", "collision_non_vehicle") and other_behavior.strip():
+        raise VisualCheckError(f"failure_driver={driver!r} must have empty other_behavior", stage="bev_vlm")
+    if driver in ("collision_with_vehicle", "departure_by_other"):
+        if not selected:
+            raise VisualCheckError(f"failure_driver={driver!r} requires a nearby vehicle within 10m", stage="bev_vlm")
+        if not other_behavior.strip():
+            raise VisualCheckError(f"failure_driver={driver!r} requires non-empty other_behavior", stage="bev_vlm")
+
+    result = {
+        "bev_image": str(target),
+        "map_context": context,
+        "failure_driver": driver,
+        "ego_behavior": ego_behavior.strip(),
+        "other_behavior": other_behavior.strip(),
+        "summary": summary.strip(),
+        "selected_vehicle": selected[0] if driver in ("collision_with_vehicle", "departure_by_other") else None,
+    }
+    evidence.write_manifest(run_dir, stage="bev_verification", decisions={
+        "map_context": context, "failure_driver": driver})
+    return result
+
+
+# ------------------------------------------------------------------ 8-camera env
 def camera_images(facts):
-    """Frame-ordered image paths per camera, supplied by the fact extractor."""
     rows = facts.get("frame_images")
     if not rows:
         raise VisualCheckError("facts carry no frame_images mapping")
@@ -86,39 +281,15 @@ def frame_time(rows, index):
 
 
 def sheet_indices(count, violation_step):
-    """Two frames before, the violation, and two frames after; clamp at boundaries."""
     if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
-        raise VisualCheckError(f"scene frame count must be a positive integer, got {count!r}",
-                               stage="input")
-    if isinstance(violation_step, bool) or not isinstance(violation_step, int):
-        raise VisualCheckError(f"violation frame must be an integer, got {violation_step!r}",
-                               stage="input")
-    if not 0 <= violation_step < count:
-        raise VisualCheckError(
-            f"violation frame {violation_step} is outside the recorded frames 0..{count - 1}",
-            stage="input")
+        raise VisualCheckError(f"scene frame count must be positive int, got {count!r}", stage="input")
+    if isinstance(violation_step, bool) or not isinstance(violation_step, int) or not 0 <= violation_step < count:
+        raise VisualCheckError(f"violation frame {violation_step!r} is outside 0..{count - 1}", stage="input")
     wanted = (violation_step - 2, violation_step, violation_step + 2)
-    return sorted({max(0, min(count - 1, index)) for index in wanted})
-
-
-def frame_roles(index, count, violation_step):
-    """Which sampling roles this frame plays; roles do coincide at the boundaries."""
-    roles = []
-    if index == 0:
-        roles.append("首帧")
-    if index == violation_step - 2:
-        roles.append("首次违规前二帧")
-    if index == violation_step:
-        roles.append("首次违规帧")
-    if index == violation_step + 2:
-        roles.append("首次违规后二帧")
-    if index == count - 1:
-        roles.append("末帧")
-    return "、".join(roles)
+    return sorted({max(0, min(count - 1, idx)) for idx in wanted})
 
 
 def contact_sheet(images, index, target, rows):
-    """Compose the eight cameras of one frame into a labelled 3x3 sheet."""
     from PIL import Image, ImageDraw, ImageFont
 
     sheet = Image.new("RGB", (TILE_W * 3, (TILE_H + LABEL_H) * 3), (255, 255, 255))
@@ -142,73 +313,8 @@ def contact_sheet(images, index, target, rows):
     return target
 
 
-def data_url(path, mime="image/jpeg"):
-    """Encode an already prepared image without recompressing it."""
-    return "data:" + mime + ";base64," + base64.b64encode(Path(path).read_bytes()).decode("ascii")
-
-
-def check_bev(facts, run_dir):
-    """Classify road context from the measured BEV sequence."""
-    import shutil
-    from agent.llm_client import LLMClient
-    from tools.tool01_failure_analyzer import evidence
-
-    source = Path(str(facts.get("bev_image") or ""))
-    if not source.is_file():
-        raise VisualCheckError("facts do not contain a readable BEV evidence image", stage="bev")
-    try:
-        return _check_bev(source, Path(run_dir), shutil.copyfile, LLMClient, evidence)
-    finally:
-        source.unlink()
-
-
-def _check_bev(source, run_dir, copyfile, client_type, evidence):
-    target = run_dir / "bev_route.png"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    copyfile(source, target)
-    url = data_url(target, "image/png")
-    evidence.write_manifest(run_dir, stage="bev_vlm", bev_image=str(target))
-    try:
-        client = client_type(component="failure_analyzer")
-        raw = client.chat([
-            {"role": "system", "content": "只输出一个 JSON 对象，不要 Markdown，不要解释。"},
-            {"role": "user", "content": [
-                {"type": "text", "text": BEV_PROMPT},
-                {"type": "image_url", "image_url": {"url": url}},
-            ]},
-        ])
-    except Exception as error:
-        timed_out = isinstance(error, TimeoutError) or type(error).__name__ in {
-            "APITimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout"}
-        evidence.write_manifest(run_dir, stage="bev_vlm", error=type(error).__name__)
-        raise VisualCheckError("BEV model request failed (" + type(error).__name__ + ")",
-                               stage="bev_vlm", timeout=timed_out) from None
-    (run_dir / "bev_response.txt").write_text(raw if isinstance(raw, str) else "")
-    if not isinstance(raw, str) or not raw.strip():
-        evidence.write_manifest(run_dir, stage="bev_vlm", error="empty response")
-        raise VisualCheckError("BEV model returned no text", stage="bev_vlm")
-    try:
-        answer = parse_json_object(raw)
-    except (TypeError, ValueError) as error:
-        evidence.write_manifest(run_dir, stage="bev_vlm", error="invalid JSON")
-        raise VisualCheckError("BEV model returned invalid JSON", stage="bev_vlm") from error
-    if not isinstance(answer, dict) or set(answer) != set(BEV_REQUIRED_FIELDS):
-        raise VisualCheckError("BEV model response must contain exactly map_context and notes",
-                               stage="bev_vlm")
-    context = answer["map_context"]
-    notes = answer["notes"]
-    if context not in MAP_CONTEXTS:
-        raise VisualCheckError("BEV model map_context is invalid: " + repr(context), stage="bev_vlm")
-    if not isinstance(notes, list) or not all(isinstance(note, str) and note.strip() for note in notes):
-        raise VisualCheckError("BEV model notes must be a list of non-empty strings", stage="bev_vlm")
-    notes = [note.strip() for note in notes]
-    evidence.write_manifest(run_dir, stage="bev_verification",
-                            decisions={"map_context": context}, notes=notes)
-    return {"map_context": context, "notes": notes}
-
-
 def check(archive, token, facts, run_dir=None):
-    """Verify the measured facts against the images and return the environment fields."""
+    """Supplement weather and static environmental context from the violation frame."""
     from agent.llm_client import LLMClient
     from tools.tool01_failure_analyzer import evidence
 
@@ -216,9 +322,9 @@ def check(archive, token, facts, run_dir=None):
     if owned:
         run_dir = evidence.new_run_dir(facts.get("simulation_record") or archive, token)
     run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
     evidence.write_manifest(run_dir, tool="failure_analyzer", status="running", stage="images",
-                            token=str(token),
-                            simulation=facts.get("simulation_record") or str(archive))
+                            token=str(token), simulation=facts.get("simulation_record") or str(archive))
 
     def failed(stage, error):
         evidence.write_manifest(run_dir, status="failed", stage=stage, error=str(error))
@@ -228,34 +334,18 @@ def check(archive, token, facts, run_dir=None):
         violation = facts["violation_step"]
         sheet_indices(len(rows), violation)
         indices = [violation]
-        evidence.write_manifest(run_dir, violation_step=violation, selected=[
-            {"index": index, "time_s": frame_time(rows, index),
-             "sources": {camera: str(images[camera][index]) for camera in CAMERAS}}
-            for index in indices])
         sheet_dir = run_dir / "sheets"
-        sheets = [contact_sheet(images, index, sheet_dir / f"step_{index:02d}.jpg", rows)
-                  for index in indices]
-        evidence.write_manifest(run_dir, frames=[
-            {"index": index, "sheet": str(sheet), "sheet_sha256": evidence.sha256_file(sheet)}
-            for index, sheet in zip(indices, sheets)])
+        sheets = [contact_sheet(images, idx, sheet_dir / f"step_{idx:02d}.jpg", rows) for idx in indices]
         urls = [data_url(sheet) for sheet in sheets]
-        evidence.write_manifest(run_dir, sent_images=[
-            {"index": index, "sha256": evidence.sent_image_sha256(url)}
-            for index, url in zip(indices, urls)])
     except VisualCheckError as error:
         failed(error.stage, error)
         raise
     except (OSError, ValueError) as error:
         failed("images", type(error).__name__)
-        raise VisualCheckError(f"image preparation failed ({type(error).__name__})",
-                               stage="images") from None
+        raise VisualCheckError(f"image preparation failed ({type(error).__name__})", stage="images") from None
 
-    listed = "\n".join(
-        f"- 第 {position} 张：帧 {index}，{frame_time(rows, index):.1f}s"
-        f"（{frame_roles(index, len(rows), violation)}）"
-        for position, index in enumerate(indices, start=1))
-    content = [{"type": "text", "text": PROMPT.format(
-        violation=violation, images_count=len(indices), images=listed)}]
+    listed = f"- 第 1 张：帧 {violation}，{frame_time(rows, violation):.1f}s（首次违规帧）"
+    content = [{"type": "text", "text": PROMPT.format(violation=violation, images_count=1, images=listed)}]
     content += [{"type": "image_url", "image_url": {"url": url}} for url in urls]
 
     evidence.write_manifest(run_dir, stage="vlm")
@@ -265,81 +355,44 @@ def check(archive, token, facts, run_dir=None):
             {"role": "system", "content": "只输出一个 JSON 对象，不要 Markdown，不要解释。"},
             {"role": "user", "content": content},
         ])
-    except Exception as error:  # never echo request details or credentials
+    except Exception as error:
         stage = "vlm_empty" if "empty response" in str(error) else "vlm"
         timed_out = isinstance(error, TimeoutError) or type(error).__name__ in {
             "APITimeoutError", "Timeout", "ReadTimeout", "ConnectTimeout"}
         failed(stage, type(error).__name__)
-        raise VisualCheckError(f"model request failed ({type(error).__name__})",
-                               stage=stage, timeout=timed_out) from None
+        raise VisualCheckError(f"model request failed ({type(error).__name__})", stage=stage, timeout=timed_out) from None
 
     if not isinstance(raw, str) or not raw.strip():
         failed("vlm_empty", "model returned no text")
         raise VisualCheckError("model returned no text", stage="vlm_empty")
-
-    response_file = run_dir / "response.txt"
-    response_file.write_text(raw)
-    evidence.write_manifest(run_dir, stage="verification", response_file=str(response_file))
+    (run_dir / "response.txt").write_text(raw)
 
     try:
         answer = parse_json_object(raw)
-        if not isinstance(answer, dict):
-            raise VisualCheckError(f"visual check returned no JSON object: {raw[:200]!r}", stage="vlm")
-        missing = [name for name in REQUIRED_FIELDS if name not in answer]
-        if missing:
-            raise VisualCheckError(f"visual check response is missing {', '.join(missing)}: {raw[:200]!r}",
-                                   stage="vlm")
-        extra_fields = sorted(set(answer) - set(REQUIRED_FIELDS))
-        if extra_fields:
-            raise VisualCheckError(
-                f"visual check response has unexpected fields {', '.join(extra_fields)}: {raw[:200]!r}",
-                stage="vlm")
+        if not isinstance(answer, dict) or set(answer) != set(REQUIRED_FIELDS):
+            raise VisualCheckError(f"visual check response keys invalid: {raw[:200]!r}", stage="vlm")
         notes = answer["notes"]
-        if not isinstance(notes, list) or not all(isinstance(note, str) for note in notes):
-            raise VisualCheckError(f"visual check 'notes' must be a list of strings, got {notes!r}",
-                                   stage="vlm")
-        notes = [note.strip() for note in notes]
-        if any(not note for note in notes):
-            raise VisualCheckError("visual check notes must be non-empty text", stage="vlm")
-        report = answer["weather"]
-        if not isinstance(report, str):
-            raise VisualCheckError(f"visual check 'weather' must be a string, got {report!r}", stage="vlm")
-        weather = report.strip().lower()
+        if not isinstance(notes, list) or not all(isinstance(n, str) and n.strip() for n in notes):
+            raise VisualCheckError("visual check notes must be a list of non-empty strings", stage="vlm")
+        notes = [n.strip() for n in notes]
+        weather = answer["weather"].strip().lower() if isinstance(answer["weather"], str) else ""
         if weather not in WEATHER:
-            raise VisualCheckError(f"visual check 'weather' must be one of {', '.join(WEATHER)}, got {report!r}",
-                                   stage="vlm")
+            raise VisualCheckError(f"visual check weather invalid: {answer['weather']!r}", stage="vlm")
         extra = answer["extra"]
         if not isinstance(extra, str):
-            raise VisualCheckError(f"visual check 'extra' must be a string, got {extra!r}", stage="vlm")
-        forbidden = environment_forbidden_terms(extra)
-        if forbidden:
-            raise VisualCheckError(
-                f"visual check 'extra' contains non-environment terms: {', '.join(forbidden)}",
-                stage="vlm")
-        for note in notes:
-            forbidden = environment_forbidden_terms(note)
+            raise VisualCheckError("visual check extra must be a string", stage="vlm")
+        for text in (extra, *notes):
+            forbidden = environment_forbidden_terms(text)
             if forbidden:
-                raise VisualCheckError(
-                    f"visual check notes contain non-environment terms: {', '.join(forbidden)}",
-                    stage="vlm")
+                raise VisualCheckError(f"visual check contains non-environment terms: {', '.join(forbidden)}", stage="vlm")
     except (TypeError, ValueError) as error:
         failed("vlm", "invalid model answer")
-        raise VisualCheckError(f"visual check returned no usable JSON: {raw[:200]!r}",
-                               stage="vlm") from error
+        raise VisualCheckError(f"visual check returned no usable JSON: {raw[:200]!r}", stage="vlm") from error
     except VisualCheckError as error:
         failed(error.stage, error)
         raise
 
-    result = {
-        "sample_frames": indices,
-        "corrections": [],
-        "notes": notes,
-        "weather": weather,
-        "extra": extra.strip(),
-    }
-    evidence.write_manifest(run_dir, stage="verification",
-                            verification={key: result[key] for key in
-                                          ("sample_frames", "corrections", "notes")})
+    result = {"sample_frames": indices, "notes": notes, "weather": weather, "extra": extra.strip()}
     if owned:
         evidence.write_manifest(run_dir, status="success", stage="done", finished_at=evidence.stamp())
     return result

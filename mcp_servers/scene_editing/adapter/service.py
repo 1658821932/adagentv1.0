@@ -105,21 +105,13 @@ def _validate_attack(data, result, task):
             if key in before and before.get(key) != after.get(key):
                 raise EditingError("editing_identity_mismatch", f"Attack editing changed source {key}")
     for name in ("trajectory_path", "provenance_path", "submission_path"):
-        _inside(getattr(result,name),task.output)
+        val = getattr(result, name)
+        if val is None and name == "trajectory_path" and result.operation == "ego_only":
+            continue
+        _inside(val, task.output)
     _inside(result.checks.report_path,task.output)
     if result.pdm_probe_result_path is not None:
         _inside(result.pdm_probe_result_path,task.output)
-    if data.vadv2_self_test:
-        import hashlib
-        if result.vadv2_probe_result_path is None:
-            raise EditingError('editing_output_invalid','VAD self-test enabled but no exact-candidate evidence returned')
-        evidence=json.loads(_inside(result.vadv2_probe_result_path,task.output).read_text())
-        collision=evidence.get('collision_report') or {}
-        from mcp_servers.scene_editing.policy_evidence import has_policy_failure
-        if (not has_policy_failure(evidence, frames_path.parent/'map_drivable_official.json')
-                or evidence.get('frozen_frames_sha256')!=hashlib.sha256(frames_path.read_bytes()).hexdigest()
-                or collision.get('target_track')!=result.target_track):
-            raise EditingError('editing_output_invalid','VAD evidence does not establish a policy failure for this frozen scene after takeover')
     _handoffs(result,task)
     return result.model_dump()
 

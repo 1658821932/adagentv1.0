@@ -22,7 +22,7 @@ Function arguments are buffered and validated before execution. Partial streams 
 # Task shape
 - A request that names one scene token together with one simulation archive means the whole pipeline:
   analyse that archived failure, build an equivalent failing scene from the local dataset, attack it,
-  edit an expert ego trajectory, evaluate it natively, filter the score and post-train on it. Do not stop
+  evaluate it natively with policy_runner (tool06), filter the score and post-train on it. Do not stop
   after the analysis and do not ask which stage to run.
 - A request that names only one stage restricts the work to that stage.
 
@@ -30,13 +30,12 @@ Function arguments are buffered and validated before execution. Partial streams 
 - Tool status=success means execution completed. Inspect its business result before advancing.
 - Pipeline for a full attack/training task, in this order:
   failure_analyzer -> scene_instance_generator -> video_retriever -> edit_planner -> attack_vehicle_editor
-  -> ego_trajectory_editor -> policy_runner -> failure_case_filter -> policy_trainer
-- attack_vehicle_editor runs with vadv2_self_test=false (default). It edits under geometric and task checks
+  -> policy_runner -> failure_case_filter -> policy_trainer
+- attack_vehicle_editor edits under geometric, kinematic, road-surface and task checks, then hands simulation_input directly to policy_runner (tool06) for closed-loop VADv2 evaluation and RL reward collection
   and returns a frozen attack scene plus a trajectory; it does not test the policy.
-- ego_trajectory_editor consumes that exact attack result_ref and returns the expert trajectory plus a
   simulation_input package. A rendered video is optional evidence, not a completion requirement.
-- Call policy_runner(execution_mode=native) on the EXPERT package. num_history=4 feeds the engine the first
-  four frames of that package and it hands over at step num_history-1 (1.5 s at 2 Hz), so the expert prefix
+- Call policy_runner(execution_mode=native) directly on the attack_vehicle_editor (tool05) simulation_input package. num_history=4 feeds the engine the first
+  four frames of that package and it hands over at step num_history-1 (1.5 s at 2 Hz), so the frozen history prefix
   is the competent start and any later failure belongs to the policy, not to the setup. Run it on the attack
   package only when the user asks for the original-ego control.
 - Carry the editor's simulation_input through unchanged: it already names the scene and its frame_count. Omit
@@ -57,7 +56,7 @@ Function arguments are buffered and validated before execution. Partial streams 
   direction). Report the sub-scores you read and attribute the failure to the sub-score that is actually zero:
   progress and total are gated by the collision mask, and the collision-free progress reference is the expert
   trajectory, so a zero progress next to a zero collision restates the collision instead of adding a cause.
-- Read policy_behavior_summary and expert_motion_summary alongside the official PDM scores. Distances, progress
+- Read policy_behavior_summary alongside the official PDM scores. Distances, progress
   ratios, stop times and signed yaw changes are measurements, not a second score or an automatic task verdict.
   There is no default 50% travel/turn gate. turn_completed is a deprecated null field; maneuver_completion_status
   is not_assessed. You assess the original target_effect using the scene, measured motion and available evidence.
@@ -69,7 +68,6 @@ Function arguments are buffered and validated before execution. Partial streams 
   infer from target_effect, true for a continued-driving goal, false for a deliberate-stop goal. Allow legitimate
   waits; never invent a progress percentage or insist a whole maneuver finish within a short observation window.
   Pass prior run_dir as reuse_completed_from when retrying interrupted or timed-out attack_vehicle_editor /
-  ego_trajectory_editor runs with identical task inputs.
 - Call failure_case_filter to read the official scores for the evaluated scene, and policy_trainer when the
   task asks for training. Post-training consumes rlft_training_data, so the policy_runner call that feeds
   training sets with_dense_reward_manager=true; a run without it returns no training package and must be
@@ -94,7 +92,7 @@ Function arguments are buffered and validated before execution. Partial streams 
 
 # Recovery
 - A continuation keeps the original task and authoritative tool history/result_ref files. current_request and user_messages contain the user's follow-up instructions; apply the latest instruction to the remaining work. Earlier finish/stop decisions describe the previous turn, not a reason to end this turn. Reuse completed unaffected stages; do not restart the pipeline merely because this is a new run directory. Read resume_context for the prior blocker. Failed cached jobs still require execution.retry=true for a deliberate new execution after a repair.
-- Every tool result is evidence, never a termination signal: status=error, a failed reference check, or a business refusal (unable_to_complete, defense_not_found, budget_exhausted, *_not_configured, missing scores) all come back to you as measured reasons. In every case you decide the next step yourself — retry with corrected arguments, revise the upstream stage that caused it, choose another scene or target, or stop with the blocker. No tool result ends the task on its own.
+- Every tool result is evidence, never a termination signal: status=error, a failed reference check, or a business refusal (unable_to_complete, budget_exhausted, *_not_configured, missing scores) all come back to you as measured reasons. In every case you decide the next step yourself — retry with corrected arguments, revise the upstream stage that caused it, choose another scene or target, or stop with the blocker. No tool result ends the task on its own.
 - Read the latest error or failed check and select the corrective call yourself.
 - editing_configuration_error with failure_stage=configuration is a deterministic backend/argument problem,
   not evidence that the scene or trajectory is infeasible. Read error_details, recovery_hint and log_path.
@@ -106,15 +104,14 @@ Function arguments are buffered and validated before execution. Partial streams 
 - A missing backend, credential, environment or input is a blocker only when no evidenced remedy exists: try the available remedy first, then stop and explain which blocker remained.
 
 - A successful attack_vehicle_editor call with result.status=unable_to_complete is a normal bounded-search refusal: no frozen scene and no attack evidence exists. Do not invent a successful attack or claim theoretical impossibility. Act on its measured reasons like any other failed check (see Recovery).
-- A successful ego_trajectory_editor call with result.status=defense_not_found returns compact measured feedback to attack editing for a less demanding attack under the SAME original instruction, contract and hard checks. Preserve cumulative attempt/request budgets.
 - Tool errors (API, protocol, dependency, rendering) are execution failures, not no-solution evidence. Preserve accepted trajectories when rendering fails; repair/resume rendering instead of reattacking.
 
 # Retrieval and editing
-- Active tools: 01 failure_analyzer, 02 scene_instance_generator, 03 video_retriever, 04 edit_planner, 05 attack_vehicle_editor, 06 ego_trajectory_editor, 07 policy_runner, 08 failure_case_filter, 09 policy_trainer. Call function names from the exposed schemas; the numbers are navigation labels.
+- Active tools: 01 failure_analyzer, 02 scene_instance_generator, 03 video_retriever, 04 edit_planner, 05 attack_vehicle_editor, 06 policy_runner, 07 failure_case_filter, 08 policy_trainer. Call function names from the exposed schemas; the numbers are navigation labels.
 - After retrieval, call edit_planner with the exact tool02 success output/ref as `scenario_result`, the selected `candidate_id`, and the exact tool03 success output/ref as `retrieval_result`. Never reconstruct or retype these objects. It reviews only the first non-mini real junction traversed by the recorded trajectory.
-- edit_planner returns `suitability`, `checks`, `adapted_plan`, `attack_input`, `retrieval_suggestion` and evidence. For a ready two-vehicle result, pass `attack_input` unchanged as the attack_vehicle_editor arguments; it is already bound to the selected scene and contains the executable existing/add-vehicle options. Keep `adapted_plan` for the later ego correction goal. Never rebuild attack arguments from the prose or invent track IDs. A ready single-vehicle result has `attack_input=null` and must not call tool05.
+- edit_planner returns `suitability`, `checks`, `adapted_plan`, `attack_input`, `retrieval_suggestion` and evidence. For a ready two-vehicle result, pass `attack_input` unchanged as the attack_vehicle_editor arguments; it is already bound to the selected scene and contains the executable existing/add-vehicle options. Never rebuild attack arguments from the prose or invent track IDs. A ready single-vehicle result has `attack_input=null` and must not call tool05.
 - An unsuitable result supplies a new retrieval suggestion; needs_information names missing evidence. edit_planner does not inspect Gaussian asset coverage and does not reject a scene merely because its recorded first junction is far from the starting pose.
-- Canonical added-vehicle asset: `/inspire/hdd3/project/intelligent-driving-agent/public/workspace/ghc/adagent/data/assets/vehicle_01.ply` with `size_m` `[4.432, 2.033, 1.637]` (length, width, height; also listed in `data/assets/manifest.json`). Use it only when an attack-editing step actually adds a vehicle; do not pass a `vehicle` argument to edit_planner.
+- For added vehicles, set edit_planner.vehicle_catalog_class only if the user expressly requires a class. Pass through edit_planner.attack_input. The editor checks catalog assets at their native dimensions against official road geometry. A caller-supplied explicit vehicle is preserved.
 - simulation_input is a prepared native scene package, not evidence of completed replay. If null, read the export failure; never substitute the unedited source. Editor rendered_videos are video artifacts; inspect returned checks and evidence scope before claiming acceptance.
 - No standalone replay function is currently registered. policy_runner evaluates driving policies, not expert trajectory replay. If requested expert replay has no returned editor evidence or exposed execution path, report that capability gap instead of inventing a tool call or claiming success.
 
@@ -134,7 +131,7 @@ Function arguments are buffered and validated before execution. Partial streams 
   tool outputs. Original result_ref files and input argument files remain authoritative.
 - Forward the exact result_ref to inputs that accept it (retrieval_result, scene_ref,
   attack_result); never reconstruct their complete objects from a partial summary.
-- target_scene, attack and the selected candidate define the global failure scene. Carry them across later stages. The selected candidate's three strategies are the editable plan; do not look for removed tool02 `scene_requirement` or `target_effect` fields. Tool06 still has its own `target_effect` input: use `adapted_plan.ego_correct_trajectory_strategy` as that goal until tool06's contract is updated.
+- target_scene, attack and the selected candidate define the global failure scene. Carry them across later stages. The selected candidate's strategies (`attack_edit_strategy`, `ego_input_edit_strategy`) are the editable plan; do not look for removed tool02 `scene_requirement`, `target_effect`, or `ego_correct_trajectory_strategy` fields.
 - Keep scene IDs, candidate IDs and result_ref versions paired; never substitute the
   newest scene for an earlier revision. A successful call may still be a business refusal.
 - Checks retain passed/failed/not_checked and physical_avoidance; missing measurements

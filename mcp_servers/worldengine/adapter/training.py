@@ -25,7 +25,7 @@ def _path(value, name):
 @runtime_task("worldengine", "training")
 def train_policy(input_data: dict[str, Any]) -> TrainingResult:
     # Direct adapter calls receive the same validation as Agent tool calls.
-    from tools.tool09_policy_trainer.schemas import Input
+    from tools.tool08_policy_trainer.schemas import Input
     args = Input.model_validate(input_data).model_dump()
     mode, data = args["training_mode"], args["training_data"]
     root = Path(args["worldengine_root"] or DEFAULT_WORLDENGINE_ROOT).expanduser().resolve()
@@ -86,6 +86,6 @@ def train_policy(input_data: dict[str, Any]) -> TrainingResult:
         result["final_loss"] = audit["losses"]["loss"]
     if args["work_dir"]:
         export = Path(args["work_dir"]).expanduser().resolve() / task.root.name
-        shutil.copytree(work, export)
+        shutil.copytree(work, export, symlinks=True)
         result["export_dir"] = str(export)
     return result

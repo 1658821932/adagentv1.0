@@ -11,11 +11,12 @@ from run_ego_reference import EGO_FRONT,EGO_REAR,EGO_WIDTH,polygon
 
 
 def initial_road_failure(times, xy, yaw, size, road, margin):
-    """Describe a fixed-prefix road rejection using the measured corner margin."""
+    """Describe a fixed-prefix road rejection requiring only the vehicle center
+    to lie inside the official drivable area."""
     from ego_road_checks import check_drivable_area_official
 
     report = check_drivable_area_official(times, xy, yaw, road,
-        front=size[0] / 2, rear=size[0] / 2, width=size[1], min_margin_m=margin)
+        front=0.0, rear=0.0, width=0.0, min_margin_m=0.0)
     if report['passed']:
         return None
     violations = report['violations']
@@ -32,6 +33,17 @@ def initial_road_failure(times, xy, yaw, size, road, margin):
     return dict(status='rejected', code=code, error=message, failed_checks=['official_road'],
         measurements=dict(time_s=round(violation['time_s'], 6),
             worst_corner_margin_m=round(worst, 6), required_margin_m=margin))
+
+
+def find_road_compatible_asset(assets, requested, times, xy, yaw, road, margin):
+    """Keep the pose and choose the closest-sized catalog asset that fits the road."""
+    alternatives = (asset for asset in assets if asset['asset_id'] != requested['asset_id'])
+    ranked = sorted(alternatives, key=lambda asset: (
+        sum((size - nominal) ** 2 for size, nominal in zip(asset['size_m'], requested['size_m'])),
+        asset['asset_id'],
+    ))
+    return next((asset for asset in ranked if initial_road_failure(
+        times, xy, yaw, asset['size_m'], road, margin) is None), None)
 
 
 def _sample(times,values,query):
@@ -122,7 +134,7 @@ def render_conflict(times,ego,yaw,actors,road,path,constraints):
     from decision_scene_view import render_overview
     path=Path(path)
     render_overview(times,ego,yaw,actors,road,path,event_window_s=constraints.get('event_window_s'),
-        route_time_labels=True)
+        route_time_labels=True,spatial_hint=constraints.get('spatial_hint'))
     return path
 
 

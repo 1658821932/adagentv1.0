@@ -233,6 +233,13 @@ class TrajScoringHeadRL(nn.Module):
             'loss.RL.entropy': self.rl_loss_weight['entropy'] * entropy_loss,
         }
 
+        kl_weight = float(self.rl_loss_weight.get('kl', 0.0))
+        if kl_weight > 0.0:
+            ref_log_pi = self.compute_log_pi(result, 'orig_').detach()
+            pi_exact = F.softmax(log_pi, dim=-1)
+            kl_div = (pi_exact * (log_probs - ref_log_pi)).sum(dim=-1).mean()
+            ret_dict['loss.RL.kl'] = kl_weight * kl_div
+
         return ret_dict
 
 

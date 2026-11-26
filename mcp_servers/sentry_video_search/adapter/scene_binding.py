@@ -21,12 +21,7 @@ def _existing(path):
     return str(path.absolute()) if path.exists() else None
 
 
-def bind_scene(source_file, output_dir):
-    """Require a scene binding; write ordered image paths to a manifest.
-
-    Binding is explicit: never infer scene identity from a renamed search clip.
-    Unlabelled or mismatched videos fail explicitly.
-    """
+def _source_scene(source_file):
     if not source_file:
         raise ValueError("Scene binding requires the original indexed source_file")
     sidecar = _sidecar(source_file)
@@ -37,15 +32,28 @@ def bind_scene(source_file, output_dir):
         raise ValueError(f"Scene sidecar requires sample_root and camera: {sidecar}")
     sample = Path(record["sample_root"]).expanduser()
     sample = (sidecar.parent / sample).resolve() if not sample.is_absolute() else sample.resolve()
-    metadata = sample / "metadata"
     manifest = json.loads((sample / "manifest.json").read_text())
-    frames = json.loads((metadata / "frames.json").read_text())
-    calibrations = json.loads((metadata / "cameras.json").read_text())
     token = manifest.get("anchor_token") or manifest.get("scene_token")
-    if not token or not frames or not isinstance(calibrations, dict) or not calibrations:
-        raise ValueError(f"Scene is missing identity, frames or camera metadata: {sample}")
+    if not token:
+        raise ValueError(f"Scene is missing identity: {sample}")
     if record.get("scene_token") and record["scene_token"] != token:
         raise ValueError("Camera sidecar and sample scene token disagree")
+    return sidecar, record, sample, manifest, token
+
+
+def source_scene_token(source_file):
+    """Read the canonical dataset scene identity without creating a binding."""
+    return _source_scene(source_file)[-1]
+
+
+def bind_scene(source_file, output_dir):
+    """Require a scene binding and write ordered image paths to a manifest."""
+    sidecar, record, sample, manifest, token = _source_scene(source_file)
+    metadata = sample / "metadata"
+    frames = json.loads((metadata / "frames.json").read_text())
+    calibrations = json.loads((metadata / "cameras.json").read_text())
+    if not frames or not isinstance(calibrations, dict) or not calibrations:
+        raise ValueError(f"Scene is missing frames or camera metadata: {sample}")
     camera = record["camera"]
     if camera not in calibrations:
         raise ValueError(f"Unknown scene camera: {camera}")

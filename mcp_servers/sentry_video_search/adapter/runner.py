@@ -28,7 +28,10 @@ def main() -> None:
             raise ValueError("library must be a string")
 
         with redirect_stdout(sys.stderr):
-            result = search_local(requirement.strip(), SearchConfig.for_library(library))
+            result = search_local(
+                requirement.strip(), SearchConfig.for_library(library),
+                excluded_scene_tokens=payload.get("excluded_scene_tokens", ()),
+            )
 
         print(json.dumps({"status": "success", "result": result.to_dict()}, ensure_ascii=False))
     except Exception as exc:

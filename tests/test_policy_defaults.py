@@ -1,4 +1,4 @@
-"""Tool07 accepts configured defaults through native validation and launch."""
+"""Tool06 accepts configured defaults through native validation and launch."""
 import json
 from pathlib import Path
 import subprocess
@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.orchestrator import Orchestrator
-from tools.tool07_policy_runner.schemas import Input
+from tools.tool06_policy_runner.schemas import Input
 
 
 def configure(tmp_path, monkeypatch):

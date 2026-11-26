@@ -12,11 +12,10 @@ def load_scene_scores(rollout_dir):
     return read_scores(rollout_dir)
 
 
-def failed_scene_anchors(scores, allowed_tokens):
-    """Return requested scene anchors whose official PDM total is zero.
-
-    Keep the shared score-file resolver above; annotation export also needs this
-    selection helper to connect full scene tokens to its requested anchors.
-    """
-    failed = {token.split("-", 2)[-1] for token, score in scores.items() if score <= 0.0}
+def failed_scene_anchors(scores, allowed_tokens, max_score=None):
+    """Return requested scene anchors whose official PDM total is below threshold (default: <= 0.0)."""
+    if max_score is None:
+        failed = {token.split("-", 2)[-1] for token, score in scores.items() if score <= 0.0}
+    else:
+        failed = {token.split("-", 2)[-1] for token, score in scores.items() if score < float(max_score)}
     return failed & set(allowed_tokens)

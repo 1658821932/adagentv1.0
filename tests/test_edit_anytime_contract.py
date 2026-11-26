@@ -24,7 +24,7 @@ def test_attack_backend_rejects_internal_pdm_before_execution(tmp_path,monkeypat
 
 
 def test_native_policy_tool_does_not_dispatch_the_legacy_challenge(monkeypatch):
-    import tools.tool07_policy_runner.real as tool
+    import tools.tool06_policy_runner.real as tool
     native=Mock(return_value=dict(result_dir='unit-test-native-result'))
     challenge=Mock(side_effect=AssertionError('Native mode must not run the independent PDM challenge'))
     monkeypatch.setattr(tool,'run_policy',native)

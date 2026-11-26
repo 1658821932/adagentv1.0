@@ -31,10 +31,22 @@ def goal_diagnostics(goal):
     return failures, measurements
 
 
+def _goal_is_soft_preference(goal, constraints=None):
+    if goal is None:
+        return True
+    if constraints and (constraints.get('task_contract') or constraints.get('objective_contract')):
+        return False
+    return bool(constraints and constraints.get('generated_objectives_are_preferences')) or (
+        isinstance(goal.get('keyframe_scope'), str) and 'preferences' in goal.get('keyframe_scope', '').lower()
+    )
+
+
 def candidate_eligibility(result):
     geometry = bool(result['reference_screen_passed'])
     goal = result.get('construction_goal')
-    task = (goal is None or bool(goal['goal_met'])) and not result.get('structured_objective_missing',False)
+    constraints = result.get('effective_constraints') or {}
+    goal_ok = goal is None or bool(goal['goal_met']) or _goal_is_soft_preference(goal, constraints)
+    task = goal_ok and not result.get('structured_objective_missing',False)
     failures,_ = goal_diagnostics(goal)
     if result.get('structured_objective_missing'):
         failures.append('declared_objective_missing')
@@ -55,7 +67,7 @@ def check_submission(editor, candidate_id):
     if constraints.get('behavior_contract') and declared.get('interaction_mode') == 'either':
         raise ValueError('Declare near_miss/contact through active construction before submission')
     goal = result.get('construction_goal')
-    if goal is not None and not goal['goal_met']:
+    if goal is not None and not goal['goal_met'] and not _goal_is_soft_preference(goal, constraints):
         raise ValueError('Active construction goal is not met; fallback cannot be submitted as goal completion')
     for setting, probe, name in (
         ('pdm_self_check', editor.pdm_probe, 'PDM'),

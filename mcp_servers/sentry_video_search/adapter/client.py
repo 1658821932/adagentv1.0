@@ -11,6 +11,30 @@ from pathlib import Path
 
 from .config import DEFAULT_RETRIEVAL_TIMEOUT_S, PROJECT_ROOT, VIDEO_RETRIEVER_PYTHON
 
+def rejected_scene_tokens(agent_log_dir: str | None) -> list[str]:
+    if not agent_log_dir:
+        return []
+    log_dir = Path(agent_log_dir)
+    outputs = []
+    initial_state = log_dir / "initial_state.json"
+    if initial_state.is_file():
+        history = json.loads(initial_state.read_text()).get("history", [])
+        outputs.extend(entry["result"] for entry in history if entry.get("tool") == "edit_planner")
+    outputs.extend(
+        json.loads(path.read_text())
+        for path in (log_dir / "tools").glob("step_*_edit_planner/output.json")
+    )
+    rejected = set()
+    for output in outputs:
+        result = output.get("result") or {}
+        token = result.get("scene_token")
+        if token and output.get("status") == "success" and result.get("suitability") in {
+            "unsuitable", "needs_information",
+        }:
+            rejected.add(token)
+    return sorted(rejected)
+
+
 @runtime_task("sentry_video_search", "retrieval")
 def retrieve_video(input_data: dict) -> dict:
     requirement = input_data.get("requirement")
@@ -27,12 +51,21 @@ def retrieve_video(input_data: dict) -> dict:
             "mcp_servers/sentry_video_search/core/requirements.txt"
         )
 
+    run = current_run("sentry_video_search")
+    excluded = rejected_scene_tokens(run.manifest.get("agent_log_dir"))
+    if excluded:
+        run.update(excluded_scene_tokens=excluded)
+
     proc = run_logged(
         [str(VIDEO_RETRIEVER_PYTHON), "-m", "mcp_servers.sentry_video_search.adapter.runner"],
-        input=json.dumps({"requirement": requirement.strip(), "library": library}, ensure_ascii=False),
+        input=json.dumps({
+            "requirement": requirement.strip(),
+            "library": library,
+            "excluded_scene_tokens": excluded,
+        }, ensure_ascii=False),
         cwd=PROJECT_ROOT,
-        env=current_run("sentry_video_search").child_env(),
-        log_path=current_run("sentry_video_search").logs / "retrieval.log",
+        env=run.child_env(),
+        log_path=run.logs / "retrieval.log",
         json_stdout=True,
         timeout=int(input_data.get("timeout", DEFAULT_RETRIEVAL_TIMEOUT_S)),
     )

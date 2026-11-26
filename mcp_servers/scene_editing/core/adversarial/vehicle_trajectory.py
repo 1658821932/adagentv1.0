@@ -233,6 +233,34 @@ def screen_attack(times, ego_xy, ego_yaw, actors, target, seed_xy, seed_yaw,
             np.max(np.abs(np.arctan2(np.sin(dense_yaw-seed_yaw[0]), np.cos(dense_yaw-seed_yaw[0])))) <= 1e-5)
     if constraints.get('require_contact', False):
         checks['contact_in_event_window'] = any(event_mask[index] for index in contacts)
+    turn_intent_evidence = None
+    ref_other = (constraints.get('reference_kinematics') or {}).get('other') or {}
+    if (not constraints.get('stationary_target', False) and ref_other and not ref_other.get('is_stationary')
+            and ref_other.get('yaw_change_deg') is not None and abs(float(ref_other['yaw_change_deg'])) >= 25.0):
+        ref_yaw_deg = float(ref_other['yaw_change_deg'])
+        unwrapped_deg = np.degrees(np.unwrap(dense_yaw))
+        signed_yaw_deg = float(unwrapped_deg[-1] - unwrapped_deg[0])
+        yaw_span_deg = float(np.max(unwrapped_deg) - np.min(unwrapped_deg))
+        turn_ok = (yaw_span_deg >= 10.0) and (signed_yaw_deg * ref_yaw_deg > 0.0)
+        checks['turn_intent_motion'] = turn_ok
+        turn_intent_evidence = dict(
+            ref_yaw_change_deg=round(ref_yaw_deg, 2),
+            candidate_signed_yaw_change_deg=round(signed_yaw_deg, 2),
+            candidate_yaw_span_deg=round(yaw_span_deg, 2),
+            min_required_yaw_span_deg=10.0,
+            passed=bool(turn_ok),
+        )
+    precontact_stall_s = None
+    if (not constraints.get('stationary_target', False) and contacts
+            and (not ref_other or not ref_other.get('is_stationary'))):
+        dt_arr = np.diff(dense_times)
+        spd_arr = np.linalg.norm(np.diff(dense_xy, axis=0), axis=1) / np.maximum(dt_arr, 1e-9)
+        first_c_t = float(dense_times[contacts[0]])
+        pre_mask = dense_times[:-1] < first_c_t - 0.1
+        if pre_mask.any() and float(spd_arr[0]) > 1.5:
+            stall_s = float(np.sum(dt_arr[pre_mask & (spd_arr < 0.5)]))
+            precontact_stall_s = round(stall_s, 2)
+            checks['no_precontact_stall'] = stall_s < 0.6
     checks = {key:bool(value) for key, value in checks.items()}
     minimum = int(np.argmin(clearances))
     velocity = np.diff(dense_xy, axis=0) / np.diff(dense_times)[:, None]
@@ -263,6 +291,10 @@ def screen_attack(times, ego_xy, ego_yaw, actors, target, seed_xy, seed_yaw,
         interpolated_sample_count=int((~native_mask).sum()),
         max_sample_interval_s=float(np.diff(dense_times).max()),
         temporal_scope='Sampled positive-area overlap; linear observation interpolation; earlier between-sample events and physical collision remain unverified')
+    if turn_intent_evidence is not None:
+        feedback['turn_intent_evidence'] = turn_intent_evidence
+    if precontact_stall_s is not None:
+        feedback['precontact_stall_s'] = precontact_stall_s
     if effective['policy_version']=='reference_acceptance.v2':
         feedback['time_contract']=dict(edit_start_s=editable,observation_end_s=prefix_end,danger_start_s=danger_end,
             observation_trajectory_change_m=history_change,

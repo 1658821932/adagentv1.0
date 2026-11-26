@@ -49,9 +49,9 @@ def test_agent_tools_use_only_canonical_adapter_service():
         "tool03_video_retriever": "sentry_video_search",
         "tool05_attack_vehicle_editor": "scene_editing",
         "tool06_ego_trajectory_editor": "scene_editing",
-        "tool07_policy_runner": "worldengine",
-        "tool08_failure_case_filter": "worldengine",
-        "tool09_policy_trainer": "worldengine",
+        "tool06_policy_runner": "worldengine",
+        "tool07_failure_case_filter": "worldengine",
+        "tool08_policy_trainer": "worldengine",
     }
     for tool, service in expected.items():
         tree = ast.parse((ROOT / "tools" / tool / "real.py").read_text())

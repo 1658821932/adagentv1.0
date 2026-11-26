@@ -72,7 +72,7 @@ def test_ready_package_and_actual_plan_offset(rollout):
     assert len(sample["cameras"])==8
     assert (root/"meta_datas/scene.pkl").read_bytes()==source
     from common.rl_training import RLTrainingData
-    from tools.tool09_policy_trainer.schemas import Input
+    from tools.tool08_policy_trainer.schemas import Input
     RLTrainingData.model_validate(data)
     assert Input.model_validate(dict(training_mode="rlft",training_data=data,base_checkpoint="/base.pth")).training_data.manifest_path==str(out/"manifest.json")
 
