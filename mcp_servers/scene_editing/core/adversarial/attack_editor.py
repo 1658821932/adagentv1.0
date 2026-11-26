@@ -691,7 +691,6 @@ class AttackEditor:
                     continue
                 body = polygon(actor['x'], actor['y'], actor['yaw'], actor['length'], actor['width'])
                 ax.add_patch(Patch(np.asarray(body.exterior.coords), facecolor='gray', alpha=.3))
-                ax.text(actor['x'], actor['y'], actor['track'][:6], fontsize=6, color='#555555', clip_on=True)
             ax.set_aspect('equal'); ax.grid(alpha=.2)
             ax.set_xlabel('scene-local x (m)'); ax.set_ylabel('scene-local y (m)')
         extent = np.vstack([self.ego, node['xy'], self.seed_xy])
