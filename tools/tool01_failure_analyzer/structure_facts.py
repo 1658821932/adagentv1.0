@@ -833,6 +833,7 @@ def main():
     parser.add_argument("--margin-m", type=float, default=35.0)
     parser.add_argument("--max-frames", type=int, default=16)
     parser.add_argument("--highlight-placeable-lanes", action="store_true")
+    parser.add_argument("--sample-root", default=None, help="Optional original scene sample directory for 3DGS coverage / placeable lanes when --frames-json is a baseline_frames.json cache.")
     args = parser.parse_args()
     try:
         if args.frames_json:
@@ -846,7 +847,7 @@ def main():
                 margin_m=args.margin_m, ahead_only=True, radius_m=35.0, dpi=120,
                 out_bev_path=args.out_bev, out_traj_path=args.out_traj,
                 title=f"RETRIEVED REAL SCENE BEV: E0..E{end_frame} (0..{(frames[end_frame]['timestamp'] - frames[0]['timestamp'])/1e6:.1f}s)",
-                sample_root=Path(args.frames_json).resolve().parents[1],
+                sample_root = Path(args.sample_root).expanduser().resolve() if args.sample_root else (Path(args.frames_json).resolve().parents[1]),
                 highlight_placeable_lanes=bool(args.highlight_placeable_lanes),
             )
             payload = {"status": "ok", "frame_count": len(frames), "eval_frames": end_frame + 1, **rendered}

@@ -31,7 +31,7 @@ def _gis_python() -> str | None:
     return None
 
 
-def _render_retrieved_bev(frames_path: Path, run_dir: Path) -> dict:
+def _render_retrieved_bev(frames_path: Path, run_dir: Path, sample_root: Path | None = None) -> dict:
     interpreter = _gis_python()
     if interpreter is None:
         return {"ok": False, "reason": "GIS/simulator Python interpreter is not available to render retrieved BEV."}
@@ -47,6 +47,7 @@ def _render_retrieved_bev(frames_path: Path, run_dir: Path) -> dict:
                 "--margin-m", "35.0",
                 "--max-frames", "16",
                 "--highlight-placeable-lanes",
+                *(["--sample-root", str(sample_root)] if sample_root is not None else []),
             ],
             capture_output=True, text=True, timeout=GIS_TIMEOUT_S,
         )
@@ -407,7 +408,7 @@ def _check_attack_plans_geometry(frames_path: Path, plans: list[dict], rendered:
     return issues, ok_points
 
 
-def _render_self_check_overlay(frames_path: Path, plans: list[dict], out_path: Path) -> Path | None:
+def _render_self_check_overlay(frames_path: Path, plans: list[dict], out_path: Path, sample_root: Path | None = None) -> Path | None:
     """Plot the proposed S1..S3 on the Tool 04 BEV for visual self-correction."""
     import subprocess
     script = f"""
@@ -440,7 +441,7 @@ def hooked(self, fname, *args, **kwargs):
     return orig_savefig(self, fname, *args, **kwargs)
 
 Figure.savefig = hooked
-sys.argv = ['structure_facts.py', '--frames-json', {str(frames_path)!r},
+sys.argv = ['structure_facts.py', '--frames-json', {str(frames_path)!r}, *(['--sample-root', {str(sample_root)!r}] if {sample_root is not None!r} else []),
             '--out-bev', {str(out_path)!r}, '--out-traj', {str(out_path.with_suffix('.json'))!r},
             '--max-frames', '16', '--margin-m', '35.0', '--highlight-placeable-lanes']
 sf.main()
@@ -592,7 +593,7 @@ def _evaluate_one(data: Input, run_dir: Path, llm_client=None) -> tuple[dict, st
     baseline_sim_frames = resolve_baseline_frames_path(ref.scene_token)
     planning_frames_path = baseline_sim_frames or frames_path
     ego_traj_source = "policy_simulation" if baseline_sim_frames is not None else "recorded_replay"
-    rendered = _render_retrieved_bev(planning_frames_path, run_dir)
+    rendered = _render_retrieved_bev(planning_frames_path, run_dir, sample_root=frames_path.parent.parent)
     if not rendered.get("ok"):
         reason = rendered["reason"]
         return ({
@@ -639,7 +640,7 @@ def _evaluate_one(data: Input, run_dir: Path, llm_client=None) -> tuple[dict, st
             if not self_check_issues or sc_round == 2:
                 break
             overlay_name = "self_check_overlay.png" if sc_round == 0 else f"self_check_overlay_r{sc_round + 1}.png"
-            overlay_p = _render_self_check_overlay(planning_frames_path, plans, run_dir / overlay_name)
+            overlay_p = _render_self_check_overlay(planning_frames_path, plans, run_dir / overlay_name, sample_root=frames_path.parent.parent)
             if overlay_p is None:
                 break
             ok_line = (
