@@ -477,11 +477,16 @@ def render_scene_bev(
     def center_of(poly):
         return np.asarray(poly.points, dtype=float).mean(axis=0)
 
+    drawn_arrow_centers: list[tuple[float, float]] = []
+
     def draw_body(axis, pts, yaw, color, label, *, alpha, zorder, show_label, edgecolor="black", linewidth=0.75):
         axis.add_patch(PlotPolygon(pts, closed=True, facecolor=color, edgecolor=edgecolor, linewidth=linewidth, alpha=alpha, zorder=zorder))
         c = pts.mean(axis=0)
-        axis.add_patch(FancyArrowPatch((c[0], c[1]), (c[0] + 4.0 * math.cos(yaw), c[1] + 4.0 * math.sin(yaw)),
-                                       arrowstyle="-|>", mutation_scale=8.5, linewidth=0.75, color="black", zorder=zorder + 1))
+        cx, cy = float(c[0]), float(c[1])
+        if all(math.hypot(cx - ax_x, cy - ax_y) >= 3.5 for ax_x, ax_y in drawn_arrow_centers):
+            drawn_arrow_centers.append((cx, cy))
+            axis.add_patch(FancyArrowPatch((cx, cy), (cx + 4.0 * math.cos(yaw), cy + 4.0 * math.sin(yaw)),
+                                           arrowstyle="-|>", mutation_scale=8.5, linewidth=0.75, color="black", zorder=zorder + 1))
         if show_label:
             axis.text(c[0], c[1] + 1.2, label, fontsize=7.0, color=edgecolor if edgecolor != "black" else color,
                       fontweight="bold", ha="center", va="bottom", zorder=zorder + 2)
