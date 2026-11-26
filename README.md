@@ -4,8 +4,7 @@
 
 ## 当前状态
 
-当前启用 9 个工具，按 01–09 编号，涵盖失败分析、需求生成、检索、快速粗规划、攻防编辑、策略评测、失败筛选和后训练。
-攻击车与自车编辑后端已接入；独立视觉验收工具已直接删除，没有迁入其他工具。
+当前启用 8 个工具，按 01–08 编号，涵盖失败分析、需求生成、检索、快速粗规划、场景编辑（含攻击车与 `ego_only` 模式）、策略评测、失败筛选和后训练（含 Reverse KL 锚）。
 独立原生回放后端保留，但没有注册为主 Agent 工具。编辑结果的 `simulation_input` / `ilft_training_data` 若为 null，须读取导出报告，不能用原始场景代替编辑结果。
 
 ## 运行环境
@@ -43,23 +42,20 @@ environments/agent/.venv/bin/python -m agent.main \
 | 02 | scene_instance_generator | 生成目标场景、全局自车目标与三个候选 |
 | 03 | video_retriever | 检索并强制绑定多相机场景、标注和资产 |
 | 04 | edit_planner | 快速判断可编辑性，给出针对底场景的粗计划 |
-| 05 | attack_vehicle_editor | 规划、搜索、编辑并冻结攻击车场景 |
-| 06 | ego_trajectory_editor | 规划、编辑并复核正确的自车专家轨迹 |
-| 07 | policy_runner | 驾驶策略原生闭环仿真与正式评分；保留旧 PDM 挑战模式 |
-| 08 | failure_case_filter | 读取官方评分并筛选失败案例 |
-| 09 | policy_trainer | 执行 ILFT/RLFT 并输出模型与更新审计 |
+| 05 | attack_vehicle_editor | 规划、搜索、编辑并冻结对抗场景（支持 `add_vehicle` 与 `ego_only`） |
+| 06 | policy_runner | 驾驶策略原生闭环仿真与正式评分，并导出 RLFT 候选奖励标注 |
+| 07 | failure_case_filter | 读取官方评分并筛选失败案例 |
+| 08 | policy_trainer | 执行 ILFT/RLFT（支持 Reverse KL 锚与自定义阈值）并输出模型与更新审计 |
 
-主 Agent 按任务选择调用顺序。05 输出通过几何与任务检查的冻结攻击场景，06 在该冻结场景上编辑自车专家轨迹。05 默认开启 `vadv2_self_test`，原生策略自检默认最多运行 3 次，跨候选和对象重选共享额度。显式传入 `vadv2_self_test=false` 可仅做几何和任务检查。旧 PDM 自检由独立验证脚本和 `policy_runner` 执行。
-05 不要求生成中间攻击视频。06 输出专家轨迹、检查，以及实际生成的视频；关闭渲染时视频字段为空。是否导出原生仿真包须检查 `simulation_input` 和导出报告；当前专家 ILFT 标注出口尚未接通，`ilft_training_data` 为 null。
-07 是独立策略评测工具，与05可选自测复用原生后端。05未自测时不能声称 VADv2 已碰撞；已有证据只可用于完全匹配的场景与轨迹版本。碰撞攻击依据模型接管后的实际目标车体接触；PDM零分、道路违规、插值推测或接管前接触不能代替成功证据。
-07 原生评测默认使用4帧历史、16帧场景预算，在2 Hz场景中覆盖1.5–7.5秒；`full_rollout_pdm` 表示覆盖本次配置的 rollout，不保证覆盖源场景全长。显式调整帧预算时评分范围随之变化，须读取返回的 `evaluation_scope`。VADv2单次预测与密集奖励窗口独立，不能把该评分直接等同于标准4秒NAVSIM分数。
+主 Agent 按任务选择调用顺序。05 输出通过几何与任务检查的冻结编辑场景（支持 `add_vehicle` 插入攻击车和 `ego_only` 纯自车速度/场景准备），默认开启 `vadv2_self_test`。显式传入 `vadv2_self_test=false` 可仅做几何和任务检查。
+06（`policy_runner`）是独立策略闭环评测与奖励标注导出工具，默认使用 4 帧历史、16 帧场景预算，在 2 Hz 场景中覆盖 1.5–7.5 秒；显式调整帧预算时评分范围随之变化，须读取返回的 `evaluation_scope`。08（`policy_trainer`）支持 ILFT 与 RLFT（内置 `TrajScoringHeadRL` Reverse KL 锚定）。
 场景帧数须与历史/未来帧预算一致；原生编辑场景由适配层启用与回放共用的坐标修正，并将实际帧数传入 AlgEngine 监视器。
 
 四个后端组件保存在 `mcp_servers/`，均采用 `core/`、`adapter/`、`runtime/` 分层：
 
 - `sentry_video_search`：检索、入库与重排序，详见[多相机场景绑定](mcp_servers/sentry_video_search/README.md)。
 - `worldengine_failure_analysis`：失败取证、图像及数值分析。
-- `scene_editing`：攻击车与自车编辑阶段接口，详见[编辑接口](docs/EDITING_INTERFACES.md)。
+- `scene_editing`：场景编辑后端（`add_vehicle` 与 `ego_only`），详见 [scene_editing README](mcp_servers/scene_editing/README.md)。
 - `worldengine`：仿真、官方评分读取及训练。
 
 这些组件通过 Python 或 JSON 子进程调用；目录名称不表示每个组件都提供 MCP 协议服务。
@@ -80,20 +76,16 @@ environments/agent/.venv/bin/python -m tools.scripts.smoke_llm_tools --mode mock
 
 测试依赖见 `requirements-test.txt`。接口测试不能代替真实场景质量、闭环表现或后训练收益验证。
 Agent 记录保存在 `logs/`；服务产物保存在 `mcp_servers/<service>/runtime/<run_id>/`。
-可读结果可按案例整理到 `outputs/<case>/<run>/`；后续 tool06 参考渲染默认写入 `outputs/rendered/`。`outputs/` 已被 Git 忽略，历史实验记录保持原位置。
+可读结果与实验产物可按案例整理到 `outputs/<case>/`；`outputs/` 已被 Git 忽略。
 环境、密钥、数据、权重、索引与运行产物不随源码提交。现有后台数据准备任务依赖的环境暂时保留。
 
 ## 文档
 
 - [API 配置与统一切换](docs/API_CONFIGURATION.md)
-- [项目结构与分工](docs/ARCHITECTURE.md)
-- [Agent 核心与运行记录](docs/ARCHITECTURE.md)
-- [对话续跑后端与前端接入](docs/CONVERSATION_CONTINUATION.md)
+- [模型调用与思考强度配置](docs/MODEL_CALL_CONFIGURATION.md)
+- [提示词分层与规范](docs/PROMPTS.md)
 - [全流程日志、上下文与计时](docs/RUN_LOGGING.md)
-- [工具说明](docs/TOOLS.md)与[自动生成接口](docs/INTERFACES.md)
-- [后端组件](docs/ARCHITECTURE.md)与[执行契约](docs/ARCHITECTURE.md)
-- [提示词分层](docs/PROMPTS.md)与[LLM 工具规范](docs/PROMPTS.md)
-- [IL/RL 训练](docs/TOOLS.md)
+- [后端组件说明](mcp_servers/README.md)
 
 ## 许可
 
