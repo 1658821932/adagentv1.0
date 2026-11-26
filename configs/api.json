@@ -52,17 +52,6 @@
     "reasoning_effort": "high",
     "tool_choice_policy": "auto"
   },
-  "ds_official_flash": {
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-flash",
-    "api_key_env": "DEEPSEEK_OFFICIAL_API_KEY",
-    "timeout": 300,
-    "max_tokens": 65536,
-    "request_dialect": "thinking",
-    "thinking_mode": "enabled",
-    "reasoning_effort": "high",
-    "tool_choice_policy": "auto"
-  },
   "tool_profiles": {
     "failure_analyzer": "kimi",
     "edit_planner": "kimi",
