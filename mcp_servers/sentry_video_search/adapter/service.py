@@ -16,7 +16,7 @@ def search_local(requirement, config=None, *, excluded_scene_tokens=()):
     from .scene_binding import bind_scene, source_scene_token
 
     config = config or SearchConfig()
-    excluded = set(excluded_scene_tokens)
+    excluded = {str(t).strip().split("-")[-1] for t in excluded_scene_tokens if str(t).strip()}
 
     def eligible(source):
         try:

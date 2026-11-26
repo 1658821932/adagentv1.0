@@ -331,7 +331,7 @@ def search_local(
 
         if not hits:
             if source_filter is not None:
-                raise RuntimeError("No eligible local matches after excluding previously rejected scenes")
+                raise RuntimeError("No eligible local matches after excluding used or rejected scenes")
             raise RuntimeError("Local index is empty or contains no matching video")
 
         if float(hits[0]["similarity_score"]) < config.match_threshold:

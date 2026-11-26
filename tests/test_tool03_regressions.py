@@ -192,3 +192,96 @@ def test_success_keeps_document_indices_and_cleans_all_uploads(monkeypatch, tmp_
                          for i in range(2)]
     assert sorted(deleted) == sorted(document['video'] for document in documents)
     assert details['ranked_results'][0]['candidate_index'] == 1
+
+
+def test_tool03_input_accepts_exclude_scene_tokens():
+    inp = Input.model_validate({"requirement": "白天直路，自车直行"})
+    assert inp.exclude_scene_tokens == []
+    inp2 = Input.model_validate({
+        "requirement": "白天直路，自车直行",
+        "exclude_scene_tokens": ["1a76d8e12d645857", "2021.08-3dd6906e67e95645"],
+    })
+    assert inp2.exclude_scene_tokens == ["1a76d8e12d645857", "2021.08-3dd6906e67e95645"]
+
+
+def test_exclude_scene_tokens_merges_explicit_env_and_single_run_failures(monkeypatch, tmp_path):
+    from common.scene_pool import EXCLUDE_ENV_VAR, record_used_scene_token
+    from mcp_servers.sentry_video_search.adapter.client import collect_excluded_scene_tokens
+
+    batch_file = tmp_path / "used_base_scenes.json"
+    record_used_scene_token(batch_file, "2021.09-aaaa1111aaaa1111", source_token="src_01")
+    monkeypatch.setenv(EXCLUDE_ENV_VAR, str(batch_file))
+
+    run_dir = tmp_path / "run_01"
+    # Tool 04 unsuitable -> excluded in this run
+    ep_dir = run_dir / "tools" / "step_01_edit_planner"
+    ep_dir.mkdir(parents=True)
+    (ep_dir / "output.json").write_text(json.dumps({
+        "status": "success",
+        "result": {"suitability": "unsuitable", "scene_token": "bbbb2222bbbb2222"},
+    }))
+    # Tool 05 failed -> excluded in this run (token read from input.json scene_ref)
+    t5_fail = run_dir / "tools" / "step_02_attack_vehicle_editor"
+    t5_fail.mkdir(parents=True)
+    (t5_fail / "input.json").write_text(json.dumps({
+        "scene_ref": {"scene_id": "2021.09-cccc3333cccc3333", "scene_token": "cccc3333cccc3333"},
+    }))
+    (t5_fail / "output.json").write_text(json.dumps({
+        "status": "success",
+        "result": {"status": "unable_to_complete", "reason": "no feasible path"},
+    }))
+    # Tool 05 succeeded -> NOT treated as rejected in single-run rejections
+    t5_ok = run_dir / "tools" / "step_03_attack_vehicle_editor"
+    t5_ok.mkdir(parents=True)
+    (t5_ok / "input.json").write_text(json.dumps({
+        "scene_ref": {"scene_token": "dddd4444dddd4444"},
+    }))
+    (t5_ok / "output.json").write_text(json.dumps({
+        "status": "success",
+        "result": {"status": "completed", "scene_id": "2021.09-dddd4444dddd4444"},
+    }))
+
+    excluded = collect_excluded_scene_tokens(
+        {"exclude_scene_tokens": ["2021.10-eeee5555eeee5555"]},
+        str(run_dir),
+    )
+    assert excluded == [
+        "aaaa1111aaaa1111",
+        "bbbb2222bbbb2222",
+        "cccc3333cccc3333",
+        "eeee5555eeee5555",
+    ]
+
+
+def test_scene_pool_only_extracts_completed_tool05_base_scene(tmp_path):
+    from common.scene_pool import extract_succeeded_base_scene_token
+
+    # Case 1: Tool 04 unsuitable, no Tool 05 -> None (never added to batch pool)
+    r1 = tmp_path / "run_t04_unsuitable"
+    (r1 / "tools" / "step_01_edit_planner").mkdir(parents=True)
+    (r1 / "tools" / "step_01_edit_planner" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"suitability": "unsuitable", "scene_token": "tok_unsuitable"},
+    }))
+    assert extract_succeeded_base_scene_token(r1) is None
+
+    # Case 2: Tool 05 failed -> None (never added to batch pool)
+    r2 = tmp_path / "run_t05_fail"
+    (r2 / "tools" / "step_01_attack_vehicle_editor").mkdir(parents=True)
+    (r2 / "tools" / "step_01_attack_vehicle_editor" / "input.json").write_text(json.dumps({
+        "scene_ref": {"scene_token": "tok_failed"},
+    }))
+    (r2 / "tools" / "step_01_attack_vehicle_editor" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"status": "unable_to_complete"},
+    }))
+    assert extract_succeeded_base_scene_token(r2) is None
+
+    # Case 3: Tool 05 completed -> returns base scene token
+    r3 = tmp_path / "run_t05_ok"
+    (r3 / "tools" / "step_01_attack_vehicle_editor").mkdir(parents=True)
+    (r3 / "tools" / "step_01_attack_vehicle_editor" / "input.json").write_text(json.dumps({
+        "scene_ref": {"scene_token": "tok_success"},
+    }))
+    (r3 / "tools" / "step_01_attack_vehicle_editor" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"status": "completed", "scene_id": "2021.09-tok_success"},
+    }))
+    assert extract_succeeded_base_scene_token(r3) == "tok_success"

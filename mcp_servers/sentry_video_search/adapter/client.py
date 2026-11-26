@@ -2,37 +2,103 @@
 
 from __future__ import annotations
 
-from mcp_servers.runtime import runtime_task, current_run
 import json
-import subprocess
-from mcp_servers.process import run_logged
+import os
 from pathlib import Path
 
+from common.scene_pool import EXCLUDE_ENV_VAR, load_excluded_scene_tokens, normalize_scene_token
+from mcp_servers.process import run_logged
+from mcp_servers.runtime import current_run, runtime_task
 
 from .config import DEFAULT_RETRIEVAL_TIMEOUT_S, PROJECT_ROOT, VIDEO_RETRIEVER_PYTHON
 
+
+def _token_from_step_input(step_dir: Path) -> str | None:
+    in_path = step_dir / "input.json"
+    if not in_path.is_file():
+        return None
+    try:
+        inp = json.loads(in_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    ref = inp.get("scene_ref")
+    if isinstance(ref, dict):
+        return normalize_scene_token(ref.get("scene_token") or ref.get("scene_id"))
+    return None
+
+
 def rejected_scene_tokens(agent_log_dir: str | None) -> list[str]:
+    """Return scene tokens rejected by Tool 04 or failed in Tool 05 within this single run."""
     if not agent_log_dir:
         return []
     log_dir = Path(agent_log_dir)
-    outputs = []
+    rejected: set[str] = set()
+
+    # 1. History from resumed parent runs (edit_planner rejections & attack_vehicle_editor failures)
     initial_state = log_dir / "initial_state.json"
     if initial_state.is_file():
-        history = json.loads(initial_state.read_text()).get("history", [])
-        outputs.extend(entry["result"] for entry in history if entry.get("tool") == "edit_planner")
-    outputs.extend(
-        json.loads(path.read_text())
-        for path in (log_dir / "tools").glob("step_*_edit_planner/output.json")
-    )
-    rejected = set()
-    for output in outputs:
-        result = output.get("result") or {}
-        token = result.get("scene_token")
-        if token and output.get("status") == "success" and result.get("suitability") in {
-            "unsuitable", "needs_information",
-        }:
-            rejected.add(token)
+        try:
+            history = json.loads(initial_state.read_text(encoding="utf-8")).get("history", [])
+        except (OSError, json.JSONDecodeError):
+            history = []
+        for entry in history:
+            tool = entry.get("tool")
+            output = entry.get("result") or {}
+            res = output.get("result") or {}
+            if tool == "edit_planner":
+                tok = normalize_scene_token(res.get("scene_token"))
+                if tok and output.get("status") == "success" and res.get("suitability") in {
+                    "unsuitable", "needs_information",
+                }:
+                    rejected.add(tok)
+            elif tool == "attack_vehicle_editor":
+                if output.get("status") != "success" or res.get("status") != "completed":
+                    tok = normalize_scene_token(res.get("scene_token") or res.get("scene_id"))
+                    if tok:
+                        rejected.add(tok)
+
+    # 2. Current run step outputs
+    tools_dir = log_dir / "tools"
+    if tools_dir.is_dir():
+        for path in tools_dir.glob("step_*_edit_planner/output.json"):
+            try:
+                output = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            res = output.get("result") or {}
+            tok = normalize_scene_token(res.get("scene_token"))
+            if tok and output.get("status") == "success" and res.get("suitability") in {
+                "unsuitable", "needs_information",
+            }:
+                rejected.add(tok)
+
+        for path in tools_dir.glob("step_*_attack_vehicle_editor/output.json"):
+            try:
+                output = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            res = output.get("result") or {}
+            if output.get("status") != "success" or res.get("status") != "completed":
+                tok = normalize_scene_token(res.get("scene_token") or res.get("scene_id")) or _token_from_step_input(path.parent)
+                if tok:
+                    rejected.add(tok)
+
     return sorted(rejected)
+
+
+def collect_excluded_scene_tokens(input_data: dict, agent_log_dir: str | None) -> list[str]:
+    """Merge single-run rejections, explicit Tool 03 input exclusions, and batch pool file."""
+    excluded = set(rejected_scene_tokens(agent_log_dir))
+    explicit = input_data.get("exclude_scene_tokens") or []
+    if isinstance(explicit, (list, tuple, set)):
+        for item in explicit:
+            tok = normalize_scene_token(item)
+            if tok:
+                excluded.add(tok)
+    batch_file = os.environ.get(EXCLUDE_ENV_VAR)
+    if batch_file:
+        excluded.update(load_excluded_scene_tokens(batch_file))
+    return sorted(excluded)
 
 
 @runtime_task("sentry_video_search", "retrieval")
@@ -52,7 +118,7 @@ def retrieve_video(input_data: dict) -> dict:
         )
 
     run = current_run("sentry_video_search")
-    excluded = rejected_scene_tokens(run.manifest.get("agent_log_dir"))
+    excluded = collect_excluded_scene_tokens(input_data, run.manifest.get("agent_log_dir"))
     if excluded:
         run.update(excluded_scene_tokens=excluded)
 

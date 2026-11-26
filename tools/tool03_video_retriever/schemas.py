@@ -12,6 +12,7 @@ class Input(InputModel):
     timeout: PositiveInt = Field(default=DEFAULT_RETRIEVAL_TIMEOUT_S, description='Retrieval process timeout in seconds.')
     mock_video_path: NonEmptyStr | None = Field(default=None, description='Mock-only video path; it does not provide a real indexed scene.')
     candidate_id: NonEmptyStr | None = Field(default=None, description='tool02 candidate this requirement came from; echoed back so the plan can be traced to its variant.')
+    exclude_scene_tokens: list[NonEmptyStr] = Field(default_factory=list, description='Optional batch/experiment-scoped list of already-used base scene_token values to hard-exclude from retrieval.')
 
     @field_validator('requirement')
     @classmethod
