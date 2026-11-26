@@ -648,57 +648,35 @@ class AttackEditor:
         for ax in axes:
             for geometry in self.road.polygons:
                 ax.add_patch(Patch(np.asarray(geometry.exterior.coords), facecolor='#edf3e8', edgecolor='#bac8b0', linewidth=.5))
-            center = self.ego[index] + (EGO_FRONT - EGO_REAR) / 2 * np.array([
-                np.cos(self.ego_yaw[index]), np.sin(self.ego_yaw[index])])
-            box_centers = [center, node['xy'][index]]
-
-            def _draw_arrows(pts, color, *, fracs=(0.3, 0.7), alpha=0.9, lw=1.3):
+            def _draw_end_arrow(pts, color, *, alpha=0.95, lw=1.5):
                 if len(pts) < 2:
                     return
-                segs = np.linalg.norm(np.diff(pts, axis=0), axis=1)
-                total = float(segs.sum())
-                if total < 1.5:
-                    return
-                cum = np.concatenate([[0.0], np.cumsum(segs)])
-                for frac in fracs:
-                    target_s = total * frac
-                    k = int(np.searchsorted(cum, target_s, side='right')) - 1
-                    k = max(0, min(len(pts) - 2, k))
-                    p0, p1 = pts[k], pts[k + 1]
+                p1 = pts[-1]
+                for k in range(len(pts) - 2, -1, -1):
+                    p0 = pts[k]
                     seg_len = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
-                    if seg_len < 0.05:
-                        continue
-                    mid = 0.5 * (p0 + p1)
-                    if any(float(np.hypot(mid[0] - bc[0], mid[1] - bc[1])) < 3.2 for bc in box_centers):
-                        continue
-                    u = (p1 - p0) / seg_len
-                    tip = mid + u * 0.6
-                    tail = mid - u * 0.6
-                    ax.annotate(
-                        '', xy=(float(tip[0]), float(tip[1])), xytext=(float(tail[0]), float(tail[1])),
-                        arrowprops=dict(arrowstyle='-|>,head_length=0.45,head_width=0.25',
-                                        color=color, lw=lw, alpha=alpha, shrinkA=0, shrinkB=0),
-                    )
+                    if seg_len >= 0.05:
+                        u = (p1 - p0) / seg_len
+                        tail = p1 - u * min(seg_len, 1.0)
+                        ax.annotate(
+                            '', xy=(float(p1[0]), float(p1[1])), xytext=(float(tail[0]), float(tail[1])),
+                            arrowprops=dict(arrowstyle='-|>,head_length=0.5,head_width=0.28',
+                                            color=color, lw=lw, alpha=alpha, shrinkA=0, shrinkB=0),
+                        )
+                        return
+
             ego_label = 'policy sim ego' if getattr(self, 'ego_reference_meta', {}).get('source') == 'policy_simulation' else 'recorded ego'
             ax.plot(self.ego[:, 0], self.ego[:, 1], color='#1565c0', label=ego_label)
             ax.plot(node['xy'][:, 0], node['xy'][:, 1], color='#d84315', label='candidate target')
             ax.plot(self.seed_xy[:, 0], self.seed_xy[:, 1], '--', color='gray', label='object seed')
-            ax.scatter([self.ego[0, 0]], [self.ego[0, 1]], color='#1565c0', s=18, zorder=4)
-            ax.scatter([node['xy'][0, 0]], [node['xy'][0, 1]], color='#d84315', s=18, zorder=4)
-            _draw_arrows(self.ego, '#1565c0', fracs=(0.25, 0.65), alpha=0.9, lw=1.3)
-            _draw_arrows(node['xy'], '#d84315', fracs=(0.25, 0.65), alpha=0.9, lw=1.3)
-            _draw_arrows(self.seed_xy, 'gray', fracs=(0.45, 0.85), alpha=0.55, lw=1.0)
-            for body, box_c, box_yaw, box_len, color in (
-                (polygon(*center, self.ego_yaw[index], EGO_FRONT + EGO_REAR, EGO_WIDTH), center, self.ego_yaw[index], EGO_FRONT + EGO_REAR, '#1565c0'),
-                (polygon(*node['xy'][index], node['yaw'][index], *self.target['size_m'][:2]), node['xy'][index], node['yaw'][index], float(self.target['size_m'][0]), '#d84315'),
-            ):
+            _draw_end_arrow(self.ego, '#1565c0', alpha=0.95, lw=1.5)
+            _draw_end_arrow(node['xy'], '#d84315', alpha=0.95, lw=1.5)
+            _draw_end_arrow(self.seed_xy, 'gray', alpha=0.7, lw=1.2)
+            center = self.ego[index] + (EGO_FRONT - EGO_REAR) / 2 * np.array([
+                np.cos(self.ego_yaw[index]), np.sin(self.ego_yaw[index])])
+            for body, color in ((polygon(*center, self.ego_yaw[index], EGO_FRONT + EGO_REAR, EGO_WIDTH), '#1565c0'),
+                                (polygon(*node['xy'][index], node['yaw'][index], *self.target['size_m'][:2]), '#d84315')):
                 ax.add_patch(Patch(np.asarray(body.exterior.coords), fill=False, edgecolor=color, linewidth=2))
-                tip = box_c + (box_len * 0.45) * np.array([np.cos(box_yaw), np.sin(box_yaw)])
-                ax.annotate(
-                    '', xy=(float(tip[0]), float(tip[1])), xytext=(float(box_c[0]), float(box_c[1])),
-                    arrowprops=dict(arrowstyle='-|>,head_length=0.45,head_width=0.25',
-                                    color=color, lw=1.6, shrinkA=0, shrinkB=0),
-                )
             for actor in self.actors[index]:
                 if actor['track'] == self.target['track_id']:
                     continue
