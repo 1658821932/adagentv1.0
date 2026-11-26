@@ -28,7 +28,7 @@ from common.pdm_scores import score_file
 NEARBY_RADIUS_M = 30.0
 COLLISION_CONTACT_M = 0.1
 DEFAULT_MAPS_ROOT = "data/navtrain_ep_per1/maps"
-EGO_HISTORY_COLOR = "#ffb74d"
+EGO_HISTORY_COLOR = "#8e24aa"
 EGO_COLOR = "#f57c00"
 OTHER_COLOR = "#1976d2"
 VIOLATION_EDGE = "#ff1744"
@@ -530,7 +530,7 @@ def render_scene_bev(
         c = center_of(ego_utm)
         x, y, yaw = to_heading(c[0], c[1], ego_heading(frames[idx], idx))
         is_viol = violation_frame is not None and idx == violation_frame
-        is_hist = idx < 3
+        is_hist = idx <= 3
         fill = EGO_HISTORY_COLOR if (is_hist and not is_viol) else EGO_COLOR
         edge = VIOLATION_EDGE if is_viol else ("#e65100" if idx == 3 else "black")
         lw = 2.2 if is_viol else (1.4 if idx == 3 else 0.75)
@@ -551,7 +551,11 @@ def render_scene_bev(
     cos_y, sin_y = math.cos(-eyaw), math.sin(-eyaw)
 
     ego_arr = np.asarray(ego_points)
-    axis.plot(ego_arr[:, 0], ego_arr[:, 1], color=EGO_COLOR, linewidth=2.5, zorder=6)
+    if len(ego_arr) > 3:
+        axis.plot(ego_arr[:4, 0], ego_arr[:4, 1], color=EGO_HISTORY_COLOR, linewidth=2.8, zorder=6)
+        axis.plot(ego_arr[3:, 0], ego_arr[3:, 1], color=EGO_COLOR, linewidth=2.5, zorder=6)
+    else:
+        axis.plot(ego_arr[:, 0], ego_arr[:, 1], color=EGO_HISTORY_COLOR, linewidth=2.8, zorder=6)
 
     actor_records, actor_trajs = [], {}
     for number, (track, rows, min_dist, viol_dist) in enumerate(nearby, start=1):
