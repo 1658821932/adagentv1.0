@@ -32,6 +32,13 @@ def _candidate_cache_roots(checkpoint: str | None = None, cache_base: Path | Non
     env_dir = os.environ.get(CACHE_DIR_ENV_VAR, "").strip()
     if env_dir:
         roots.append(Path(env_dir).expanduser())
+    if cache_base is None:
+        from common.experiments import active_experiment_dir
+        exp_dir = active_experiment_dir()
+        if exp_dir is not None:
+            exp_cache = exp_dir / "base_sim_cache"
+            if exp_cache.is_dir():
+                roots.append(exp_cache)
     base = Path(cache_base) if cache_base is not None else DEFAULT_CACHE_BASE
     stem = _checkpoint_stem(checkpoint)
     roots.append(base / stem)
