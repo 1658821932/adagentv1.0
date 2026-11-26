@@ -131,7 +131,7 @@ TRAJECTORY_TOOLS += [copy.deepcopy(tool) for tool in EGO_TOOLS if tool['function
 for tool in TRAJECTORY_TOOLS:
     if tool['function']['name']=='edit_speed_profile':
         tool['function']['description']+=' In this attack stage the unchanged bicycle policy rejects reverse travel. Generator support for signed speeds does not override that policy.'
-TRAJECTORY_TOOLS += [function_tool('inspect_trajectory', 'View a candidate BEV and reference checks before submitting it. Repeated inspection returns the cached image and evidence without rendering again.',
+TRAJECTORY_TOOLS += [function_tool('inspect_trajectory', 'View a candidate BEV (blue=policy sim/reference ego, red=candidate target, gray dashed=object seed; each line carries 2 directional arrows at 1/3 and 2/3 arc length; background actors are gray outlines without text labels) and reference checks before submitting it. Repeated inspection returns the cached image and evidence without rendering again.',
                                   {'candidate_id':{'type':'string'}})]
 TRAJECTORY_TOOLS += [function_tool('adjust_initial_pose',
     'Create a new candidate version with bounded initial-position, optional initial yaw and optional initial-speed adjustments. Existing and added actors share scene-local x-forward/y-left offsets. preserve keeps yaw; route_aligned uses the nearest recorded ego-route heading; offset adds yaw_offset_rad; explicit sets yaw_rad. Moving actors regenerate their trajectory from inherited controls; stationary actors are rigidly transformed and must keep zero speed. Full checks and exact-version VAD testing are required again.',
