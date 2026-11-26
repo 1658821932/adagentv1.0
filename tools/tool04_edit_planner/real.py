@@ -160,18 +160,18 @@ def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
         "  },\n"
         "  \"retrieval_suggestion\": \"若unsuitable，给出新的精简检索词（≤48字，禁用编辑词）；若ready填null\"\n"
         "}\n\n"
-        "【硬约束】\n0. 严格可编辑性门槛（先判有无对应车道，严禁硬凑）：先对照图1所需的交互车道关系（例如无物理隔离的对向相邻车道、同向相邻车道、路口可汇入支路等），核查图2自车未来轨迹 E3..E15 附近是否真实存在对应角色的亮青色车道（深青箭头方向吻合，且与自车之间没有白色导流岛/中央隔离带物理隔断）。若图2根本缺少该类交互车道（例如需要对向相邻车道，但图2自车行驶在被导流岛隔开的单向匝道或纯同向多车道上），必须直接判 suitability=\"unsuitable\" 并给出新的 retrieval_suggestion 换底场景，严禁硬把起点塞到后方同向车道或无关支路！\n"
+        "【硬约束】\n0. 严格可编辑性门槛（先判有无对应车道，严禁硬凑）：先对照图1所需的交互车道关系（例如无物理隔离的对向相邻车道、同向相邻车道、路口可汇入支路等），核查图2自车未来轨迹（橙色 1.5–7.5s 段）附近是否真实存在对应角色的亮青色车道（深青箭头方向吻合，且与自车之间没有白色导流岛/中央隔离带物理隔断）。若图2根本缺少该类交互车道（例如需要对向相邻车道，但图2自车行驶在被导流岛隔开的单向匝道或纯同向多车道上），必须直接判 suitability=\"unsuitable\" 并给出新的 retrieval_suggestion 换底场景，严禁硬把起点塞到后方同向车道或无关支路！\n"
         "1. 3DGS 高斯重建轨迹约束：图2的高斯点云围绕自车原采集轨迹（橙色 E0..E15）重建，自车只允许沿原采集轨迹微调速度或小幅横向偏移，绝不允许改道去未采集的支路。只要图2自车轨迹段大致契合图1的核心交互场景（允许曲率、速度或周边路网细节不同）即可判 ready；仅当道路形态/方向根本不符、自车处于被白色隔离带/导流岛物理隔开的单向专用匝道导致目标车无法自然切入交互、或无空间构造冲突时，才判 unsuitable。\n"
-        "2. 操作与空间一致性：若候选带 asset_requirement（新增车辆），图2冲突区及上游接近车道在 target_window_s 内必须空旷无前方/对向阻挡车（起点后方无关车不影响前方空间）；若候选为编辑既有车辆，必须选中图2中真实存在的 V1..Vn 填入 target_vehicle_id。\n"
+        "2. 操作与空间一致性：若候选带 asset_requirement（新增车辆），图2冲突区及上游接近车道在 target_window_s 内必须空旷无前方/对向阻挡车（起点后方无关车不影响前方空间）；若候选为编辑既有车辆，必须选中下方既有车辆列表中真实存在的 V1..Vn 填入 target_vehicle_id。\n"
         "3. 先从图1确认目标车与自车的冲突角色 conflict_role：对向来车 oncoming、路口横穿 crossing、同向邻道切入 adjacent_cut_in、同车道前车 lead_vehicle、静止障碍 stationary。单车场景填 null。"
         "在图2沿对应车道箭头追踪合法流向，确认该流向能构成同类交互：对向来车要沿车道向自车驶来，横穿车要沿车道进入交汇区，同向切入车要从邻道接近，同车道前车沿自车行驶方向行驶。"
         "给出定性编辑思路，有目标车时独立读出 3 个起点，每组只写 start_xy 和 rationale，说明合法流向如何构成该交互。具体相遇点、速度和切入幅度由工具5求解，保持自然的浅度压线。\n"
         "4. 逐点读图（严禁等差数列外推）：每个 start_xy 必须独立盯着图2的 5m/10m 网格读取！所有 start_xy 必须**直接落在图2的亮青色实线上**（亮青色线即已有有效路面高程的合法车道中心线，深青箭头表示行驶方向），严禁落到没有青色高亮覆盖的空白/远端无高程段或浅灰马路外；3 个起点沿来车方向依次布置在近/中/远上游段（彼此拉开间距，且距自车初始位置（亮品红前 1.5s 段）至少 8m 以上）。\n"
-        "5. 若判 ready，checks 三项必须全为 pass，有目标车时 target_window_s 必须落在 [1.5, 7.5] 秒内；若判 unsuitable，adapted_plan、target_window_s、target_vehicle_id 必须为 null。"
+        "5. 若判 ready，checks 三项必须全为 pass，有目标车时 target_window_s 建议落在 [3.0, 7.5] 秒内（留足接管后反应时间）；若判 unsuitable，adapted_plan、target_window_s、target_vehicle_id 必须为 null。"
     )
 
 
-def _ego_anchors_text(planning_frames_path: Path, eval_frames: int) -> str:
+def _ego_anchors_text(frames_path: Path, eval_frames: int) -> str:
     try:
         frames = json.loads(frames_path.read_text())[:eval_frames]
         ox, oy = float(frames[0]["ego2global"][0][3]), float(frames[0]["ego2global"][1][3])
