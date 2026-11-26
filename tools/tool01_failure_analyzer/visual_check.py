@@ -30,9 +30,9 @@ def environment_forbidden_terms(value):
     return [term for term in ENVIRONMENT_FORBIDDEN if term in value]
 
 
-PROMPT = """你的唯一任务是根据场景首帧（第 0 帧）的八相机总览补充天气和环境描述。
+PROMPT = """你的唯一任务是根据原数据集在违规前一帧（第 {frame_idx} 帧）的八相机总览补充天气和环境描述。
 不要判断道路形态、路口类型、车辆、车头方向、车道保持、他车来向、车辆动作或交互类型。
-你会收到 {images_count} 张场景首帧八相机总览图：
+你会收到 {images_count} 张原数据集八相机总览图：
 {images}
 只填写：
 - weather：clear / cloudy / rainy / foggy / snowy / unknown
@@ -262,6 +262,67 @@ def _check_bev(facts, source, run_dir, copyfile, client_type, evidence):
 
 
 # ------------------------------------------------------------------ 8-camera env
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ORIGINAL_DATASET_ROOTS = (
+    PROJECT_ROOT / "data" / "navtest_failures" / "samples",
+    PROJECT_ROOT / "data" / "navtrain_ep_per1" / "samples",
+)
+
+
+def resolve_original_frame_images(token, target_index, *, roots=ORIGINAL_DATASET_ROOTS):
+    """Resolve original real-camera 8-view images at target_index from local dataset samples."""
+    if not token:
+        return None
+    raw_tok = str(token).strip()
+    short_tok = raw_tok.split("-")[-1]
+    sample_dir = None
+    for root in roots:
+        root_p = Path(root)
+        if not root_p.is_dir():
+            continue
+        for cand_name in (raw_tok, short_tok):
+            cand = root_p / cand_name
+            if cand.is_dir() and (cand / "metadata" / "frames.json").is_file():
+                sample_dir = cand
+                break
+        if sample_dir is not None:
+            break
+        matches = sorted(root_p.glob(f"*-{short_tok}"))
+        for cand in matches:
+            if cand.is_dir() and (cand / "metadata" / "frames.json").is_file():
+                sample_dir = cand
+                break
+        if sample_dir is not None:
+            break
+    if sample_dir is None:
+        return None
+
+    import json
+    try:
+        frames = json.loads((sample_dir / "metadata" / "frames.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(frames, list) or not frames:
+        return None
+    idx = max(0, min(int(target_index), len(frames) - 1))
+    orig_root = sample_dir / "original_images"
+    frame = frames[idx]
+    cams = frame.get("cams") or {}
+    per_cam = {}
+    for cam in CAMERAS:
+        rel = (cams.get(cam) or {}).get("data_path")
+        if not rel:
+            return None
+        img_p = orig_root / rel
+        if not img_p.is_file():
+            return None
+        per_cam[cam] = img_p
+    t0 = float(frames[0].get("timestamp") or 0.0)
+    ti = float(frame.get("timestamp") or 0.0)
+    time_s = round((ti - t0) / 1e6, 2) if t0 and ti >= t0 else round(idx * 0.5, 2)
+    return {"index": idx, "time_s": time_s, "images": per_cam, "sample_dir": str(sample_dir)}
+
+
 def camera_images(facts, indices=None):
     rows = facts.get("frame_images")
     if not rows:
@@ -332,11 +393,28 @@ def check(archive, token, facts, run_dir=None):
         evidence.write_manifest(run_dir, status="failed", stage=stage, error=str(error))
 
     try:
-        indices = [0]
-        images, rows = camera_images(facts, indices=indices)
+        violation = int(facts["violation_step"])
+        target_idx = max(0, violation - 1)
+        orig = resolve_original_frame_images(facts.get("token") or token, target_idx)
         sheet_dir = run_dir / "sheets"
-        sheets = [contact_sheet(images, idx, sheet_dir / f"step_{idx:02d}.jpg", rows) for idx in indices]
-        urls = [data_url(sheet) for sheet in sheets]
+        if orig is not None:
+            actual_idx = int(orig["index"])
+            indices = [actual_idx]
+            images = {cam: {actual_idx: orig["images"][cam]} for cam in CAMERAS}
+            rows = {actual_idx: {"index": actual_idx, "time_s": orig["time_s"]}}
+            sheets = [contact_sheet(images, actual_idx, sheet_dir / f"step_{actual_idx:02d}.jpg", rows)]
+            urls = [data_url(sheet) for sheet in sheets]
+            source_label = "原数据集违规前一帧"
+            target_time_s = float(orig["time_s"])
+        else:
+            raw_rows = facts.get("frame_images") or []
+            actual_idx = max(0, min(target_idx, len(raw_rows) - 1)) if raw_rows else 0
+            indices = [actual_idx]
+            images, rows = camera_images(facts, indices=indices)
+            sheets = [contact_sheet(images, actual_idx, sheet_dir / f"step_{actual_idx:02d}.jpg", rows)]
+            urls = [data_url(sheet) for sheet in sheets]
+            source_label = "违规前一帧"
+            target_time_s = frame_time(rows, actual_idx)
     except VisualCheckError as error:
         failed(error.stage, error)
         raise
@@ -344,8 +422,8 @@ def check(archive, token, facts, run_dir=None):
         failed("images", type(error).__name__)
         raise VisualCheckError(f"image preparation failed ({type(error).__name__})", stage="images") from None
 
-    listed = f"- 第 1 张：帧 0，{frame_time(rows, 0):.1f}s（场景首帧）"
-    content = [{"type": "text", "text": PROMPT.format(images_count=1, images=listed)}]
+    listed = f"- 第 1 张：帧 {indices[0]}，{target_time_s:.1f}s（{source_label}）"
+    content = [{"type": "text", "text": PROMPT.format(frame_idx=indices[0], images_count=1, images=listed)}]
     content += [{"type": "image_url", "image_url": {"url": url}} for url in urls]
 
     evidence.write_manifest(run_dir, stage="vlm")
