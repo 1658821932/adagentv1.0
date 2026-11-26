@@ -566,6 +566,7 @@ def main() -> None:
     parser.add_argument("--samples-dir", type=Path, default=DEFAULT_SAMPLES_DIR)
     parser.add_argument("--cache-base", type=Path, default=DEFAULT_CACHE_BASE)
     parser.add_argument("--cache-dir", type=Path, default=None, help="Exact output directory (overrides --cache-base/<ckpt_stem>).")
+    parser.add_argument("--config-path", type=Path, default=None, help="Optional AlgEngine policy config override (e.g. RLFT inference config).")
     parser.add_argument("--checkpoint", type=Path, default=Path(DEFAULT_POLICY_CHECKPOINT))
     parser.add_argument("--num-history", type=int, default=4)
     parser.add_argument("--max-frames", type=int, default=16)
