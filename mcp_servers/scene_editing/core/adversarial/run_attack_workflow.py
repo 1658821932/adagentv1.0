@@ -373,7 +373,11 @@ def select_object(scene, folder, instruction, assets, constraints, archive,
     from connector_route import nearby_connectors, plan_connector_route
     options=constraints.get('plan_options',[])
     frames = json.loads((scene / 'metadata/frames.json').read_text())
-    times, ego, yaw = ego_path_from_frames(frames)
+    _repo_root = str(Path(__file__).resolve().parents[4])
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+    from common.baseline_sim import reference_ego_path_from_scene
+    times, ego, yaw, _ = reference_ego_path_from_scene(scene, frames)
     actors = observed_objects_from_frames(frames)
     road = load_official_drivable(scene / 'metadata/map_drivable_official.json')
     common = set(actor['track'] for actor in actors[0] if actor['label'] == 'vehicle')

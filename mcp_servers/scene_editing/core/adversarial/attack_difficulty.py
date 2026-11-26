@@ -159,7 +159,12 @@ def run_search(scene,output,instruction,assets,constraints,required_operation='a
     config.setdefault('max_ego_clearance_m',policy.ATTACK_EVENT_MAX_GAP_M)
     config.setdefault('min_travel_m',0.)
     frames=json.loads((scene/'metadata/frames.json').read_text())
-    times,ego,yaw=ego_path_from_frames(frames)
+    import sys as _sys
+    _repo_root=str(Path(__file__).resolve().parents[4])
+    if _repo_root not in _sys.path:
+        _sys.path.insert(0,_repo_root)
+    from common.baseline_sim import reference_ego_path_from_scene
+    times,ego,yaw,_=reference_ego_path_from_scene(scene,frames)
     poses=list(placement_poses(ego,yaw,difficulty['placement_search'],difficulty['budget']['max_positions']))
     output.mkdir(parents=True)
     atomic_json(output/'input.json',dict(schema_version='attack_difficulty_search.v1',scene=str(scene),instruction=instruction,

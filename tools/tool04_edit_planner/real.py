@@ -13,6 +13,7 @@ from uuid import uuid4
 from mcp_servers.scene_editing.adapter.schemas import AttackInput
 from tools.llm_runtime import parse_json_object, validation_details
 from tools.tool01_failure_analyzer.visual_check import _yaw_text
+from common.baseline_sim import resolve_baseline_frames_path
 from .schemas import Input, Output
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -169,7 +170,7 @@ def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
     )
 
 
-def _ego_anchors_text(frames_path: Path, eval_frames: int) -> str:
+def _ego_anchors_text(planning_frames_path: Path, eval_frames: int) -> str:
     try:
         frames = json.loads(frames_path.read_text())[:eval_frames]
         ox, oy = float(frames[0]["ego2global"][0][3]), float(frames[0]["ego2global"][1][3])
@@ -291,12 +292,12 @@ def _nearest_segment(point, segments):
     return best
 
 
-def _check_attack_plans_geometry(frames_path: Path, plans: list[dict], rendered: dict, role: str):
+def _check_attack_plans_geometry(frames_path: Path, plans: list[dict], rendered: dict, role: str, scene_dir: Path | None = None):
     """Validate E0-relative starts against the directed centerlines drawn in Figure 2."""
     frames = json.loads(frames_path.read_text())
     e2g0 = frames[0]["ego2global"]
     ox, oy = float(e2g0[0][3]), float(e2g0[1][3])
-    rhm_ok = _load_road_height_checker(frames_path.parent.parent)
+    rhm_ok = _load_road_height_checker(scene_dir if scene_dir is not None else frames_path.parent.parent)
     ego = rendered.get("ego_bev_xy", [])
     lanes = rendered.get("placeable_lanes", [])
     lane_segments = [list(zip(lane, lane[1:])) for lane in lanes if len(lane) >= 2]
@@ -588,7 +589,10 @@ def _evaluate_one(data: Input, run_dir: Path, llm_client=None) -> tuple[dict, st
             "evidence": {"missing_resources": missing},
         }, "none")
 
-    rendered = _render_retrieved_bev(frames_path, run_dir)
+    baseline_sim_frames = resolve_baseline_frames_path(ref.scene_token)
+    planning_frames_path = baseline_sim_frames or frames_path
+    ego_traj_source = "policy_simulation" if baseline_sim_frames is not None else "recorded_replay"
+    rendered = _render_retrieved_bev(planning_frames_path, run_dir)
     if not rendered.get("ok"):
         reason = rendered["reason"]
         return ({
@@ -631,11 +635,11 @@ def _evaluate_one(data: Input, run_dir: Path, llm_client=None) -> tuple[dict, st
             if role not in ("oncoming", "crossing", "adjacent_cut_in", "lead_vehicle", "stationary"):
                 self_check_issues = ["缺少有效的冲突角色，无法核验候选起点。"]
                 break
-            self_check_issues, ok_points = _check_attack_plans_geometry(frames_path, plans, rendered, role)
+            self_check_issues, ok_points = _check_attack_plans_geometry(planning_frames_path, plans, rendered, role, scene_dir=frames_path.parent.parent)
             if not self_check_issues or sc_round == 2:
                 break
             overlay_name = "self_check_overlay.png" if sc_round == 0 else f"self_check_overlay_r{sc_round + 1}.png"
-            overlay_p = _render_self_check_overlay(frames_path, plans, run_dir / overlay_name)
+            overlay_p = _render_self_check_overlay(planning_frames_path, plans, run_dir / overlay_name)
             if overlay_p is None:
                 break
             ok_line = (
@@ -693,6 +697,8 @@ def _evaluate_one(data: Input, run_dir: Path, llm_client=None) -> tuple[dict, st
         "evidence": {
             "source_bev_image": str(source_bev),
             "retrieved_bev_image": rendered["bev_image"],
+            "ego_trajectory_source": ego_traj_source,
+            "baseline_frames_path": str(baseline_sim_frames) if baseline_sim_frames else None,
             "retrieved_trajectories": rendered["trajectories_path"],
             "eval_frames": rendered["eval_frames"],
             "ahead_or_side_vehicle_count": len(rendered.get("nearby_vehicles") or []),

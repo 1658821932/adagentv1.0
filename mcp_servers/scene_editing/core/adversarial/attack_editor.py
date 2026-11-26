@@ -55,7 +55,12 @@ class AttackEditor:
         self.edit_start_s=float(self.constraints.get('attack_prefix_lock_s',policy.edit_start(effective)))
         self.danger_start_s=policy.danger_start(effective)
         self.frames = json.loads((self.scene / 'metadata/frames.json').read_text())
-        self.times, self.ego, self.ego_yaw = ego_path_from_frames(self.frames)
+        import sys as _sys
+        _repo_root = str(Path(__file__).resolve().parents[4])
+        if _repo_root not in _sys.path:
+            _sys.path.insert(0, _repo_root)
+        from common.baseline_sim import reference_ego_path_from_scene
+        self.times, self.ego, self.ego_yaw, self.ego_reference_meta = reference_ego_path_from_scene(self.scene, self.frames)
         # Decode other observations with any present track; new-object construction
         # also works in scenes with no original tracks.
         self.actors = observed_objects_from_frames(self.frames)
