@@ -73,7 +73,7 @@ def build_commands(args, environ):
         "sim.monitored_folder": str(result / "frames"), "sim.plan_save_path": str(result / "plan_traj"),
         "sim.merged_ann_save_dir": str(result / "merged_ann_files"), "sim.clean_temp_files": False,
         "sim.clean_record_data": False, "sim.max_frame_per_scene": frames,
-        "sim.maximum_step": frames, "queue_length": history, "model.queue_length": history,
+        "sim.maximum_step": frames * max(1, int(env.get("NUM_SCENARIOS", "1"))) * 2, "queue_length": history, "model.queue_length": history,
         "data_root": str(result / "WE_output/openscene_format") + "/",
     }
     alg = [alg_python, str(Path(__file__).with_name('native_planner.py')), '--scene-frames', str(frames),

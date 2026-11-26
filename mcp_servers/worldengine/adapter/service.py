@@ -116,6 +116,7 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
         resolved_pkls = [str(Path(p).expanduser().resolve()) for p in batch_pkls]
         manifest_file.write_text(json.dumps(resolved_pkls, ensure_ascii=False, indent=2), encoding="utf-8")
         source_scene = manifest_file
+        env["NUM_SCENARIOS"] = str(len(resolved_pkls))
     else:
         source_folder = Path(env.get("SCENARIO_DATA_FOLDER_PATH") or
             runtime.project_root / "data/sim_engine/scenarios/original" / data_type)
