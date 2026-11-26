@@ -359,6 +359,7 @@ def _process_one_scene(
     samples_dir: Path,
     cache_root: Path,
     checkpoint_path: Path,
+    config_path: Path | None,
     num_history: int,
     max_frames: int,
     margin_m: float,
@@ -382,14 +383,13 @@ def _process_one_scene(
     inp = {
         "execution_mode": "native",
         "checkpoint_path": str(checkpoint_path),
+        **({"config_path": str(config_path)} if config_path else {}),
         "scenario_data_folder_path": scenario_folder_path,
         "scenario_pkl_file_name": "all_scenarios.pkl",
         "asset_folder_path": asset_folder_path,
         "num_history": num_history,
         "max_frame_per_scene": max_frames,
         "with_dense_reward_manager": False,
-        "visualize_video": False,
-        "visualize_BEV": False,
         "added_name": f"vbc_{token[:8]}",
     }
 
@@ -406,7 +406,7 @@ def _process_one_scene(
         from mcp_servers.worldengine.adapter.config import WorldEngineConfig, DEFAULT_POLICY_CONFIG
         warm = planner_prewarm.locate({
             "worldengine_root": str(WorldEngineConfig().project_root),
-            "config_path": str(DEFAULT_POLICY_CONFIG),
+            "config_path": str(config_path or DEFAULT_POLICY_CONFIG),
             "checkpoint_path": str(checkpoint_path),
         })
         if warm and warm.get("socket_path"):
@@ -565,6 +565,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Batch-generate VADv2 native closed-loop baseline cache.")
     parser.add_argument("--samples-dir", type=Path, default=DEFAULT_SAMPLES_DIR)
     parser.add_argument("--cache-base", type=Path, default=DEFAULT_CACHE_BASE)
+    parser.add_argument("--cache-dir", type=Path, default=None, help="Exact output directory (overrides --cache-base/<ckpt_stem>).")
     parser.add_argument("--checkpoint", type=Path, default=Path(DEFAULT_POLICY_CHECKPOINT))
     parser.add_argument("--num-history", type=int, default=4)
     parser.add_argument("--max-frames", type=int, default=16)
@@ -582,7 +583,7 @@ def main() -> None:
     ckpt = args.checkpoint.expanduser().resolve()
     if not ckpt.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
-    cache_root = args.cache_base / ckpt.stem
+    cache_root = args.cache_dir.expanduser().resolve() if args.cache_dir else (args.cache_base / ckpt.stem)
     cache_root.mkdir(parents=True, exist_ok=True)
 
     if args.tokens:
@@ -614,7 +615,9 @@ def main() -> None:
             "--worker",
             "--samples-dir", str(args.samples_dir),
             "--cache-base", str(args.cache_base),
+            *(["--cache-dir", str(cache_root)] if args.cache_dir else []),
             "--checkpoint", str(ckpt),
+            *(["--config-path", str(args.config_path.expanduser().resolve())] if args.config_path else []),
             "--num-history", str(args.num_history),
             "--max-frames", str(args.max_frames),
             "--margin-m", str(args.margin_m),
