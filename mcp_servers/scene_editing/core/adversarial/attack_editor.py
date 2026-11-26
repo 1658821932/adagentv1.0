@@ -648,14 +648,44 @@ class AttackEditor:
         for ax in axes:
             for geometry in self.road.polygons:
                 ax.add_patch(Patch(np.asarray(geometry.exterior.coords), facecolor='#edf3e8', edgecolor='#bac8b0', linewidth=.5))
-            ax.plot(self.ego[:, 0], self.ego[:, 1], color='#1565c0', label='recorded ego')
+            def _draw_arrows(pts, color, *, every=3, alpha=0.95, lw=1.3, ms=10):
+                n = len(pts)
+                if n < 2:
+                    return
+                idxs = list(range(0, n - 1, max(1, every)))
+                if (n - 2) not in idxs:
+                    idxs.append(n - 2)
+                for k in idxs:
+                    p0, p1 = pts[k], pts[k + 1]
+                    if float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])) < 0.05:
+                        continue
+                    ax.annotate(
+                        '', xy=(float(p1[0]), float(p1[1])), xytext=(float(p0[0]), float(p0[1])),
+                        arrowprops=dict(arrowstyle='-|>,head_length=0.45,head_width=0.25',
+                                        color=color, lw=lw, alpha=alpha, shrinkA=0, shrinkB=0),
+                    )
+            ego_label = 'policy sim ego' if getattr(self, 'ego_reference_meta', {}).get('source') == 'policy_simulation' else 'recorded ego'
+            ax.plot(self.ego[:, 0], self.ego[:, 1], color='#1565c0', label=ego_label)
             ax.plot(node['xy'][:, 0], node['xy'][:, 1], color='#d84315', label='candidate target')
             ax.plot(self.seed_xy[:, 0], self.seed_xy[:, 1], '--', color='gray', label='object seed')
+            ax.scatter([self.ego[0, 0]], [self.ego[0, 1]], color='#1565c0', s=18, zorder=4)
+            ax.scatter([node['xy'][0, 0]], [node['xy'][0, 1]], color='#d84315', s=18, zorder=4)
+            _draw_arrows(self.ego, '#1565c0', every=3, alpha=0.95, lw=1.3)
+            _draw_arrows(node['xy'], '#d84315', every=3, alpha=0.95, lw=1.3)
+            _draw_arrows(self.seed_xy, 'gray', every=4, alpha=0.65, lw=1.0)
             center = self.ego[index] + (EGO_FRONT - EGO_REAR) / 2 * np.array([
                 np.cos(self.ego_yaw[index]), np.sin(self.ego_yaw[index])])
-            for body, color in ((polygon(*center, self.ego_yaw[index], EGO_FRONT + EGO_REAR, EGO_WIDTH), '#1565c0'),
-                                (polygon(*node['xy'][index], node['yaw'][index], *self.target['size_m'][:2]), '#d84315')):
+            for body, box_c, box_yaw, box_len, color in (
+                (polygon(*center, self.ego_yaw[index], EGO_FRONT + EGO_REAR, EGO_WIDTH), center, self.ego_yaw[index], EGO_FRONT + EGO_REAR, '#1565c0'),
+                (polygon(*node['xy'][index], node['yaw'][index], *self.target['size_m'][:2]), node['xy'][index], node['yaw'][index], float(self.target['size_m'][0]), '#d84315'),
+            ):
                 ax.add_patch(Patch(np.asarray(body.exterior.coords), fill=False, edgecolor=color, linewidth=2))
+                tip = box_c + (box_len * 0.45) * np.array([np.cos(box_yaw), np.sin(box_yaw)])
+                ax.annotate(
+                    '', xy=(float(tip[0]), float(tip[1])), xytext=(float(box_c[0]), float(box_c[1])),
+                    arrowprops=dict(arrowstyle='-|>,head_length=0.45,head_width=0.25',
+                                    color=color, lw=1.6, shrinkA=0, shrinkB=0),
+                )
             for actor in self.actors[index]:
                 if actor['track'] == self.target['track_id']:
                     continue
