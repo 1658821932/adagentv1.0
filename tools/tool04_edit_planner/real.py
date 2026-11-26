@@ -156,7 +156,7 @@ def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
         "      {\"start_xy\": [x2, y2], \"rationale\": \"方案2：与图1同源来车支路青色中心线上的中段起点\"},\n"
         "      {\"start_xy\": [x3, y3], \"rationale\": \"方案3：与图1同源来车支路青色中心线上的远段起点\"}\n"
         "    ],\n"
-        "    \"ego_input_edit_strategy\": \"针对图2亮品红前1.5s历史输入段，定性说明是否需要微调入场速度/位置（无需调整或unsuitable时填null）\"\n"
+        "    \"ego_input_edit_strategy\": \"可选定性备注：仅作参考（是否实际编辑自车前1.5s由工具5自行决定；无需说明或unsuitable时填null）\"\n"
         "  },\n"
         "  \"retrieval_suggestion\": \"若unsuitable，给出新的精简检索词（≤48字，禁用编辑词）；若ready填null\"\n"
         "}\n\n"
@@ -469,7 +469,7 @@ def _build_attack_input(data: Input, rendered: dict, decision: dict) -> dict | N
             "scene_ref": data.scene_ref.model_dump(mode="json"),
             "instruction": instruction,
             "operation": "ego_only",
-            "prepare_ego_history": _needs_ego_history_edit(ego_strat),
+            "prepare_ego_history": False,
             "constraints": {"no_ego_contact_until_s": 0.0, "target_window_s": None},
         }
         if data.scenario_result.kinematics:
@@ -501,8 +501,8 @@ def _build_attack_input(data: Input, rendered: dict, decision: dict) -> dict | N
             "maneuver": maneuver,
             **({"vehicle": data.vehicle.model_dump(mode="json")} if data.vehicle is not None else
                {"vehicle_catalog_class": data.vehicle_catalog_class or "any"}),
-            "prepare_ego_history": _needs_ego_history_edit(plan.get("ego_input_edit_strategy")),
-            "constraints": {"no_ego_contact_until_s": 0.0, "target_window_s": None},
+            "prepare_ego_history": False,
+            "constraints": {"no_ego_contact_until_s": 3.0, "target_window_s": window},
         }
     else:
         vid = decision.get("target_vehicle_id")
@@ -514,8 +514,8 @@ def _build_attack_input(data: Input, rendered: dict, decision: dict) -> dict | N
             "instruction": instruction,
             "operation": "edit_existing",
             "target_track": match["track"],
-            "prepare_ego_history": _needs_ego_history_edit(plan.get("ego_input_edit_strategy")),
-            "constraints": {"no_ego_contact_until_s": 0.0, "target_window_s": None},
+            "prepare_ego_history": False,
+            "constraints": {"no_ego_contact_until_s": 3.0, "target_window_s": window},
         }
     if data.scenario_result.kinematics:
         request["reference_kinematics"] = data.scenario_result.kinematics
