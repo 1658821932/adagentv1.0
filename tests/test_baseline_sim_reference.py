@@ -77,3 +77,16 @@ def test_real_navtrain_baseline_cache_integration():
     sim_frames = json.loads(bp.read_text())
     sim_world = np.array([np.array(f["ego2global"])[:2, 3] for f in sim_frames])
     assert float(np.linalg.norm(sim_world[15] - rec_world[15])) > 5.0
+
+
+def test_read_baseline_pdm_score_from_metrics_json(tmp_path):
+    from common.baseline_sim import read_baseline_pdm_score
+
+    cache_base = tmp_path / "cache"
+    tok = "bbbb2222cccc3333"
+    sim_dir = cache_base / "e2e_vadv2_50pct_ep8" / tok
+    sim_dir.mkdir(parents=True)
+    (sim_dir / "baseline_frames.json").write_text("[" + " " * 120 + "]")
+    (sim_dir / "metrics.json").write_text(json.dumps({"pdm_subscores": {"score": 0.88}}))
+    assert read_baseline_pdm_score(tok, cache_base=cache_base) == 0.88
+    assert read_baseline_pdm_score("missing_tok", cache_base=cache_base) is None

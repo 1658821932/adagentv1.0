@@ -66,6 +66,29 @@ def resolve_baseline_frames_path(
     return None
 
 
+def read_baseline_pdm_score(
+    scene_token: str | None,
+    *,
+    checkpoint: str | None = None,
+    cache_base: Path | None = None,
+) -> float | None:
+    """Return cached unedited base-scene PDM score from metrics.json if available."""
+    bp = resolve_baseline_frames_path(scene_token, checkpoint=checkpoint, cache_base=cache_base)
+    if bp is None:
+        return None
+    metrics_path = bp.parent / "metrics.json"
+    if not metrics_path.is_file():
+        return None
+    try:
+        data = json.loads(metrics_path.read_text(encoding="utf-8"))
+        score = (data.get("pdm_subscores") or {}).get("score")
+        if isinstance(score, (int, float)):
+            return float(score)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return None
+
+
 def _ego_path_in_origin(frames: list[dict[str, Any]], origin_ego2global: np.ndarray, t0_us: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     import numpy as np
     timestamps = np.array([f["timestamp"] for f in frames], dtype=float)
