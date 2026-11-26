@@ -60,7 +60,7 @@
   "reasoning_effort": "medium",
   "tool_efforts": {
     "failure_analyzer": "low",
-    "edit_planner": "low",
+    "edit_planner": "medium",
     "attack_editor": "low"
   },
   "kimi": {
