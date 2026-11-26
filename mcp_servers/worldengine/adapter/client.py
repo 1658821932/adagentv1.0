@@ -52,12 +52,19 @@ def run_policy(input_data: dict) -> dict:
     import time as _time
     started_at = _time.time()
 
+    is_batch = bool(input_data.get("batch_scenario_pkls"))
+    viz_video = input_data.get("visualize_video")
+    if viz_video is None:
+        viz_video = not is_batch
+    viz_bev = input_data.get("visualize_BEV")
+    if viz_bev is None:
+        viz_bev = False
+
     proc = run_logged(
         [str(AGENT_PYTHON), "-m", "mcp_servers.worldengine.adapter.runner"],
         input=json.dumps({**input_data, "max_frame_per_scene": frame_count,
-                          # 默认让 WE 在仿真时直接写相机视频，省掉事后合成
-                          "visualize_video": input_data.get("visualize_video", True),
-                          "visualize_BEV": input_data.get("visualize_BEV", False)}, ensure_ascii=False),
+                          "visualize_video": bool(viz_video),
+                          "visualize_BEV": bool(viz_bev)}, ensure_ascii=False),
         cwd=PROJECT_ROOT,
         env=runtime_env(current_run("worldengine").child_env()),
         log_path=current_run("worldengine").logs / "policy.log",
@@ -93,13 +100,34 @@ def run_policy(input_data: dict) -> dict:
     pdm_subscores = None if collision_only else read_pdm_subscores(result["result_dir"])
     if pdm_subscores is not None:
         result["pdm_subscores"] = pdm_subscores
-    policy_behavior = summarize_policy_behavior(
-        result["result_dir"],
-        {**input_data, "max_frame_per_scene": frame_count},
-        pdm_subscores=pdm_subscores,
-    )
-    if policy_behavior is not None:
-        result["policy_behavior_summary"] = policy_behavior
+    if is_batch:
+        import csv as _csv
+        batch_scores = {}
+        for csv_p in sorted((Path(result["result_dir"]) / "WE_output/openscene_format").glob("all_scenes_pdm_averages_*.csv")):
+            with csv_p.open(encoding="utf-8") as fh:
+                for row in _csv.DictReader(fh):
+                    tok_raw = (row.get("token") or "").strip()
+                    if not tok_raw or tok_raw == "overall_average":
+                        continue
+                    short_tok = tok_raw.split("-")[-1]
+                    parsed_row = {"token": tok_raw}
+                    for k, v in row.items():
+                        if k == "token" or v is None or v == "":
+                            continue
+                        try:
+                            parsed_row[k] = float(v)
+                        except ValueError:
+                            parsed_row[k] = v
+                    batch_scores[short_tok] = parsed_row
+        result["batch_results"] = batch_scores
+    else:
+        policy_behavior = summarize_policy_behavior(
+            result["result_dir"],
+            {**input_data, "max_frame_per_scene": frame_count},
+            pdm_subscores=pdm_subscores,
+        )
+        if policy_behavior is not None:
+            result["policy_behavior_summary"] = policy_behavior
     if input_data.get("with_dense_reward_manager", False):
         # The native planner owns this CSV; export its actual selections, never synthesize them.
         import shutil
@@ -133,7 +161,7 @@ def run_policy(input_data: dict) -> dict:
             raise RuntimeError("RL annotation export failed; inspect "+str(task.logs/"rlft_annotations.log"))
         result.update(json.loads(completed.stdout))
     from .policy_videos import collect_policy_videos
-    videos = {} if collision_only else collect_policy_videos(result['result_dir'],WorldEngineConfig().project_root,started_at)
+    videos = {} if (collision_only or not viz_video) else collect_policy_videos(result['result_dir'],WorldEngineConfig().project_root,started_at)
     if videos:
         result["videos"] = videos
     return result

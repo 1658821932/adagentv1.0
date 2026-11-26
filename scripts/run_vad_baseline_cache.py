@@ -203,7 +203,14 @@ def reproject_anns(anns, T_old, T_new):
     return out
 
 meta_dir = rollout_dir / "meta_datas"
-sources = [meta_dir / "combined.pkl"] if (meta_dir / "combined.pkl").is_file() else sorted(meta_dir.glob("*.pkl"))
+target_tok = sample_dir.name.split("-")[-1]
+matched = [p for p in sorted(meta_dir.glob("*.pkl")) if p.name != "combined.pkl" and (p.stem == target_tok or p.stem.endswith("-" + target_tok))]
+if matched:
+    sources = matched
+elif (meta_dir / "combined.pkl").is_file():
+    sources = [meta_dir / "combined.pkl"]
+else:
+    sources = sorted(meta_dir.glob("*.pkl"))
 if not sources:
     raise RuntimeError(f"No rollout meta_datas pkl found under {meta_dir}")
 
@@ -212,7 +219,13 @@ for p in sources:
     with p.open("rb") as fh:
         chunk = _CompatUnpickler(fh).load()
     if isinstance(chunk, list):
-        rows.extend(item for item in chunk if isinstance(item, dict))
+        for item in chunk:
+            if not isinstance(item, dict):
+                continue
+            st = str(item.get("scene_token") or "").split("-")[-1]
+            if st and len(sources) == 1 and p.name == "combined.pkl" and st != target_tok:
+                continue
+            rows.append(item)
 if not rows:
     raise RuntimeError(f"Rollout meta_datas empty under {meta_dir}")
 
@@ -390,6 +403,8 @@ def _process_one_scene(
         "num_history": num_history,
         "max_frame_per_scene": max_frames,
         "with_dense_reward_manager": False,
+        "visualize_video": False,
+        "visualize_BEV": False,
         "added_name": f"vbc_{token[:8]}",
     }
 
@@ -479,6 +494,133 @@ def _process_one_scene(
             shutil.rmtree(tmp_run_dir, ignore_errors=True)
 
 
+
+def _process_batch_scenes(
+    *,
+    tokens: list[str],
+    samples_dir: Path,
+    cache_root: Path,
+    checkpoint_path: Path,
+    config_path: Path | None = None,
+    num_history: int,
+    max_frames: int,
+    margin_m: float,
+    keep_temp: bool,
+) -> list[dict[str, Any]]:
+    """Run a chunk of scenes in a single persistent Tool 06 batch WorldEngine process."""
+    from tools.tool06_policy_runner.real import run as run_tool06
+
+    pkls: list[str] = []
+    asset_folders: set[str] = set()
+    valid_tokens: list[str] = []
+    for tok in tokens:
+        sample_dir = samples_dir / tok
+        asset_link = sample_dir / "runtime_asset"
+        pkl_p = sample_dir / "scenario" / "all_scenarios.pkl"
+        if not asset_link.exists() or not pkl_p.is_file():
+            raise FileNotFoundError(f"Missing runtime_asset or all_scenarios.pkl for {tok}")
+        asset_folders.add(str(asset_link.resolve().parent))
+        pkls.append(str(pkl_p.resolve()))
+        valid_tokens.append(tok)
+
+    if len(asset_folders) != 1:
+        raise ValueError(f"Batch scenes must share one asset_folder_path, got {asset_folders}")
+    asset_folder_path = next(iter(asset_folders))
+
+    inp = {
+        "execution_mode": "native",
+        "checkpoint_path": str(checkpoint_path),
+        **({"config_path": str(config_path)} if config_path else {}),
+        "batch_scenario_pkls": pkls,
+        "asset_folder_path": asset_folder_path,
+        "num_history": num_history,
+        "max_frame_per_scene": max_frames,
+        "with_dense_reward_manager": False,
+        "visualize_video": False,
+        "visualize_BEV": False,
+        "added_name": f"vbc_batch_{len(valid_tokens)}_{valid_tokens[0][:6]}",
+    }
+
+    t0 = time.time()
+    result_dir: str | None = None
+    WORLDENGINE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_run_dir = Path(tempfile.mkdtemp(prefix=f"run_vbc_batch_{len(valid_tokens)}_", dir=str(WORLDENGINE_RUNTIME_DIR)))
+    prev_service = os.environ.get("ADAGENT_ACTIVE_SERVICE")
+    prev_run = os.environ.get("ADAGENT_ACTIVE_RUN")
+    os.environ["ADAGENT_ACTIVE_SERVICE"] = "worldengine"
+    os.environ["ADAGENT_ACTIVE_RUN"] = str(tmp_run_dir)
+    try:
+        res = run_tool06(inp)
+        elapsed_s = round(time.time() - t0, 2)
+        if res.get("status") != "success":
+            raise RuntimeError(f"tool06 batch returned status={res.get('status')}: {res.get('error')}")
+        r = res["result"]
+        result_dir = r.get("result_dir")
+        rollout_dir = r.get("rollout_dir")
+        if not rollout_dir or not Path(rollout_dir).is_dir():
+            raise RuntimeError(f"Missing rollout_dir in tool06 batch result: {rollout_dir}")
+        batch_scores = r.get("batch_results") or {}
+        per_scene_s = round(elapsed_s / max(1, len(valid_tokens)), 2)
+
+        summaries: list[dict[str, Any]] = []
+        for tok in valid_tokens:
+            sample_dir = samples_dir / tok
+            scene_out_dir = cache_root / tok
+            scene_out_dir.mkdir(parents=True, exist_ok=True)
+            out_frames_path = scene_out_dir / "baseline_frames.json"
+            out_bev_path = scene_out_dir / "baseline_bev.png"
+            out_metrics_path = scene_out_dir / "metrics.json"
+            post = _build_baseline_frames_and_bev(
+                sample_dir=sample_dir,
+                rollout_dir=Path(rollout_dir),
+                out_frames_path=out_frames_path,
+                out_bev_path=out_bev_path,
+                num_history=num_history,
+                max_frames=max_frames,
+                margin_m=margin_m,
+            )
+            scene_pdm = batch_scores.get(tok) or _extract_scene_pdm_subscores(r.get("pdm_subscores"), tok)
+            metrics = {
+                "scene_token": tok,
+                "checkpoint_path": str(checkpoint_path),
+                "status": "success",
+                "elapsed_s": per_scene_s,
+                "batch_elapsed_s": elapsed_s,
+                "batch_size": len(valid_tokens),
+                "num_history": num_history,
+                "max_frame_per_scene": max_frames,
+                "pdm_subscores": scene_pdm,
+                "postprocess": post,
+            }
+            _atomic_write_json(out_metrics_path, metrics)
+            summary = {
+                "scene_token": tok,
+                "status": "success",
+                "elapsed_s": per_scene_s,
+                "score": None if not scene_pdm else scene_pdm.get("score"),
+                "no_at_fault_collisions": None if not scene_pdm else scene_pdm.get("no_at_fault_collisions"),
+                "drivable_area_compliance": None if not scene_pdm else scene_pdm.get("drivable_area_compliance"),
+                "ego_progress": None if not scene_pdm else scene_pdm.get("ego_progress"),
+                "time_to_collision_within_bound": None if not scene_pdm else scene_pdm.get("time_to_collision_within_bound"),
+            }
+            _append_jsonl(cache_root / "manifest.jsonl", summary)
+            summaries.append(summary)
+        return summaries
+    finally:
+        if prev_service is None:
+            os.environ.pop("ADAGENT_ACTIVE_SERVICE", None)
+        else:
+            os.environ["ADAGENT_ACTIVE_SERVICE"] = prev_service
+        if prev_run is None:
+            os.environ.pop("ADAGENT_ACTIVE_RUN", None)
+        else:
+            os.environ["ADAGENT_ACTIVE_RUN"] = prev_run
+        if not keep_temp:
+            if result_dir:
+                _cleanup_we_run(result_dir)
+            if tmp_run_dir.is_dir():
+                shutil.rmtree(tmp_run_dir, ignore_errors=True)
+
 def _run_worker(args: argparse.Namespace, tokens: list[str], cache_root: Path, checkpoint_path: Path) -> None:
     manifest_path = cache_root / "manifest.jsonl"
     errors_path = cache_root / "errors.jsonl"
@@ -509,11 +651,70 @@ def _run_worker(args: argparse.Namespace, tokens: list[str], cache_root: Path, c
         flush=True,
     )
 
-    for idx, token in enumerate(tokens, start=1):
-        scene_out_dir = cache_root / token
-        if not args.force and _is_scene_complete(scene_out_dir):
+    batch_size = max(1, int(getattr(args, "batch_size", 40)))
+    pending_tokens = []
+    for token in tokens:
+        if not args.force and _is_scene_complete(cache_root / token):
             skipped += 1
-            continue
+        else:
+            pending_tokens.append(token)
+    if batch_size > 1 and pending_tokens:
+        print(f"[worker gpu={gpu_tag}] BATCH MODE: pending={len(pending_tokens)} skipped={skipped} batch_size={batch_size}", flush=True)
+        for b_start in range(0, len(pending_tokens), batch_size):
+            chunk = pending_tokens[b_start : b_start + batch_size]
+            try:
+                summaries = _process_batch_scenes(
+                    tokens=chunk,
+                    samples_dir=Path(args.samples_dir),
+                    cache_root=cache_root,
+                    checkpoint_path=checkpoint_path,
+                    config_path=args.config_path.expanduser().resolve() if args.config_path else None,
+                    num_history=args.num_history,
+                    max_frames=args.max_frames,
+                    margin_m=args.margin_m,
+                    keep_temp=args.keep_temp,
+                )
+                done += len(summaries)
+                avg = (time.time() - t_start) / max(1, done + failed)
+                rem = len(pending_tokens) - (b_start + len(chunk))
+                eta_min = (rem * avg) / 60.0
+                avg_pdm = [s["score"] for s in summaries if isinstance(s.get("score"), (int, float))]
+                pdm_str = f"{sum(avg_pdm)/len(avg_pdm):.4f}" if avg_pdm else "n/a"
+                print(
+                    f"[gpu={gpu_tag}] [BATCH {done+skipped}/{total}] OK {len(summaries)} scenes "
+                    f"| ~{summaries[0]['elapsed_s']}s/scene | mean_pdm={pdm_str} "
+                    f"| done={done} skip={skipped} fail={failed} | ETA={eta_min:.1f}m",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"[gpu={gpu_tag}] BATCH FAIL ({len(chunk)} scenes): {type(exc).__name__}: {str(exc)[:300]} -> falling back to single-scene", flush=True)
+                for tok in chunk:
+                    if not args.force and _is_scene_complete(cache_root / tok):
+                        continue
+                    try:
+                        summary = _process_one_scene(
+                            token=tok,
+                            samples_dir=Path(args.samples_dir),
+                            cache_root=cache_root,
+                            checkpoint_path=checkpoint_path,
+                            config_path=args.config_path.expanduser().resolve() if args.config_path else None,
+                            num_history=args.num_history,
+                            max_frames=args.max_frames,
+                            margin_m=args.margin_m,
+                            keep_temp=args.keep_temp,
+                        )
+                        done += 1
+                    except Exception as inner_exc:
+                        failed += 1
+                        _append_jsonl(errors_path, {"scene_token": tok, "status": "error", "error_type": type(inner_exc).__name__, "error_message": str(inner_exc)[:1000], "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+        print(
+            f"[worker gpu={gpu_tag} shard={args.shard_idx}/{args.num_shards}] FINISHED: "
+            f"done={done} skipped={skipped} failed={failed} elapsed={(time.time()-t_start)/60.0:.1f}m",
+            flush=True,
+        )
+        return
+
+    for idx, token in enumerate(pending_tokens, start=1):
         try:
             summary = _process_one_scene(
                 token=token,
@@ -576,6 +777,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0, help="Limit total scenes (0 = all).")
     parser.add_argument("--force", action="store_true", help="Re-run even if scene outputs already exist.")
     parser.add_argument("--keep-temp", action="store_true", help="Keep WorldEngine runtime directories.")
+    parser.add_argument("--batch-size", type=int, default=40, help="Scenes per persistent Tool 06 batch process (default: 40; 1 = single-scene mode).")
     parser.add_argument("--gpus", type=str, default="", help="Comma-separated GPU indices; empty = auto-detect.")
     parser.add_argument("--shard-idx", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)

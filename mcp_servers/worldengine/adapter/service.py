@@ -107,11 +107,19 @@ def run_simulation(config_path: str, checkpoint_path: str, model_name: str, data
             value = options[key]
             env[env_key] = str(value).lower() if isinstance(value, bool) else str(value)
     # Serialize the source using the simulator's NumPy version. Inputs remain untouched.
-    source_folder = Path(env.get("SCENARIO_DATA_FOLDER_PATH") or
-        runtime.project_root / "data/sim_engine/scenarios/original" / data_type)
-    source_scene = source_folder / (scenario_pkl_file_name or "all_scenarios.pkl")
     stage_dir = current_run("worldengine").input / "compatible_scenarios"
     staged_scene = stage_dir / "all_scenarios.pkl"
+    batch_pkls = options.get("batch_scenario_pkls")
+    if isinstance(batch_pkls, list) and batch_pkls:
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        manifest_file = stage_dir / "batch_sources.json"
+        resolved_pkls = [str(Path(p).expanduser().resolve()) for p in batch_pkls]
+        manifest_file.write_text(json.dumps(resolved_pkls, ensure_ascii=False, indent=2), encoding="utf-8")
+        source_scene = manifest_file
+    else:
+        source_folder = Path(env.get("SCENARIO_DATA_FOLDER_PATH") or
+            runtime.project_root / "data/sim_engine/scenarios/original" / data_type)
+        source_scene = source_folder / (scenario_pkl_file_name or "all_scenarios.pkl")
     prepare_command = [env["SIMENGINE_PYTHON"],
         str(Path(__file__).with_name("prepare_scenarios.py")),
         str(source_scene), str(staged_scene)]
