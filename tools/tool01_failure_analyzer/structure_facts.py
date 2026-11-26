@@ -723,8 +723,8 @@ def render_scene_bev(
     axis.set_xlabel("x from E0 (m, East)")
     axis.set_ylabel("y from E0 (m, North)")
     handles = [
-        Line2D([0], [0], color=EGO_HISTORY_COLOR, linewidth=3.0, label="EGO history (E0..E2)"),
-        Line2D([0], [0], color=EGO_COLOR, linewidth=3.0, label=f"EGO path (E3..E{end_frame})"),
+        Line2D([0], [0], color=EGO_HISTORY_COLOR, linewidth=3.0, label="EGO history 0-1.5s (E0..E3)"),
+        Line2D([0], [0], color=EGO_COLOR, linewidth=3.0, label=f"EGO path 1.5s+ (E4..E{end_frame})"),
     ]
     if violation_frame is not None:
         handles.append(Line2D([0], [0], color=VIOLATION_EDGE, linewidth=2.5, label=f"EGO violation (F{violation_frame})"))
