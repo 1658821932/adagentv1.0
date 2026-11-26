@@ -305,9 +305,16 @@ def test_scene_pool_rejects_high_pdm_tool06_runs(tmp_path):
     }))
     assert extract_succeeded_base_scene_token(r_high) is None
 
-    # Tool 06 returned PDM=0.0 (<0.5) -> genuine failure, record base token
+    # Tool 06 returned PDM=0.0 but first_violation_step=4 (<6, t=2.0s too early) -> reject
     (r_high / "tools" / "step_03_policy_runner").mkdir(parents=True)
     (r_high / "tools" / "step_03_policy_runner" / "output.json").write_text(json.dumps({
-        "status": "success", "result": {"pdm_subscores": {"score": 0.0}},
+        "status": "success", "result": {"pdm_subscores": {"score": 0.0, "first_violation_step": 4.0}},
+    }))
+    assert extract_succeeded_base_scene_token(r_high) is None
+
+    # Tool 06 returned PDM=0.0 with first_violation_step=8 (>=6, t=4.0s valid window) -> record base token
+    (r_high / "tools" / "step_04_policy_runner").mkdir(parents=True)
+    (r_high / "tools" / "step_04_policy_runner" / "output.json").write_text(json.dumps({
+        "status": "success", "result": {"pdm_subscores": {"score": 0.0, "first_violation_step": 8.0}},
     }))
     assert extract_succeeded_base_scene_token(r_high) == "tok_high_pdm"

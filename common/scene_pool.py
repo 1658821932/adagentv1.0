@@ -91,7 +91,7 @@ def record_used_scene_token(
     return payload["used_scene_tokens"]
 
 
-def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: float = 0.5) -> str | None:
+def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: float = 0.5, min_violation_step: int = 6) -> str | None:
     """Return the base scene_token ONLY if Tool 05 succeeded AND (if Tool 06 ran) closed-loop PDM < max_pdm_score."""
     tools_dir = Path(run_dir) / "tools"
     if not tools_dir.is_dir():
@@ -113,7 +113,9 @@ def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: fl
             res = out.get("result") or {}
             sub = res.get("pdm_subscores") or res.get("metrics") or {}
             score = sub.get("score")
-            if isinstance(score, (int, float)) and float(score) < max_pdm_score:
+            fvs = sub.get("first_violation_step")
+            step_ok = (fvs is None) or (isinstance(fvs, (int, float)) and float(fvs) >= min_violation_step)
+            if isinstance(score, (int, float)) and float(score) < max_pdm_score and step_ok:
                 passed_failure_gate = True
                 break
         if not passed_failure_gate:
