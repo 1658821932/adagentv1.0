@@ -31,11 +31,6 @@ DEFAULT_MAPS_ROOT = "data/navtrain_ep_per1/maps"
 EGO_HISTORY_COLOR = "#8e24aa"
 EGO_COLOR = "#f57c00"
 OTHER_COLOR = "#1976d2"
-OTHER_PALETTE = [
-    "#1976d2", "#2e7d32", "#c2185b", "#00838f",
-    "#5d4037", "#3949ab", "#00695c", "#ad1457",
-    "#455a64", "#1565c0", "#558b2f", "#6d4c41",
-]
 VIOLATION_EDGE = "#ff1744"
 
 
@@ -566,7 +561,6 @@ def render_scene_bev(
 
     actor_records, actor_trajs = [], {}
     for number, (track, rows, min_dist, viol_dist) in enumerate(nearby, start=1):
-        v_color = OTHER_PALETTE[(number - 1) % len(OTHER_PALETTE)]
         obs_frames = sorted(rows)
         pts, yaws, traj = [], [], []
         for obs_i, idx in enumerate(obs_frames):
@@ -576,7 +570,7 @@ def render_scene_bev(
             c = center_of(actor_utm)
             x, y, yaw = to_heading(c[0], c[1], item["world_yaw"])
             if obs_i % 2 == 0 or obs_i == len(obs_frames) - 1:
-                draw_body(axis, actor_shape, yaw, v_color, "",
+                draw_body(axis, actor_shape, yaw, OTHER_COLOR, "",
                           alpha=0.35, zorder=7, show_label=False)
             pts.append((x, y))
             yaws.append(yaw)
@@ -592,7 +586,7 @@ def render_scene_bev(
             bearing = _bearing_text(gx * cos_y - gy * sin_y, gx * sin_y + gy * cos_y)
         first_item = rows[obs_frames[0]]
         pts_arr = np.asarray(pts)
-        axis.plot(pts_arr[:, 0], pts_arr[:, 1], color=v_color, linewidth=1.6, alpha=0.75, zorder=6)
+        axis.plot(pts_arr[:, 0], pts_arr[:, 1], color=OTHER_COLOR, linewidth=1.6, alpha=0.7, zorder=6)
         vid = f"V{number}"
         actor_records.append({
             "vehicle": vid,
