@@ -14,7 +14,7 @@
   "qwen_flash": {
     "base_url": "https://apicz.boyuerichdata.com/v1",
     "model": "qwen3.8-flash",
-    "api_key_env": "API_KEY_1",
+    "api_key_env": "QWEN_FLASH_API_KEY",
     "timeout": 300,
     "max_tokens": 65536,
     "image_tool_choice": "auto",
@@ -26,7 +26,7 @@
   "ds_flash": {
     "base_url": "https://apicz.boyuerichdata.com/v1",
     "model": "deepseek-v4.1-flash-1017",
-    "api_key_env": "API_KEY_2",
+    "api_key_env": "DEEPSEEK_FLASH_API_KEY",
     "timeout": 300,
     "max_tokens": 65536,
     "request_dialect": "thinking",
@@ -37,14 +37,14 @@
   "mimo_pro": {
     "base_url": "https://apicz.boyuerichdata.com/v1",
     "model": "mimo-v2.5-pro",
-    "api_key_env": "API_KEY_3",
+    "api_key_env": "MIMO_PRO_API_KEY",
     "timeout": 240,
     "max_tokens": 8192
   },
   "glm_flash": {
     "base_url": "https://apicz.boyuerichdata.com/v1",
     "model": "z-ai/glm-5.3-flash",
-    "api_key_env": "API_KEY_4",
+    "api_key_env": "GLM_FLASH_API_KEY",
     "timeout": 2400,
     "max_tokens": 131072,
     "request_dialect": "thinking",
@@ -55,7 +55,7 @@
   "ds_official_flash": {
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-flash",
-    "api_key_env": "API_KEY_5",
+    "api_key_env": "DEEPSEEK_OFFICIAL_API_KEY",
     "timeout": 300,
     "max_tokens": 65536,
     "request_dialect": "thinking",
