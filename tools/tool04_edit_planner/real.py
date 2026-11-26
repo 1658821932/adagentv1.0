@@ -502,7 +502,7 @@ def _build_attack_input(data: Input, rendered: dict, decision: dict) -> dict | N
             **({"vehicle": data.vehicle.model_dump(mode="json")} if data.vehicle is not None else
                {"vehicle_catalog_class": data.vehicle_catalog_class or "any"}),
             "prepare_ego_history": False,
-            "constraints": {"no_ego_contact_until_s": 3.0, "target_window_s": window},
+            "constraints": {"no_ego_contact_until_s": 3.0, "target_window_s": None},
         }
     else:
         vid = decision.get("target_vehicle_id")
@@ -515,7 +515,7 @@ def _build_attack_input(data: Input, rendered: dict, decision: dict) -> dict | N
             "operation": "edit_existing",
             "target_track": match["track"],
             "prepare_ego_history": False,
-            "constraints": {"no_ego_contact_until_s": 3.0, "target_window_s": window},
+            "constraints": {"no_ego_contact_until_s": 3.0, "target_window_s": None},
         }
     if data.scenario_result.kinematics:
         request["reference_kinematics"] = data.scenario_result.kinematics
