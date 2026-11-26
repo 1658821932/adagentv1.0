@@ -24,7 +24,7 @@ When `failure.failure_driver` is `departure_ego_only` or `collision_non_vehicle`
 - `retrieval_query`: compact search phrase (12–30 Chinese characters, max 48) for the local video index. Include ONLY visible source-video conditions: weather/time if material, minimal road form, ego direction, and required clear space. NEVER include speed, timing, synchronization, conflict, collision, danger, editing, trajectory, lane offset, or other-vehicle actions.
 - `asset_requirement`: `{"vehicle_class": "car" | "bus" | "truck"}` when adding a vehicle, otherwise `null`.
 - `attack_edit_strategy`: one sentence describing how to add/edit the unique target vehicle (incorporating its speed/stationary state, turning, and relative timing from `failure` and `kinematics`), or `null` when no target vehicle exists.
-- `ego_input_edit_strategy`: one sentence on how to adjust ego approach speed/timing so ego reaches the conflict at realistic speed and difficulty, or `null` when recorded ego motion suffices.
+- `ego_input_edit_strategy`: one sentence on how to adjust ego approach speed/timing so ego reaches the conflict at realistic speed and difficulty, or `null` when the base scene ego motion suffices (for two-vehicle failures, default to `null` unless approach speed adjustment is clearly needed).
 
 # Hard rules
 - All three candidates must differ in `(base_video_requirement, attack_edit_strategy, ego_input_edit_strategy)`.

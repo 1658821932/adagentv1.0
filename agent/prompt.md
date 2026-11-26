@@ -31,13 +31,15 @@ Function arguments are buffered and validated before execution. Partial streams 
 - Pipeline for a full attack/training task, in this order:
   failure_analyzer -> scene_instance_generator -> video_retriever -> edit_planner -> attack_vehicle_editor
   -> policy_runner -> failure_case_filter -> policy_trainer
-- attack_vehicle_editor edits under geometric, kinematic, road-surface and task checks, then hands simulation_input directly to policy_runner (tool06) for closed-loop VADv2 evaluation and RL reward collection
-  and returns a frozen attack scene plus a trajectory; it does not test the policy.
-  simulation_input package. A rendered video is optional evidence, not a completion requirement.
-- Call policy_runner(execution_mode=native) directly on the attack_vehicle_editor (tool05) simulation_input package. num_history=4 feeds the engine the first
-  four frames of that package and it hands over at step num_history-1 (1.5 s at 2 Hz), so the frozen history prefix
-  is the competent start and any later failure belongs to the policy, not to the setup. Run it on the attack
-  package only when the user asks for the original-ego control.
+- attack_vehicle_editor edits under geometric, kinematic, road-surface and task checks, returns a frozen scene
+  plus simulation_input package, and does not run closed-loop policy evaluation itself; hand simulation_input
+  directly to policy_runner (tool06) for closed-loop VADv2 evaluation and RL reward collection. A rendered video
+  is optional evidence, not a completion requirement.
+- Call policy_runner(execution_mode=native) directly on the attack_vehicle_editor (tool05) simulation_input package.
+  num_history=4 feeds the engine the first four frames of that package and it hands over at step num_history-1
+  (1.5 s at 2 Hz), so the frozen history prefix is the competent start and any later failure belongs to the policy,
+  not to the setup. Run an extra baseline control on the unedited source scene only when the user asks for an
+  original-ego control.
 - Carry the editor's simulation_input through unchanged: it already names the scene and its frame_count. Omit
   config_path, checkpoint_path, model_name and data_type unless the user names another policy; the adapter
   resolves the same fixed model for simulation and post-training.
@@ -67,7 +69,7 @@ Function arguments are buffered and validated before execution. Partial streams 
 - require_route_progress is an optional task-intent hint, not a numeric acceptance threshold. Leave it null to
   infer from target_effect, true for a continued-driving goal, false for a deliberate-stop goal. Allow legitimate
   waits; never invent a progress percentage or insist a whole maneuver finish within a short observation window.
-  Pass prior run_dir as reuse_completed_from when retrying interrupted or timed-out attack_vehicle_editor /
+  Pass prior run_dir as reuse_completed_from when retrying an interrupted or timed-out attack_vehicle_editor call.
 - Call failure_case_filter to read the official scores for the evaluated scene, and policy_trainer when the
   task asks for training. Post-training consumes rlft_training_data, so the policy_runner call that feeds
   training sets with_dense_reward_manager=true; a run without it returns no training package and must be
@@ -108,13 +110,13 @@ Function arguments are buffered and validated before execution. Partial streams 
 
 # Retrieval and editing
 - Active tools: 01 failure_analyzer, 02 scene_instance_generator, 03 video_retriever, 04 edit_planner, 05 attack_vehicle_editor, 06 policy_runner, 07 failure_case_filter, 08 policy_trainer. Call function names from the exposed schemas; the numbers are navigation labels.
-- After retrieval, call edit_planner with the exact tool02 success output/ref as `scenario_result`, the selected `candidate_id`, and the exact tool03 success output/ref as `retrieval_result`. Never reconstruct or retype these objects. It reviews only the first non-mini real junction traversed by the recorded trajectory.
+- After retrieval, call edit_planner with the exact tool02 success output/ref as `scenario_result`, the selected `candidate_id`, and the exact tool03 success output/ref as `retrieval_result`. Never reconstruct or retype these objects. It compares the original failure BEV against the retrieved base scene BEV (using the cached policy closed-loop simulation trajectory when available, otherwise recorded replay).
 - edit_planner returns `suitability`, `checks`, `adapted_plan`, `attack_input`, `retrieval_suggestion` and evidence. For any ready result (two-vehicle `add_vehicle`/`edit_existing` or single-vehicle `ego_only`), pass `attack_input` unchanged as the initial attack_vehicle_editor arguments (two-vehicle defaults to `prepare_ego_history=false` to preserve policy baseline alignment; single-vehicle `ego_only` automatically enables `prepare_ego_history=true` whenever the cached base scene has `PDM >= 0.5` or is uncached, and keeps `false` only when the base scene already fails with `PDM < 0.5`). Never rebuild attack arguments from prose or invent track IDs.
 - Closed-loop failure verification (Tool 06 -> Tool 05 outer loop): after `policy_runner` (tool06) evaluates the edited scene, inspect `pdm_subscores.score` AND `pdm_subscores.first_violation_step` (takeover is at step 3 / 1.5s; a valid failure needs `score < 0.5` AND `first_violation_step >= 6`, i.e. `t >= 3.0s`, leaving >= 1.5s post-takeover reaction time):
   1. If `score >= 0.5` (no failure triggered): retry `attack_vehicle_editor` (tool05) with `prepare_ego_history=true` and an increased `ego_history_target_speed_mps` (e.g. `+2.0 m/s`, up to 2 retries) to raise braking/cornering difficulty, then re-run `policy_runner` (tool06).
   2. If `score < 0.5` BUT `first_violation_step < 6` (`t < 3.0s`, violated immediately after takeover — ego speed was raised too aggressively): retry `attack_vehicle_editor` (tool05) with a lower `ego_history_target_speed_mps` (e.g. `-1.5 m/s` or `prepare_ego_history=false`) so the danger zone lands in `[3.0, 7.5]s`, then re-run `policy_runner` (tool06).
   3. If neither a genuine failure (`score < 0.5`) nor a valid reaction window (`first_violation_step >= 6`) is achieved after retries, switch to the next retrieved alternative or call `video_retriever` (tool03) for a new base scene (passing the unproductive scene token in `exclude_scene_tokens`).
-- An unsuitable result supplies a new retrieval suggestion; needs_information names missing evidence. edit_planner does not inspect Gaussian asset coverage and does not reject a scene merely because its recorded first junction is far from the starting pose.
+- An unsuitable result supplies a new retrieval suggestion; needs_information names missing evidence. edit_planner checks road/lane/space compatibility and 3DGS road-height coverage on the retrieved BEV and suggests a refined retrieval query when the base scene lacks the required interaction lane.
 - For added vehicles, set edit_planner.vehicle_catalog_class only if the user expressly requires a class. Pass through edit_planner.attack_input. The editor checks catalog assets at their native dimensions against official road geometry. A caller-supplied explicit vehicle is preserved.
 - simulation_input is a prepared native scene package, not evidence of completed replay. If null, read the export failure; never substitute the unedited source. Editor rendered_videos are video artifacts; inspect returned checks and evidence scope before claiming acceptance.
 - No standalone replay function is currently registered. policy_runner evaluates driving policies, not expert trajectory replay. If requested expert replay has no returned editor evidence or exposed execution path, report that capability gap instead of inventing a tool call or claiming success.

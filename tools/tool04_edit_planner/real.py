@@ -69,7 +69,7 @@ def _data_url(path: Path) -> str:
     return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
+def _build_dual_bev_prompt(data: Input, rendered: dict, ego_traj_source: str = "policy_simulation") -> str:
     scenario = data.scenario_result
     cand = data.candidate
     fc = scenario.failure_context
@@ -94,8 +94,9 @@ def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
     else:
         oth1_txt = "无目标车（单车/无车失败）"
 
+    ego2_label = "当前策略闭环仿真轨迹" if ego_traj_source == "policy_simulation" else "原采集回放轨迹"
     ego2_txt = (
-        f"E0..E{rendered['eval_frames'] - 1}（0..{rendered['eval_duration_s']}s）："
+        f"0..{rendered['eval_duration_s']}s（共 {rendered['eval_frames']} 帧，{ego2_label}）："
         f"速度{ek2['speed_start_mps']:.1f}→{ek2['speed_violation_mps']:.1f}m/s，"
         f"位移{ek2['displacement_m']:.1f}m，全程{_yaw_text(ek2['yaw_change_deg'])}，"
         f"末段1秒{_yaw_text(ek2.get('tail_yaw_deg', 0.0))}"
@@ -124,7 +125,7 @@ def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
     return (
         "你是自动驾驶对抗场景编辑规划员（Tool04）。你会同时收到两张同款配色的 BEV 图：\n"
         "- 【图1：原危险失败场景仿真 BEV】（亮品红为前 1.5s 历史段，橙色为 1.5s 后闭环仿真轨迹，亮红粗框为首次违规帧，蓝色为原场景他车；车身每 2 帧抽样绘制、不标文字标号，黑色箭头指示车头方向）。\n"
-        "- 【图2：新检索到的底场景标准16帧 BEV（0–7.5s）】（亮品红为前 1.5s 可编辑历史输入段，橙色为 1.5–7.5s 当前策略闭环仿真轨迹，蓝色为前方/侧方既有车辆，车身每 2 帧抽样绘制、不标文字标号，黑色箭头指示车头方向；淡绿色半透明区域为 3DGS 有效重建路面覆盖区；**亮青色高亮实线（带深青方向箭头）为已校验有有效路面高程的可行驶车道中心线（箭头指示合法行驶方向）**，新增攻击车起点 S1/S2/S3 必须直接落在亮青色线上）。\n\n"
+        f"- 【图2：新检索到的底场景标准16帧 BEV（0–7.5s）】（亮品红为前 1.5s 可编辑历史输入段，橙色为 1.5–7.5s {ego2_label}，蓝色为前方/侧方既有车辆，车身每 2 帧抽样绘制、不标文字标号，黑色箭头指示车头方向；淡绿色半透明区域为 3DGS 有效重建路面覆盖区；**亮青色高亮实线（带深青方向箭头）为已校验有有效路面高程的可行驶车道中心线（箭头指示合法行驶方向）**，新增攻击车起点 S1/S2/S3 必须直接落在亮青色线上）。\n\n"
         "请对照图1的危险交互核心意图，评估图2是否大致符合该类危险场景的道路、车道与空间条件，并在图2上给出适配规划（不要求道路几何、曲率或速度曲线与图1完全一致，符合大致场景意图并可合理构造同类危险交互即可）。\n\n"
         "【原失败场景信息（图1）】\n"
         f"- 失败类型：{fc.outcome} / {fc.failure_driver}，最小道路形态：{fc.map_context}\n"
@@ -137,9 +138,9 @@ def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
         f"- 粗攻击策略：{cand.attack_edit_strategy}\n"
         f"- 粗自车调整：{cand.ego_input_edit_strategy}\n\n"
         f"【新检索真实底场景信息（图2：{data.scene_ref.scene_token}）】\n"
-        f"- 源场景总帧数：{rendered['frame_count']} 帧；标准评测窗：E0..E{rendered['eval_frames'] - 1}（0..{rendered['eval_duration_s']}s，2Hz）\n"
+        f"- 源场景总帧数：{rendered['frame_count']} 帧；标准评测窗：0..{rendered['eval_duration_s']}s（共 {rendered['eval_frames']} 帧，2Hz）\n"
         f"- 新场景自车运动：{ego2_txt}\n"
-        "- 图2坐标网格：以E0为(0,0)，主网格10m，虚线网格5m，请直接从图2网格读取坐标。\n"
+        "- 图2坐标网格：以自车起点(t=0)为(0,0)，主网格10m，虚线网格5m，请直接从图2网格读取坐标。\n"
         f"- 自车前方及对向区域既有车辆：{actors2_txt}\n\n"
         "【输出 JSON 格式（严格只含以下字段）】\n"
         "{\n"
@@ -147,7 +148,7 @@ def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
         "  \"checks\": {\"road\": \"pass | fail\", \"lanes\": \"pass | fail\", \"space\": \"pass | fail\"},\n"
         "  \"reasons\": [\"对照图1与图2的具体判断依据\"],\n"
         "  \"target_window_s\": [3.0, 5.5],\n"
-        "  \"target_vehicle_id\": \"若编辑既有车填图2编号如V1，否则填null\",\n"
+        "  \"target_vehicle_id\": \"若编辑既有车，从上方既有车辆列表中填写对应编号如V1，否则填null\",\n"
         "  \"adapted_plan\": {\n"
         "    \"conflict_role\": \"oncoming | crossing | adjacent_cut_in | lead_vehicle | stationary\",\n"
         "    \"attack_edit_strategy\": \"针对图2具体帧段与车道位置，如何模仿图1放置并控制目标车（单车/unsuitable时填null）\",\n"
@@ -161,13 +162,13 @@ def _build_dual_bev_prompt(data: Input, rendered: dict) -> str:
         "  \"retrieval_suggestion\": \"若unsuitable，给出新的精简检索词（≤48字，禁用编辑词）；若ready填null\"\n"
         "}\n\n"
         "【硬约束】\n0. 严格可编辑性门槛（先判有无对应车道，严禁硬凑）：先对照图1所需的交互车道关系（例如无物理隔离的对向相邻车道、同向相邻车道、路口可汇入支路等），核查图2自车未来轨迹（橙色 1.5–7.5s 段）附近是否真实存在对应角色的亮青色车道（深青箭头方向吻合，且与自车之间没有白色导流岛/中央隔离带物理隔断）。若图2根本缺少该类交互车道（例如需要对向相邻车道，但图2自车行驶在被导流岛隔开的单向匝道或纯同向多车道上），必须直接判 suitability=\"unsuitable\" 并给出新的 retrieval_suggestion 换底场景，严禁硬把起点塞到后方同向车道或无关支路！\n"
-        "1. 3DGS 高斯重建轨迹约束：图2的高斯点云围绕自车原采集轨迹（橙色 E0..E15）重建，自车只允许沿原采集轨迹微调速度或小幅横向偏移，绝不允许改道去未采集的支路。只要图2自车轨迹段大致契合图1的核心交互场景（允许曲率、速度或周边路网细节不同）即可判 ready；仅当道路形态/方向根本不符、自车处于被白色隔离带/导流岛物理隔开的单向专用匝道导致目标车无法自然切入交互、或无空间构造冲突时，才判 unsuitable。\n"
-        "2. 操作与空间一致性：若候选带 asset_requirement（新增车辆），图2冲突区及上游接近车道在 target_window_s 内必须空旷无前方/对向阻挡车（起点后方无关车不影响前方空间）；若候选为编辑既有车辆，必须选中下方既有车辆列表中真实存在的 V1..Vn 填入 target_vehicle_id。\n"
+        "1. 3DGS 高斯重建轨迹约束：图2的高斯点云围绕底场景自车轨迹重建，自车只允许沿原路线微调速度或小幅横向偏移，绝不允许改道去未采集的支路。只要图2自车轨迹段（亮品红+橙色）大致契合图1的核心交互场景（允许曲率、速度或周边路网细节不同）即可判 ready；仅当道路形态/方向根本不符、自车处于被白色隔离带/导流岛物理隔开的单向专用匝道导致目标车无法自然切入交互、或无空间构造冲突时，才判 unsuitable。\n"
+        "2. 操作与空间一致性：若候选带 asset_requirement（新增车辆），图2冲突区及上游接近车道在预期交互时段内必须空旷无前方/对向阻挡车（起点后方无关车不影响前方空间）；若候选为编辑既有车辆，必须从上方既有车辆列表中选中真实存在的 V1..Vn 填入 target_vehicle_id（图2画面本身不标车号，请结合列表与位置对应）。\n"
         "3. 先从图1确认目标车与自车的冲突角色 conflict_role：对向来车 oncoming、路口横穿 crossing、同向邻道切入 adjacent_cut_in、同车道前车 lead_vehicle、静止障碍 stationary。单车场景填 null。"
         "在图2沿对应车道箭头追踪合法流向，确认该流向能构成同类交互：对向来车要沿车道向自车驶来，横穿车要沿车道进入交汇区，同向切入车要从邻道接近，同车道前车沿自车行驶方向行驶。"
         "给出定性编辑思路，有目标车时独立读出 3 个起点，每组只写 start_xy 和 rationale，说明合法流向如何构成该交互。具体相遇点、速度和切入幅度由工具5求解，保持自然的浅度压线。\n"
         "4. 逐点读图（严禁等差数列外推）：每个 start_xy 必须独立盯着图2的 5m/10m 网格读取！所有 start_xy 必须**直接落在图2的亮青色实线上**（亮青色线即已有有效路面高程的合法车道中心线，深青箭头表示行驶方向），严禁落到没有青色高亮覆盖的空白/远端无高程段或浅灰马路外；3 个起点沿来车方向依次布置在近/中/远上游段（彼此拉开间距，且距自车初始位置（亮品红前 1.5s 段）至少 8m 以上）。\n"
-        "5. 若判 ready，checks 三项必须全为 pass，有目标车时 target_window_s 建议落在 [3.0, 7.5] 秒内（留足接管后反应时间）；若判 unsuitable，adapted_plan、target_window_s、target_vehicle_id 必须为 null。"
+        "5. 若判 ready，checks 三项必须全为 pass，有目标车时 target_window_s 给出参考冲突时段（建议落在 [3.0, 7.5] 秒内，留足接管后反应时间；该字段仅作定性参考，不锁死工具5的求解窗口）；若判 unsuitable，adapted_plan、target_window_s、target_vehicle_id 必须为 null。"
     )
 
 
@@ -612,7 +613,7 @@ def _evaluate_one(data: Input, run_dir: Path, llm_client=None) -> tuple[dict, st
 
     from agent.llm_client import LLMClient
     client = llm_client or LLMClient(component="edit_planner")
-    prompt = _build_dual_bev_prompt(data, rendered)
+    prompt = _build_dual_bev_prompt(data, rendered, ego_traj_source=ego_traj_source)
     raw = client.chat([
         {"role": "system", "content": "只输出一个合法 JSON 对象，不要 Markdown 代码块，不要任何多余解释。"},
         {"role": "user", "content": [

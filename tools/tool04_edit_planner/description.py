@@ -10,11 +10,11 @@ DESCRIPTION = make_description(
     output_model=Output,
     handoff={
         "input": "传入 scenario_result（工具②结果/ref）、selected candidate_id 和 retrieval_result（工具③结果/ref）。",
-        "output": "suitability=ready 且为有车失败时，直接将返回的 attack_input 原样传给 attack_vehicle_editor；若 unsuitable，使用 retrieval_suggestion 重新检索；若为单车失败且 ready，attack_input 为 null，不调用工具⑤。",
+        "output": "suitability=ready 时（无论双车 add_vehicle/edit_existing 还是单车 ego_only），均直接将返回的 attack_input 原样传给 attack_vehicle_editor；若 unsuitable，使用 retrieval_suggestion 重新检索（并将该无效底场景加入 exclude_scene_tokens）。",
     },
     rules=[
-        "3DGS 高斯点云围绕真实底场景原采集轨迹 E0..E15 重建，自车不可改道去未采集支路，只能微调速度或小幅横向偏移。",
-        "候选带 asset_requirement 时锁定 operation=add_vehicle，由工具⑤按原生尺寸和官方道路校验选择资产；仅在用户明确指定时传入车型约束；编辑既有车时锁定 operation=edit_existing。",
-        "ready 时自动输出落在 [1.5, 7.5]s 内的 target_window_s 并填入 attack_input.constraints。",
+        "3DGS 高斯点云围绕真实底场景采集轨迹重建，图 2 优先叠加当前策略闭环仿真轨迹（无缓存时回退原采集轨迹）；自车不可改道去未采集支路，只能沿原路径微调速度或小幅横向偏移。",
+        "候选带 asset_requirement 时锁定 operation=add_vehicle，由工具⑤按原生尺寸和官方道路校验选择资产；仅在用户明确指定时传入车型约束；编辑既有车时锁定 operation=edit_existing；单车失败时锁定 operation=ego_only 并按基线 PDM 自动决定 prepare_ego_history。",
+        "ready 时双车默认 prepare_ego_history=false，且 attack_input.constraints 仅施加 no_ego_contact_until_s=3.0（target_window_s 置为 null，不锁死工具⑤求解时间窗）。",
     ],
 )
