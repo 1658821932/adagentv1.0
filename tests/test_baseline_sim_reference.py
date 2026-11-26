@@ -90,3 +90,22 @@ def test_read_baseline_pdm_score_from_metrics_json(tmp_path):
     (sim_dir / "metrics.json").write_text(json.dumps({"pdm_subscores": {"score": 0.88}}))
     assert read_baseline_pdm_score(tok, cache_base=cache_base) == 0.88
     assert read_baseline_pdm_score("missing_tok", cache_base=cache_base) is None
+
+
+def test_edited_ego_history_skips_stale_baseline_cache(tmp_path):
+    cache_base = tmp_path / "cache"
+    tok = "cccc3333dddd4444"
+    sim_dir = cache_base / "e2e_vadv2_50pct_ep8" / tok
+    sim_dir.mkdir(parents=True)
+    # Stale unedited cache moves at 4 m/s; Stage-A edited frames move at 10 m/s
+    sim = [_make_frame(1_000_000 + i * 500_000, 100.0 + i * 2.0, 20.0) for i in range(4)]
+    (sim_dir / "baseline_frames.json").write_text(json.dumps(sim))
+
+    rec = [_make_frame(1_000_000 + i * 500_000, 100.0 + i * 5.0, 20.0) for i in range(5)]
+    scene_dir = tmp_path / "samples" / tok
+    scene_dir.mkdir(parents=True)
+    (scene_dir / "ego-history.json").write_text(json.dumps({"takeover_s": 1.5}))
+
+    _, ego_xy, _, meta = reference_ego_path_from_scene(scene_dir, rec, cache_base=cache_base)
+    assert meta["source"] == "edited_ego_history"
+    assert np.allclose(ego_xy[:, 0], [0.0, 5.0, 10.0, 15.0, 20.0], atol=1e-5)

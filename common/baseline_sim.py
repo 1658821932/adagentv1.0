@@ -151,6 +151,16 @@ def reference_ego_path_from_scene(
     t0_us = float(recorded_frames[0]["timestamp"])
     rec_times, rec_xy, rec_yaw = _ego_path_in_origin(recorded_frames, origin, t0_us)
 
+    # If Stage A explicitly modified ego history (ego-history.json present), do NOT overwrite
+    # the newly accelerated reference trajectory with the stale unedited base_sim_cache.
+    if scene_dir is not None and (Path(scene_dir) / "ego-history.json").is_file():
+        return rec_times, rec_xy, rec_yaw, {
+            "source": "edited_ego_history",
+            "baseline_frames_path": None,
+            "sim_frames": 0,
+            "recorded_frames": len(recorded_frames),
+        }
+
     bp: Path | None = Path(baseline_frames_path) if baseline_frames_path else None
     if bp is None or not bp.is_file():
         bp = None
