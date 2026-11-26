@@ -534,10 +534,12 @@ def render_scene_bev(
         fill = EGO_HISTORY_COLOR if (is_hist and not is_viol) else EGO_COLOR
         edge = VIOLATION_EDGE if is_viol else ("#e65100" if idx == 3 else "black")
         lw = 2.2 if is_viol else (1.4 if idx == 3 else 0.75)
-        draw_body(axis, ego_shape, yaw, fill, f"E{idx}",
-                  alpha=0.82 if is_viol else (0.55 if is_hist else 0.70),
-                  zorder=10 if is_viol else (8 if is_hist else 9),
-                  show_label=idx in label_frames, edgecolor=edge, linewidth=lw)
+        draw_ego = (idx % 2 == 0) or (idx in (0, 3, end_frame)) or is_viol
+        if draw_ego:
+            draw_body(axis, ego_shape, yaw, fill, "",
+                      alpha=0.82 if is_viol else (0.55 if is_hist else 0.70),
+                      zorder=10 if is_viol else (8 if is_hist else 9),
+                      show_label=False, edgecolor=edge, linewidth=lw)
         ego_points.append((x, y))
         ego_yaws.append(yaw)
         ego_traj.append({"frame": idx, "t_s": round(frame_times[idx], 2),
@@ -561,14 +563,15 @@ def render_scene_bev(
     for number, (track, rows, min_dist, viol_dist) in enumerate(nearby, start=1):
         obs_frames = sorted(rows)
         pts, yaws, traj = [], [], []
-        for idx in obs_frames:
+        for obs_i, idx in enumerate(obs_frames):
             item = rows[idx]
             actor_utm = actor_body(item, frames[idx], idx)
             actor_shape = shape_of(actor_utm)
             c = center_of(actor_utm)
             x, y, yaw = to_heading(c[0], c[1], item["world_yaw"])
-            draw_body(axis, actor_shape, yaw, OTHER_COLOR, f"V{number}" if ahead_only else "",
-                      alpha=0.35, zorder=7, show_label=(ahead_only and idx == obs_frames[0]))
+            if obs_i % 2 == 0 or obs_i == len(obs_frames) - 1:
+                draw_body(axis, actor_shape, yaw, OTHER_COLOR, "",
+                          alpha=0.35, zorder=7, show_label=False)
             pts.append((x, y))
             yaws.append(yaw)
             traj.append({"frame": idx, "t_s": round(frame_times[idx], 2),
