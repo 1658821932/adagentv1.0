@@ -147,22 +147,15 @@ test('editing previews bind selected candidates and use the project video route'
   assert.equal(attack.length, 1);
   assert.match(attack[0].title, /seed_000/);
 
-  await f.file(join(runDir, 'output/defense_agent/inspections/inspection_01.png'));
-  await f.file(join(runDir, 'output/defense_agent/inspections/inspection_02.png'));
-  await f.file(join(runDir, 'output/defense_agent/inspections/inspection_01.json'), JSON.stringify({
-    candidate_id: 'constructor_006', path: 'inspections/inspection_01.png',
-  }));
-  await f.file(join(runDir, 'output/defense_agent/inspections/inspection_02.json'), JSON.stringify({
-    candidate_id: 'edit_002', path: 'inspections/inspection_02.png', min_clearance_m: 8.6937,
-  }));
-  const rendered = await f.file(join(f.root, 'outputs/manual-explained.mp4'));
-  const ego = previewMedia('ego_trajectory_editor', { result: {
-    run_dir: runDir, selected_candidate_id: 'edit_002', rendered_videos: { manual_explained: rendered },
+  const bev = await f.file(join(f.root, 'planner/retrieved_bev.png'));
+  const overlay = await f.file(join(f.root, 'planner/self_check_overlay.png'));
+  const planner = previewMedia('edit_planner', { result: {
+    retrieved_bev_image: bev,
+    evidence: { self_check_overlay: overlay },
   } }, f.options);
-  assert.equal(ego.length, 3);
-  assert.match(ego[0].src, /^\/api\/video/);
-  assert.equal(ego[1].record, undefined);
-  assert.match(ego[1].title, /最终专家轨迹 · edit_002/);
-  assert.equal(ego[1].primary, true);
-  assert.equal(ego[2].primary, false);
+  assert.equal(planner.length, 2);
+  assert.match(planner[0].title, /检索场景 BEV 俯视/);
+  assert.equal(planner[0].primary, true);
+  assert.match(planner[1].title, /编辑规划自检叠加图/);
+  assert.equal(planner[1].primary, false);
 });

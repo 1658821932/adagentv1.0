@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 
 const fileUrl = path => '/api/file?path=' + encodeURIComponent(path);
@@ -43,12 +43,6 @@ function videoMedia(tool, result, options) {
         transcodedUrl(path, options), '实际仿真输出', index === 0);
     });
   }
-  if (tool === 'ego_trajectory_editor') {
-    const path = result.rendered_videos?.manual_explained;
-    if (typeof path === 'string') {
-      video(items, path, '专家轨迹渲染回放', transcodedUrl(path, options), '实际渲染输出', true);
-    }
-  }
   return items;
 }
 
@@ -80,12 +74,20 @@ export function retrievalMedia(result, options) {
 }
 
 function plannerMedia(result, items) {
+  const before = items.length;
+  if (typeof result.retrieved_bev_image === 'string') {
+    image(items, result.retrieved_bev_image, '检索场景 BEV 俯视', '编辑前场景 BEV 拓扑', items.length === before);
+  }
+  const overlay = result.evidence?.self_check_overlay;
+  if (typeof overlay === 'string') {
+    image(items, overlay, '编辑规划自检叠加图', '攻击车起点与路径校验', items.length === before);
+  }
   const sheets = result.evidence?.visual_observation?.sheets;
   if (!Array.isArray(sheets)) return;
   sheets.forEach((sheet, index) => {
     const frames = Array.isArray(sheet.frame_indices) ? sheet.frame_indices.join(' / ') : '';
     image(items, sheet.path, `原始场景关键帧 ${index + 1}/${sheets.length}`,
-      [sheet.camera, frames && `帧 ${frames}`, '编辑前画面'].filter(Boolean).join(' · '), index === 0);
+      [sheet.camera, frames && `帧 ${frames}`, '编辑前画面'].filter(Boolean).join(' · '), items.length === before && index === 0);
   });
 }
 
@@ -101,33 +103,8 @@ function attackMedia(result, items) {
       .map(name => join(directory, name));
   } catch { return; }
   paths.forEach((path, index) => {
-    image(items, path, `攻击轨迹几何检查 · ${candidate}`,
+    image(items, path, `场景编辑几何检查 · ${candidate}`,
       '几何参考，非相机渲染或物理仿真；本次编辑结果以冻结场景为准', index === paths.length - 1);
-  });
-}
-
-function egoMedia(result, items) {
-  if (!result.run_dir) return;
-  const directory = join(result.run_dir, 'output', 'defense_agent', 'inspections');
-  let names = [];
-  try {
-    names = readdirSync(directory).filter(name => /^inspection_\d+\.json$/.test(name)).sort();
-  } catch { return; }
-  const inspections = [];
-  for (const name of names) {
-    try {
-      const record = JSON.parse(readFileSync(join(directory, name), 'utf8'));
-      const path = join(result.run_dir, 'output', 'defense_agent', record.path || '');
-      if (record.candidate_id && existsSync(path)) inspections.push({ record, path });
-    } catch { /* 忽略尚未写完的检查记录 */ }
-  }
-  inspections.sort((a, b) => Number(a.record.candidate_id !== result.selected_candidate_id)
-    - Number(b.record.candidate_id !== result.selected_candidate_id));
-  inspections.forEach(({ record, path }) => {
-    const selected = record.candidate_id === result.selected_candidate_id;
-    const clearance = typeof record.min_clearance_m === 'number' ? `最小间距 ${record.min_clearance_m.toFixed(2)}m` : '';
-    image(items, path, `${selected ? '最终专家轨迹' : '候选专家轨迹'} · ${record.candidate_id}`,
-      [clearance, '几何参考，非相机渲染或物理仿真'].filter(Boolean).join(' · '), selected);
   });
 }
 
@@ -137,6 +114,5 @@ export function previewMedia(tool, output, options) {
   const items = videoMedia(tool, result, options);
   if (tool === 'edit_planner') plannerMedia(result, items);
   if (tool === 'attack_vehicle_editor') attackMedia(result, items);
-  if (tool === 'ego_trajectory_editor') egoMedia(result, items);
   return items.filter((item, index) => items.findIndex(other => other.src === item.src) === index);
 }

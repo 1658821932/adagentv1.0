@@ -158,13 +158,6 @@ function evidenceVideos(tool, output) {
       if (src) list.push({ title: i === 0 ? '仿真回放' : `仿真回放 ${i + 1}`, src });
     });
   }
-  if (tool === 'ego_trajectory_editor' && r.rendered_videos) {
-    const v = r.rendered_videos.manual_explained;
-    if (typeof v === 'string' && existsSync(v)) {
-      const src = videoApiUrl(v);
-      if (src) list.push({ title: '专家轨迹回放', src });
-    }
-  }
   if (tool === 'video_retriever') return retrievalMedia(r, { projectRoot: ROOT });
   return list;
 }

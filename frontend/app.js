@@ -148,7 +148,7 @@ function summaryFor(s){
   if (s.tool === 'edit_planner') {
     return firstSentence(editPlannerSummary(r), 220) || '';
   }
-  if (s.tool === 'attack_vehicle_editor' || s.tool === 'ego_trajectory_editor') {
+  if (s.tool === 'attack_vehicle_editor') {
     const status = r.status === 'unable_to_complete' ? '未能完成' : r.status === 'defense_not_found' ? '未找到可行防御' : r.status || '';
     return [status, firstSentence(r.reason || r.stop_reason)].filter(Boolean).join(' — ');
   }

@@ -1,13 +1,20 @@
 /** Tool 01 wording and detail rows shared by the run view and the frontend tests. */
 
 const OUTCOME = { collision: '碰撞', road_departure: '出界', collision_and_departure: '碰撞且出界' };
+const FAILURE_DRIVER = {
+  collision_with_vehicle: '与车辆碰撞',
+  collision_non_vehicle: '非车辆碰撞',
+  departure_by_other: '受他车影响出界',
+  departure_ego_only: '纯自车出界',
+};
+const TARGET_CLASS = { car: '乘用车', bus: '公交车', truck: '卡车', none: '无' };
 const INTERACTION = {
   rear_end: '追尾', crossing: '交叉冲突', side_swipe: '侧向刮擦',
   opposite_direction: '对向碰撞', cut_in: '切入冲突', near_miss: '近距冲突', single_vehicle: '单方事故',
 };
 const MAP = {
   straight_road: '直路', curve: '弯道', t_junction: '丁字路口',
-  cross_intersection: '十字路口', merge: '汇流',
+  cross_intersection: '十字路口', merge: '汇流', roundabout: '环岛',
 };
 const EGO_ACTION = {
   straight: '直行', turn_left: '左转', turn_right: '右转',
@@ -25,8 +32,10 @@ const OTHER_ACTION = {
 };
 const WEATHER = { clear: '晴', cloudy: '多云', rainy: '雨', foggy: '雾', snowy: '雪', unknown: '未知' };
 const STAGE = {
-  start: '启动', input: '输入检查', data: '读取数据', images: '准备图像',
-  vlm: '模型核对', verification: '核对结论', done: '完成',
+  start: '启动', input: '输入检查', data: '读取数据',
+  bev: '生成 BEV', bev_vlm: 'BEV 模型核对', bev_verification: 'BEV 核对结论',
+  images: '准备图像', vlm: '模型核对', verification: '核对结论',
+  environment_optional: '环境补充', done: '完成',
 };
 
 const named = (table, value) => (value && table[value]) || (typeof value === 'string' ? value : '');
@@ -39,7 +48,7 @@ export function stageLabel(stage) {
 /** One-sentence result: current format first, historical runs second. */
 export function failureSummary(result) {
   if (!result || typeof result !== 'object') return '';
-  const current = text(result.failure?.ego_cause);
+  const current = text(result.failure?.summary) || text(result.failure?.ego_cause);
   if (current) return current;
   return text(result.failure_analysis?.failure_reason);
 }
@@ -54,8 +63,14 @@ function failureGroup(result) {
       title: '失败判定',
       rows: [
         ['判定', named(OUTCOME, failure.outcome)],
+        ['失败诱因', named(FAILURE_DRIVER, failure.failure_driver)],
         ...collision,
         ['首次违规帧', Number.isInteger(result.violation_step) ? String(result.violation_step) : ''],
+        ['地图', named(MAP, failure.map_context)],
+        ['目标类型', failure.target_class && failure.target_class !== 'none' ? named(TARGET_CLASS, failure.target_class) : ''],
+        ['自车行为', text(failure.ego_behavior)],
+        ['他车行为', text(failure.other_behavior)],
+        ['失败总结', text(failure.summary)],
         ['交互类型', named(INTERACTION, failure.interaction)],
         ['自车原因', text(failure.ego_cause)],
       ],
@@ -125,12 +140,14 @@ export function failureDetailGroups(result, error) {
   if (verification && typeof verification === 'object') {
     const frames = Array.isArray(verification.sample_frames)
       ? verification.sample_frames.join('、') : '';
-    const corrections = Array.isArray(verification.corrections) ? verification.corrections.length : 0;
+    const hasCorrections = Array.isArray(verification.corrections);
+    const corrections = hasCorrections ? verification.corrections.length : 0;
     const notes = Array.isArray(verification.notes)
       ? verification.notes.filter(note => text(note)).join('；') : '';
-    groups.push({ title: '视觉核对', rows: [
-      ['核对帧', frames], ['修正项', corrections ? `${corrections} 项` : '无'], ['备注', notes],
-    ] });
+    const rows = [['核对帧', frames]];
+    if (hasCorrections) rows.push(['修正项', corrections ? `${corrections} 项` : '无']);
+    rows.push(['备注', notes]);
+    groups.push({ title: '视觉核对', rows });
   }
 
   const evidence = text(data.evidence_dir) || text(error?.evidence_dir);
@@ -140,6 +157,7 @@ export function failureDetailGroups(result, error) {
       ['token', text(data.token)],
       ['simulation', text(data.simulation)],
       ['地图', text(data.map_location)],
+      ['BEV 图像', text(data.bev_image)],
       ['证据目录', evidence],
     ],
   });

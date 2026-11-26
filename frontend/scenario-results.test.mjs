@@ -15,17 +15,21 @@ const retrieval = {
     frame_count: 18, images_complete: true },
 };
 
-test('tool02 exposes the whole target, all mechanism fields and every candidate strategy', () => {
+test('tool02 exposes the whole target, failure context and every candidate strategy', () => {
   assert.equal(scenarioSummary(scenario), scenario.target_scene);
   const groups = scenarioDetailGroups(scenario);
   assert.equal(groups[0].rows[0][1], scenario.target_scene);
-  assert.equal(groups[1].rows.length, 6);
+  assert.equal(groups[1].title, '失败上下文');
+  assert.equal(groups[1].rows.length, 3);
   assert.equal(groups.length, 5);
   scenario.candidates.forEach((candidate, index) => {
     assert.equal(groups[index + 2].title, `候选 ${candidate.candidate_id}`);
-    assert.deepEqual(groups[index + 2].rows.map(([key]) => key),
-      ['检索条件', '检索词', '攻击车编辑', '自车输入编辑', '自车正确轨迹']);
-    assert.equal(groups[index + 2].rows[3][1], candidate.ego_input_edit_strategy ?? '无需编辑');
+    const expectedKeys = candidate.asset_requirement
+      ? ['检索条件', '检索词', '新增资产', '攻击车编辑', '自车输入编辑']
+      : ['检索条件', '检索词', '攻击车编辑', '自车输入编辑'];
+    assert.deepEqual(groups[index + 2].rows.map(([key]) => key), expectedKeys);
+    const egoRow = groups[index + 2].rows.find(([key]) => key === '自车输入编辑');
+    assert.equal(egoRow[1], candidate.ego_input_edit_strategy ?? '无需编辑');
   });
 });
 
@@ -35,7 +39,7 @@ test('tool02 displays the compact retrieval query separately from source-video c
   result.candidates[0].retrieval_query = '白天丁字路口，自车右转，右侧支路清晰';
   const candidate = scenarioDetailGroups(result)[2];
   assert.deepEqual(candidate.rows.map(([key]) => key),
-    ['检索条件', '检索词', '攻击车编辑', '自车输入编辑', '自车正确轨迹']);
+    ['检索条件', '检索词', '攻击车编辑', '自车输入编辑']);
   assert.equal(candidate.rows[1][1], result.candidates[0].retrieval_query);
 });
 
@@ -149,4 +153,21 @@ test('tool04 summary and details use checks and adapted_plan, never removed edit
   assert.equal(groups[1].rows.find(([key]) => key === '自车输入编辑')[1], '无需编辑');
   assert.equal(groups[2].rows.find(([key]) => key === '来源')[1], 'visual_review');
   assert.equal(editPlannerSummary({ edit_plan: result.edit_plan }), '');
+});
+
+test('tool04 displays ego_only handoff and conflict_role for current 8-tool pipeline', () => {
+  const result = {
+    suitability: 'ready',
+    checks: { road: 'pass', lanes: 'pass', space: 'pass' },
+    adapted_plan: {
+      conflict_role: 'stationary',
+      attack_edit_strategy: null,
+      ego_input_edit_strategy: '调整自车入弯速度',
+    },
+    attack_input: { operation: 'ego_only' },
+    evidence: {},
+  };
+  const plan = editPlannerDetailGroups(result).find(group => group.title === '适配方案');
+  assert.equal(plan.rows.find(([key]) => key === '冲突角色')[1], '静止障碍');
+  assert.equal(plan.rows.find(([key]) => key === '工具⑤交接')[1], '纯自车编辑');
 });

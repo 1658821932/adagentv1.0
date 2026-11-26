@@ -31,23 +31,44 @@ for camera in visual_check.CAMERAS:
 frames = [{"index": index, "time_s": index * 0.5,
            "images": {camera: str(cam / camera / ("%02d.jpg" % index)) for camera in visual_check.CAMERAS}}
           for index in range(12)]
-facts = dict(archive="archive", token="scene-abc", simulation_record="experiment/batch",
-             map_location="map", violation_step=7,
-             failure={"outcome": "collision", "interaction": "crossing"},
-             attack={"map_context": "t_junction", "ego_action": "turn_right", "ego_lane_keeping": "keep",
-                     "other_origin": "right_arm", "other_action": "turn_left", "other_lane_keeping": "keep"},
-             environment={"time": "t"}, frame_images=frames)
+src_dir = root / "tmp_facts"
+src_dir.mkdir(parents=True, exist_ok=True)
+traj_src = src_dir / "trajectories.json"
+traj_src.write_text(json.dumps({"ego": [], "vehicles": []}))
+bev_src = src_dir / "bev.png"
+Image.new("RGB", (128, 128), (30, 50, 70)).save(bev_src, format="PNG")
+facts = dict(
+    archive="archive", token="scene-abc", simulation_record="experiment/batch",
+    map_location="map", violation_step=7, outcome="collision",
+    trajectories_path=str(traj_src), bev_image=str(bev_src),
+    ego_kinematics={"is_stationary": False, "speed_start_mps": 4.0, "speed_violation_mps": 5.0,
+                    "displacement_m": 15.0, "yaw_change_deg": 2.0, "tail_yaw_deg": 1.0},
+    nearby_vehicles=[{
+        "track": "veh_01", "label": "car", "size_m": [4.4, 2.0, 1.6],
+        "violation_distance_m": 0.4, "relative_heading_at_violation_deg": 90.0,
+        "kinematics": {"is_stationary": False, "speed_start_mps": 5.0, "speed_violation_mps": 4.5,
+                       "displacement_m": 12.0, "yaw_change_deg": 80.0, "tail_yaw_deg": 0.0},
+    }],
+    environment={"time": "2021-09-16T20:16:41+00:00"}, frame_images=frames,
+)
 class Client:
+    calls = 0
     def __init__(self, component=None): pass
     def chat(self, messages):
-        return json.dumps({"map_context": "t_junction", "ego_action": "turn_right",
-            "ego_lane_keeping": "keep", "other_origin": "right_arm", "other_action": "turn_left",
-            "other_lane_keeping": "keep", "interaction": "crossing", "notes": [],
-            "weather": "clear", "extra": ""})
+        Client.calls += 1
+        if Client.calls == 1:
+            return json.dumps({
+                "map_context": "t_junction", "failure_driver": "collision_with_vehicle",
+                "ego_behavior": "自车在丁字路口右转未让行。",
+                "other_behavior": "右侧支路车辆左转进入路口。",
+                "summary": "自车在丁字路口右转时与右侧支路左转车辆发生碰撞。",
+            })
+        return json.dumps({"weather": "clear", "extra": "傍晚路面干燥", "notes": []})
 run_dir = root / "logs" / "tool01" / "experiment_batch-fixture" / "4abb45d9ee1a5c5c" / "run-fixture"
 with mock.patch.object(real, "failure_facts", return_value=facts), \\
      mock.patch("agent.llm_client.LLMClient", Client):
-    real.analyze({"token": "4abb45d9ee1a5c5c", "simulation": "experiment/batch", "timeout": 60}, run_dir)
+    out = real.analyze({"token": "4abb45d9ee1a5c5c", "simulation": "experiment/batch", "timeout": 60}, run_dir)
+assert out["status"] == "success", out
 print(str(run_dir))
 `;
 
@@ -75,7 +96,7 @@ test('run API serves the evidence sheets of a tool 01 step', { timeout: 40000 },
   const evidence = makeEvidence(root);
   if (!evidence) return t.skip('agent environment is not available');
   const manifest = JSON.parse(await readFile(join(evidence, 'manifest.json'), 'utf8'));
-  const sheets = manifest.frames.map(frame => frame.sheet);
+  const sheets = [manifest.bev_image, join(evidence, 'sheets', 'step_07.jpg')];
 
   async function step(name, output) {
     const dir = join(runDir, 'tools', name);
@@ -128,7 +149,8 @@ test('run API serves the evidence sheets of a tool 01 step', { timeout: 40000 },
   const success = steps[1].evidence.filter(item => item.kind === 'image');
   assert.equal(success.length, sheets.length, JSON.stringify(steps[1].evidence));
   assert.equal(success[0].src, '/api/file?path=' + encodeURIComponent(sheets[0]));
-  assert.equal(steps[1].evidence_summary.manifest.frames, sheets.length);
+  assert.equal(steps[1].evidence_summary.images, sheets.length);
+  assert.equal(steps[1].evidence_summary.manifest.bev_image, true);
   assert.equal(steps[1].evidence_summary.error_type, '');
 
   assert.equal(steps[2].output.error.stage, 'vlm');
@@ -137,7 +159,12 @@ test('run API serves the evidence sheets of a tool 01 step', { timeout: 40000 },
   assert.equal(steps[2].evidence_summary.error_type, 'timeout');
   assert.equal(steps[2].evidence_summary.stage, 'vlm');
 
-  const image = await fetch(base + success[0].src);
+  const bev = await fetch(base + success[0].src);
+  assert.equal(bev.status, 200);
+  assert.equal(bev.headers.get('content-type'), 'image/png');
+  assert.ok((await bev.arrayBuffer()).byteLength > 0);
+
+  const image = await fetch(base + success[1].src);
   assert.equal(image.status, 200);
   assert.equal(image.headers.get('content-type'), 'image/jpeg');
   assert.ok((await image.arrayBuffer()).byteLength > 0);

@@ -1,13 +1,18 @@
-/** Current tool02/tool03 results. Rendering uses the shared detail-group layout. */
+/** Current tool02/tool03/tool04 results. Rendering uses the shared detail-group layout. */
 const text = value => typeof value === 'string' ? value.trim() : '';
 const LABELS = {
   straight_road: '直路', curve: '弯道', t_junction: '丁字路口',
-  cross_intersection: '十字路口', merge: '汇流',
+  cross_intersection: '十字路口', merge: '汇流', roundabout: '环岛',
+  collision: '碰撞', road_departure: '出界',
+  collision_with_vehicle: '与车辆碰撞', collision_non_vehicle: '非车辆碰撞',
+  departure_by_other: '受他车影响出界', departure_ego_only: '纯自车出界',
+  car: '乘用车', bus: '公交车', truck: '卡车',
   straight: '直行', turn_left: '左转', turn_right: '右转',
   left_offset: '左偏移', keep: '保持', right_offset: '右偏移', unknown: '未知',
   ahead_same_lane: '同车道前方', behind_same_lane: '同车道后方',
   left_adjacent: '左相邻车道', right_adjacent: '右相邻车道',
   oncoming: '对向车道', left_arm: '左侧支路', right_arm: '右侧支路',
+  crossing: '交叉', adjacent_cut_in: '相邻切入', lead_vehicle: '前车', stationary: '静止障碍',
   none: '无',
 };
 const label = value => LABELS[value] || text(value);
@@ -25,15 +30,30 @@ function errorGroups(error) {
   ] }]) : [];
 }
 
+function assetText(req) {
+  if (!req || typeof req !== 'object') return '';
+  const cls = label(req.vehicle_class);
+  const size = Array.isArray(req.size_m) && req.size_m.length === 3
+    ? req.size_m.map(n => Number(n).toFixed(2)).join('×') + 'm'
+    : '';
+  return [cls, size].filter(Boolean).join(' · ');
+}
+
 export function scenarioSummary(result) {
   return text(result?.target_scene);
 }
 
 export function scenarioDetailGroups(result, error) {
   if (!result?.target_scene) return errorGroups(error);
+  const fc = result.failure_context || {};
   const attack = result.attack || {};
   const groups = [
     { title: '整体目标场景', rows: [['目标场景', text(result.target_scene)]] },
+    { title: '失败上下文', rows: [
+      ['失败结果', label(fc.outcome)],
+      ['失败诱因', label(fc.failure_driver)],
+      ['道路形态', label(fc.map_context)],
+    ] },
     { title: '共同交互机制', rows: [
       ['道路形态', label(attack.map_context)], ['自车动作', label(attack.ego_action)],
       ['自车车道保持', label(attack.ego_lane_keeping)],
@@ -45,6 +65,7 @@ export function scenarioDetailGroups(result, error) {
     groups.push({ title: `候选 ${text(candidate.candidate_id)}`, rows: [
       ['检索条件', text(candidate.base_video_requirement)],
       ['检索词', text(candidate.retrieval_query)],
+      ['新增资产', assetText(candidate.asset_requirement)],
       ['攻击车编辑', edit(candidate.attack_edit_strategy)],
       ['自车输入编辑', edit(candidate.ego_input_edit_strategy)],
       ['自车正确轨迹', text(candidate.ego_correct_trajectory_strategy)],
@@ -84,10 +105,13 @@ export function editPlannerDetailGroups(result, error) {
   const reasons = (result.reasons || []).map(text).filter(Boolean).join('；');
   const handoff = result.attack_input;
   const handoffLabel = handoff?.operation
-    ? ({ auto: '自动选择车辆', edit_existing: '编辑现有车辆', add_vehicle: '新增车辆' }[handoff.operation] || handoff.operation)
+    ? ({ auto: '自动选择车辆', edit_existing: '编辑现有车辆', add_vehicle: '新增车辆', ego_only: '纯自车编辑' }[handoff.operation] || handoff.operation)
     : '';
   const handoffText = handoffLabel
     ? `${handoffLabel}${Array.isArray(handoff.plan_options) && handoff.plan_options.length ? ` · ${handoff.plan_options.length} 个方案` : ''}`
+    : '';
+  const attackPlans = Array.isArray(plan.attack_plans) && plan.attack_plans.length
+    ? `${plan.attack_plans.length} 个起点方案`
     : '';
   return groupsWithValues([
     { title: '结构检查', rows: [
@@ -101,7 +125,9 @@ export function editPlannerDetailGroups(result, error) {
       ['进入距离', scalar(facts.target_entry_distance_m)],
     ] },
     { title: '适配方案', rows: [
+      ['冲突角色', label(plan.conflict_role)],
       ['攻击车编辑', edit(plan.attack_edit_strategy)],
+      ['起点方案', attackPlans],
       ['工具⑤交接', handoffText],
       ['自车输入编辑', edit(plan.ego_input_edit_strategy)],
       ['自车正确轨迹', text(plan.ego_correct_trajectory_strategy)],

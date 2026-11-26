@@ -117,3 +117,37 @@ test('empty payloads produce no detail block', () => {
   assert.deepEqual(failureDetailGroups(null, null), []);
   assert.deepEqual(failureDetailGroups({}, {}), []);
 });
+
+test('current BEV-based tool01 schema renders failure_driver, roundabout and summary', () => {
+  const result = {
+    token: '2021.09.16.19.49.00_veh-42_00990_01609-4abb45d9ee1a5c5c',
+    simulation: 'experiment/batch',
+    map_location: 'us-pa-pittsburgh-hazelwood',
+    evidence_dir: '/project/logs/tool01/sim/run-2',
+    bev_image: '/project/logs/tool01/sim/run-2/bev_overview.png',
+    violation_step: 9,
+    failure: {
+      outcome: 'road_departure',
+      failure_driver: 'departure_by_other',
+      target_track: 'veh_02',
+      target_class: 'bus',
+      map_context: 'roundabout',
+      ego_behavior: '自车在环岛内向左避让时驶出道路。',
+      other_behavior: '相邻车道公交车向内侧压线。',
+      summary: '自车在环岛避让压线公交车时驶出可行驶区域。',
+    },
+    environment: { time: '2021-09-16T20:16:41+00:00', weather: 'clear', extra: '' },
+    verification: { sample_frames: [7, 9], notes: [] },
+  };
+  assert.equal(failureSummary(result), result.failure.summary);
+  const groups = failureDetailGroups(result, null);
+  assert.deepEqual(rowsOf(groups, '失败判定'), {
+    判定: '出界', 失败诱因: '受他车影响出界', 首次违规帧: '9',
+    地图: '环岛', 目标类型: '公交车',
+    自车行为: result.failure.ego_behavior,
+    他车行为: result.failure.other_behavior,
+    失败总结: result.failure.summary,
+  });
+  assert.deepEqual(rowsOf(groups, '视觉核对'), { 核对帧: '7、9' });
+  assert.equal(stageLabel('bev_vlm'), 'BEV 模型核对');
+});

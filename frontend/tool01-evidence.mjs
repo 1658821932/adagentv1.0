@@ -1,6 +1,7 @@
-/** Evidence of tool 01: the sheets and manifest the analysis really produced.
+/** Evidence of tool 01: BEV overview and 8-camera sheets the analysis really produced.
 
 Backend contract (tools/tool01_failure_analyzer/visual_check.py):
+  manifest.bev_image  = "<run_dir>/bev_overview.png"
   manifest.frames[]   = {index, sheet, sheet_sha256}
   manifest.selected[] = {index, time_s, sources{8 cameras}}
 Only paths inside the project directory that exist as files are turned into links, and a
@@ -47,6 +48,18 @@ function frameFacts(manifest) {
     if (Number.isInteger(entry?.index)) facts.set(entry.index, entry);
   });
   return facts;
+}
+
+function bevFile(evidenceDir, result, manifest, projectRoot) {
+  const candidates = [
+    result?.bev_image,
+    manifest?.bev_image,
+    join(evidenceDir, 'bev_overview.png'),
+  ];
+  for (const candidate of candidates) {
+    if (readableFile(projectRoot, candidate)) return candidate;
+  }
+  return null;
 }
 
 function sheetFiles(evidenceDir, manifest, projectRoot) {
@@ -113,6 +126,7 @@ export function failureAnalyzerEvidence(output, { projectRoot } = {}) {
   if (!inside(projectRoot, evidenceDir) || !existsSync(evidenceDir)) return { summary, items: [] };
 
   const manifest = readEvidenceManifest(evidenceDir, projectRoot);
+  const bevPath = bevFile(evidenceDir, result, manifest, projectRoot);
   if (manifest) {
     const frames = Array.isArray(manifest.frames) ? manifest.frames.length : 0;
     const selected = Array.isArray(manifest.selected) ? manifest.selected.length : 0;
@@ -124,19 +138,34 @@ export function failureAnalyzerEvidence(output, { projectRoot } = {}) {
       run_id: typeof manifest.run_id === 'string' ? manifest.run_id : '',
       timeout_s: typeof manifest.timeout_s === 'number' ? manifest.timeout_s : null,
       frames: frames || selected,
+      bev_image: Boolean(bevPath),
       updated_at: typeof manifest.updated_at === 'string' ? manifest.updated_at : '',
     };
     if (!summary.stage && summary.manifest.stage) summary.stage = summary.manifest.stage;
     if (!summary.error_type && summary.manifest.status === 'failed') summary.error_type = 'analysis_failed';
   }
 
-  const items = sheetFiles(evidenceDir, manifest, projectRoot).map((entry, index) => ({
-    kind: 'image',
-    ...caption(entry, index),
-    path: entry.path,
-    src: fileUrl(entry.path),
-    primary: index === 0,
-  }));
+  const items = [];
+  if (bevPath) {
+    items.push({
+      kind: 'image',
+      title: 'BEV 俯视证据',
+      note: '失败场景 BEV 轨迹总览',
+      path: bevPath,
+      src: fileUrl(bevPath),
+      primary: true,
+    });
+  }
+  const hasBev = items.length > 0;
+  sheetFiles(evidenceDir, manifest, projectRoot).forEach((entry, index) => {
+    items.push({
+      kind: 'image',
+      ...caption(entry, index),
+      path: entry.path,
+      src: fileUrl(entry.path),
+      primary: !hasBev && index === 0,
+    });
+  });
   summary.images = items.length;
   return { summary, items };
 }
