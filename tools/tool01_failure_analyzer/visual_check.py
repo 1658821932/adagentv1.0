@@ -30,9 +30,9 @@ def environment_forbidden_terms(value):
     return [term for term in ENVIRONMENT_FORBIDDEN if term in value]
 
 
-PROMPT = """你的唯一任务是根据首次违规帧的八相机总览补充天气和环境描述。
+PROMPT = """你的唯一任务是根据场景首帧（第 0 帧）的八相机总览补充天气和环境描述。
 不要判断道路形态、路口类型、车辆、车头方向、车道保持、他车来向、车辆动作或交互类型。
-首次违规帧为第 {violation} 帧。你会收到 {images_count} 张八相机总览图：
+你会收到 {images_count} 张场景首帧八相机总览图：
 {images}
 只填写：
 - weather：clear / cloudy / rainy / foggy / snowy / unknown
@@ -262,16 +262,18 @@ def _check_bev(facts, source, run_dir, copyfile, client_type, evidence):
 
 
 # ------------------------------------------------------------------ 8-camera env
-def camera_images(facts):
+def camera_images(facts, indices=None):
     rows = facts.get("frame_images")
     if not rows:
         raise VisualCheckError("facts carry no frame_images mapping")
+    check_set = set(indices) if indices is not None else None
     images = {camera: [] for camera in CAMERAS}
-    for row in rows:
+    for idx, row in enumerate(rows):
         for camera in CAMERAS:
             path = Path((row.get("images") or {}).get(camera) or "")
-            if not path.is_file():
-                raise VisualCheckError(f"missing image for {camera} frame {row['index']}: {path}")
+            if check_set is None or idx in check_set:
+                if not path.is_file():
+                    raise VisualCheckError(f"missing image for {camera} frame {row['index']}: {path}")
             images[camera].append(path)
     return images, rows
 
@@ -330,10 +332,8 @@ def check(archive, token, facts, run_dir=None):
         evidence.write_manifest(run_dir, status="failed", stage=stage, error=str(error))
 
     try:
-        images, rows = camera_images(facts)
-        violation = facts["violation_step"]
-        sheet_indices(len(rows), violation)
-        indices = [violation]
+        indices = [0]
+        images, rows = camera_images(facts, indices=indices)
         sheet_dir = run_dir / "sheets"
         sheets = [contact_sheet(images, idx, sheet_dir / f"step_{idx:02d}.jpg", rows) for idx in indices]
         urls = [data_url(sheet) for sheet in sheets]
@@ -344,8 +344,8 @@ def check(archive, token, facts, run_dir=None):
         failed("images", type(error).__name__)
         raise VisualCheckError(f"image preparation failed ({type(error).__name__})", stage="images") from None
 
-    listed = f"- 第 1 张：帧 {violation}，{frame_time(rows, violation):.1f}s（首次违规帧）"
-    content = [{"type": "text", "text": PROMPT.format(violation=violation, images_count=1, images=listed)}]
+    listed = f"- 第 1 张：帧 0，{frame_time(rows, 0):.1f}s（场景首帧）"
+    content = [{"type": "text", "text": PROMPT.format(images_count=1, images=listed)}]
     content += [{"type": "image_url", "image_url": {"url": url}} for url in urls]
 
     evidence.write_manifest(run_dir, stage="vlm")
