@@ -12,6 +12,26 @@ from pathlib import Path
 from typing import Any
 
 EXCLUDE_ENV_VAR = "ADAGENT_EXCLUDE_SCENE_TOKENS_FILE"
+PDM_THRESHOLD_ENV_VAR = "ADAGENT_PDM_FAILURE_THRESHOLD"
+DEFAULT_PDM_FAILURE_THRESHOLD = 0.5
+
+
+def get_pdm_failure_threshold(override: float | None = None) -> float:
+    """Return configurable PDM failure threshold (default 0.5, overridable via ADAGENT_PDM_FAILURE_THRESHOLD)."""
+    if override is not None:
+        val = float(override)
+        if not (0.0 < val <= 1.0):
+            raise ValueError(f"pdm_threshold must be in (0, 1], got {val}")
+        return val
+    raw = (os.getenv(PDM_THRESHOLD_ENV_VAR) or "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if 0.0 < val <= 1.0:
+                return val
+        except ValueError:
+            pass
+    return DEFAULT_PDM_FAILURE_THRESHOLD
 
 
 def normalize_scene_token(value: Any) -> str | None:
@@ -109,7 +129,8 @@ def record_used_scene_token(
             lock_fd.close()
 
 
-def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: float = 0.5, min_violation_step: int = 6) -> str | None:
+def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: float | None = None, min_violation_step: int = 6) -> str | None:
+    threshold = get_pdm_failure_threshold(max_pdm_score)
     """Return the base scene_token ONLY if Tool 05 succeeded AND (if Tool 06 ran) closed-loop PDM < max_pdm_score."""
     tools_dir = Path(run_dir) / "tools"
     if not tools_dir.is_dir():
@@ -133,7 +154,7 @@ def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: fl
             score = sub.get("score")
             fvs = sub.get("first_violation_step")
             step_ok = (fvs is None) or (isinstance(fvs, (int, float)) and float(fvs) >= min_violation_step)
-            if isinstance(score, (int, float)) and float(score) < max_pdm_score and step_ok:
+            if isinstance(score, (int, float)) and float(score) < threshold and step_ok:
                 passed_failure_gate = True
                 break
         if not passed_failure_gate:
@@ -183,3 +204,115 @@ def record_run_if_configured(run_dir: str | Path, *, run_id: str | None = None) 
         meta["run_id"] = str(run_id)
     record_used_scene_token(pool_path, base_token, metadata=meta)
     return base_token
+
+
+def classify_run_result(
+    run_dir: str | Path,
+    *,
+    pdm_threshold: float | None = None,
+    min_violation_step: int = 6,
+) -> dict[str, Any]:
+    """Classify a completed/terminated agent run into the 3-bucket batch strategy.
+
+    - class_1_success: Tool 06 produced PDM < pdm_threshold AND first_violation_step >= min_violation_step.
+    - class_2_retry_speed: Tool 06 produced a valid numeric PDM score, but PDM >= pdm_threshold (or violated too early < min_violation_step).
+    - class_3_no_result: No valid Tool 06 score (e.g. Tool 05 timed out >15m, unable_to_complete, or upstream error).
+    """
+    threshold = get_pdm_failure_threshold(pdm_threshold)
+    rdir = Path(run_dir)
+    tools_dir = rdir / "tools"
+    if not tools_dir.is_dir():
+        return {
+            "bucket": "class_3_no_result",
+            "pdm_score": None,
+            "first_violation_step": None,
+            "base_scene_token": None,
+            "tool05_status": None,
+            "threshold": threshold,
+            "reason": "no_tools_output",
+        }
+
+    # Inspect latest Tool 05 status and base scene token
+    tool05_status = None
+    last_base_token = None
+    for step_dir in reversed(sorted(tools_dir.glob("step_*_attack_vehicle_editor"))):
+        out_p = step_dir / "output.json"
+        if out_p.is_file():
+            try:
+                out = json.loads(out_p.read_text(encoding="utf-8"))
+                if out.get("status") == "success":
+                    tool05_status = str((out.get("result") or {}).get("status") or "unknown")
+                else:
+                    err = out.get("error") or {}
+                    err_msg = str(err.get("message") or err.get("type") or out.get("status") or "error")
+                    tool05_status = "timeout" if "timeout" in err_msg.lower() else "error"
+            except (OSError, json.JSONDecodeError):
+                tool05_status = "error"
+        in_p = step_dir / "input.json"
+        if in_p.is_file():
+            try:
+                inp = json.loads(in_p.read_text(encoding="utf-8"))
+                ref = inp.get("scene_ref")
+                if isinstance(ref, dict):
+                    last_base_token = normalize_scene_token(ref.get("scene_token") or ref.get("scene_id"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        break
+
+    # Inspect Tool 06 runs (prefer any passing class_1 run; else latest numeric score -> class_2)
+    best_class2 = None
+    for t06_dir in reversed(sorted(tools_dir.glob("step_*_policy_runner"))):
+        out_p = t06_dir / "output.json"
+        if not out_p.is_file():
+            continue
+        try:
+            out = json.loads(out_p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if out.get("status") != "success":
+            continue
+        res = out.get("result") or {}
+        sub = res.get("pdm_subscores") or res.get("metrics") or {}
+        score = sub.get("score")
+        if not isinstance(score, (int, float)):
+            continue
+        fvs = sub.get("first_violation_step")
+        step_ok = (fvs is None) or (isinstance(fvs, (int, float)) and float(fvs) >= min_violation_step)
+        if float(score) < threshold and step_ok:
+            return {
+                "bucket": "class_1_success",
+                "pdm_score": float(score),
+                "first_violation_step": float(fvs) if isinstance(fvs, (int, float)) else None,
+                "base_scene_token": extract_succeeded_base_scene_token(rdir, max_pdm_score=threshold, min_violation_step=min_violation_step) or last_base_token,
+                "tool05_status": tool05_status,
+                "threshold": threshold,
+                "reason": f"pdm={float(score):.4f} < {threshold}",
+            }
+        if best_class2 is None:
+            reason = (
+                f"pdm={float(score):.4f} >= {threshold}"
+                if float(score) >= threshold
+                else f"pdm={float(score):.4f} < {threshold} but first_violation_step={fvs} < {min_violation_step}"
+            )
+            best_class2 = {
+                "bucket": "class_2_retry_speed",
+                "pdm_score": float(score),
+                "first_violation_step": float(fvs) if isinstance(fvs, (int, float)) else None,
+                "base_scene_token": last_base_token,
+                "tool05_status": tool05_status,
+                "threshold": threshold,
+                "reason": reason,
+            }
+
+    if best_class2 is not None:
+        return best_class2
+
+    return {
+        "bucket": "class_3_no_result",
+        "pdm_score": None,
+        "first_violation_step": None,
+        "base_scene_token": last_base_token,
+        "tool05_status": tool05_status,
+        "threshold": threshold,
+        "reason": f"no_tool06_score (tool05_status={tool05_status})",
+    }

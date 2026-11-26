@@ -237,10 +237,24 @@ def _execute(stage, arguments):
         _timeline(data.attack_result.frames_path)
     input_frames = Path(data.scene_ref.frames_path if stage=="attack_editing" else data.attack_result.frames_path)
     source_frames = _timeline(input_frames)
+    effective_timeout = data.timeout
+    cap_raw = (os.getenv("ADAGENT_TOOL05_TIMEOUT_S") or "").strip()
+    if cap_raw:
+        try:
+            cap_val = int(cap_raw)
+            if cap_val > 0:
+                effective_timeout = min(effective_timeout, cap_val)
+        except ValueError:
+            pass
+    dumped_args = data.model_dump()
+    if effective_timeout < data.timeout:
+        dumped_args["timeout"] = effective_timeout
+        if "stage_timeout_s" in dumped_args and isinstance(dumped_args["stage_timeout_s"], int):
+            dumped_args["stage_timeout_s"] = min(dumped_args["stage_timeout_s"], effective_timeout)
     payload = {"schema_version":"editing_stage.v1", "stage":stage,
-               "arguments":data.model_dump(), "output_dir":str(task.output)}
+               "arguments":dumped_args, "output_dir":str(task.output)}
     write_json(task.input / "stage_request.json",payload)
-    completed = run_logged(command,cwd=PROJECT_ROOT,env=backend_api_env(command, task.child_env(), "attack_editor" if stage=="attack_editing" else "ego_editor"),input=json.dumps(payload,ensure_ascii=False),json_stdout=True,log_path=task.logs/"backend.log",timeout=data.timeout)
+    completed = run_logged(command,cwd=PROJECT_ROOT,env=backend_api_env(command, task.child_env(), "attack_editor" if stage=="attack_editing" else "ego_editor"),input=json.dumps(payload,ensure_ascii=False),json_stdout=True,log_path=task.logs/"backend.log",timeout=effective_timeout)
     try:
         current_frames = _timeline(input_frames)
     except EditingError as error:

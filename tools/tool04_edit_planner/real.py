@@ -14,6 +14,7 @@ from mcp_servers.scene_editing.adapter.schemas import AttackInput
 from tools.llm_runtime import parse_json_object, validation_details
 from tools.tool01_failure_analyzer.visual_check import _yaw_text
 from common.baseline_sim import read_baseline_pdm_score, resolve_baseline_frames_path
+from common.scene_pool import get_pdm_failure_threshold
 from .schemas import Input, Output
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -467,7 +468,7 @@ def _build_attack_input(data: Input, rendered: dict, decision: dict) -> dict | N
         ego_strat = plan.get("ego_input_edit_strategy") or ""
         instruction = f"{data.scenario_result.target_scene} {ego_strat}".strip()
         base_pdm = read_baseline_pdm_score(data.scene_ref.scene_token)
-        need_ego_edit = True if (base_pdm is None or base_pdm >= 0.5) else False
+        need_ego_edit = True if (base_pdm is None or base_pdm >= get_pdm_failure_threshold()) else False
         request = {
             "scene_ref": data.scene_ref.model_dump(mode="json"),
             "instruction": instruction,
