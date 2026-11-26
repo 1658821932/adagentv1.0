@@ -648,7 +648,7 @@ class AttackEditor:
         for ax in axes:
             for geometry in self.road.polygons:
                 ax.add_patch(Patch(np.asarray(geometry.exterior.coords), facecolor='#edf3e8', edgecolor='#bac8b0', linewidth=.5))
-            def _draw_mid_arrow(pts, color, *, alpha=0.95, lw=1.5):
+            def _draw_mid_arrow(pts, color, *, fracs=(0.33, 0.67), alpha=0.95, lw=1.5):
                 if len(pts) < 2:
                     return
                 segs = np.linalg.norm(np.diff(pts, axis=0), axis=1)
@@ -656,22 +656,23 @@ class AttackEditor:
                 if total < 0.2:
                     return
                 cum = np.concatenate([[0.0], np.cumsum(segs)])
-                target_s = total * 0.5
-                k = int(np.searchsorted(cum, target_s, side='right')) - 1
-                k = max(0, min(len(pts) - 2, k))
-                p0, p1 = pts[k], pts[k + 1]
-                seg_len = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
-                if seg_len < 0.05:
-                    return
-                u = (p1 - p0) / seg_len
-                mid = p0 + u * (target_s - float(cum[k]))
-                tip = mid + u * 0.6
-                tail = mid - u * 0.6
-                ax.annotate(
-                    '', xy=(float(tip[0]), float(tip[1])), xytext=(float(tail[0]), float(tail[1])),
-                    arrowprops=dict(arrowstyle='-|>,head_length=0.5,head_width=0.28',
-                                    color=color, lw=lw, alpha=alpha, shrinkA=0, shrinkB=0),
-                )
+                for frac in fracs:
+                    target_s = total * frac
+                    k = int(np.searchsorted(cum, target_s, side='right')) - 1
+                    k = max(0, min(len(pts) - 2, k))
+                    p0, p1 = pts[k], pts[k + 1]
+                    seg_len = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
+                    if seg_len < 0.05:
+                        continue
+                    u = (p1 - p0) / seg_len
+                    mid = p0 + u * (target_s - float(cum[k]))
+                    tip = mid + u * 0.6
+                    tail = mid - u * 0.6
+                    ax.annotate(
+                        '', xy=(float(tip[0]), float(tip[1])), xytext=(float(tail[0]), float(tail[1])),
+                        arrowprops=dict(arrowstyle='-|>,head_length=0.5,head_width=0.28',
+                                        color=color, lw=lw, alpha=alpha, shrinkA=0, shrinkB=0),
+                    )
 
             ego_label = 'policy sim ego' if getattr(self, 'ego_reference_meta', {}).get('source') == 'policy_simulation' else 'recorded ego'
             ax.plot(self.ego[:, 0], self.ego[:, 1], color='#1565c0', label=ego_label)
