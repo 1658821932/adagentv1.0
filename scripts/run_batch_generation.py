@@ -4,7 +4,7 @@
 Strategy:
   - Configurable failure threshold: --pdm-threshold (default 0.5, via ADAGENT_PDM_FAILURE_THRESHOLD)
   - Round 1: run every source failure token once (Tool 05 hard-capped at --tool05-timeout, default 900s = 15 min)
-      * Class 1 (class_1_success): Tool 06 PDM < threshold & first_violation_step >= 6 -> kept & base scene recorded in exclusion pool
+      * Class 1 (class_1_success): Tool 06 PDM < threshold & (first_violation_step is None or >= 6) -> kept & base scene recorded in exclusion pool
       * Class 2 (class_2_retry_speed): Tool 06 ran, but PDM >= threshold (or violation too early < 6) -> retry queue (priority 1)
       * Class 3 (class_3_no_result): No Tool 06 score (Tool 05 timed out > 15m / unable_to_complete / error) -> retry queue (priority 2)
   - Round 2: process Class 2 FIRST, then Class 3, sharing the same used_base_scenes.json exclusion pool.
@@ -130,7 +130,7 @@ def _build_task_prompt(simulation: str, token: str, round_idx: int, prev_bucket:
     base = (
         f"请分析仿真批次 {simulation} 中的失败场景 {token}，"
         f"从本地数据集检索合适底场景并构造同类失败合成场景，"
-        f"通过 policy_runner (tool06) 进行闭环评估（目标 PDM < {pdm_threshold} 且 first_violation_step >= 6）。"
+        f"通过 policy_runner (tool06) 进行闭环评估（目标 PDM < {pdm_threshold}，无前 6 帧早死即 first_violation_step 为 null 或 >= 6，且可解 solvable=true；满足即可直接 finish）。"
     )
     if round_idx == 2 and prev_bucket == "class_2_retry_speed":
         base += " 这是第二轮二类补救任务：上一轮已测出高分未失败或过早违规，请优先调整自车历史初速或更换更合适的底场景与攻击策略。"
