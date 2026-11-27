@@ -89,9 +89,22 @@ class VisualCheckError(RuntimeError):
 def _yaw_text(deg):
     """Explicit direction wording so VLM never misreads math signs."""
     val = abs(float(deg))
+    if val < 2.0:
+        return f"直行（偏转{val:.1f}°）"
     if val < 5.0:
-        return f"近直行（偏转{val:.1f}°）"
+        return f"微左偏{val:.1f}°" if deg > 0 else f"微右偏{val:.1f}°"
     return f"左转{val:.1f}°" if deg > 0 else f"右转{val:.1f}°"
+
+
+def _rel_pos_text(lon_m, lat_m):
+    if lon_m is None or lat_m is None:
+        return ""
+    fb = f"前{abs(lon_m):.1f}m" if lon_m >= 0 else f"后{abs(lon_m):.1f}m"
+    if abs(lat_m) < 0.35:
+        lr = "居中"
+    else:
+        lr = f"偏左{abs(lat_m):.1f}m" if lat_m > 0 else f"偏右{abs(lat_m):.1f}m"
+    return f"{fb}{lr}"
 
 
 def _rel_heading_text(deg):
@@ -148,7 +161,14 @@ def build_bev_prompt(facts, selected_vehicles):
             )
         contact = "（接触）" if vd <= 0.05 else ""
         rel_txt = _rel_heading_text(v.get("relative_heading_at_violation_deg"))
-        lines.append(f"  {idx}. {pos} {vd:.1f}m{contact}：{rel_txt}，{motion}，{vtype}")
+        s_txt = _rel_pos_text(v.get("rel_lon_at_start_m"), v.get("rel_lat_at_start_m"))
+        v_txt = _rel_pos_text(v.get("rel_lon_at_violation_m"), v.get("rel_lat_at_violation_m"))
+        offset_note = ""
+        if s_txt and v_txt:
+            offset_note = f"，自车系相对位置：起步{s_txt}→违规帧{v_txt}"
+        elif v_txt:
+            offset_note = f"，自车系相对位置：违规帧{v_txt}"
+        lines.append(f"  {idx}. {pos} {vd:.1f}m{contact}：{rel_txt}，{motion}，{vtype}{offset_note}")
     nearby_summary = "\n".join(lines) if lines else "  无（10m 内无其他车辆）"
     return BEV_PROMPT_TEMPLATE.format(
         outcome=facts["outcome"],

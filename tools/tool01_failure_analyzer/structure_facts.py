@@ -556,6 +556,9 @@ def render_scene_bev(
     ex, ey = ego_points[ref_pos]
     eyaw = ego_yaws[ref_pos]
     cos_y, sin_y = math.cos(-eyaw), math.sin(-eyaw)
+    ex0, ey0 = ego_points[0]
+    eyaw0 = ego_yaws[0]
+    cos_y0, sin_y0 = math.cos(-eyaw0), math.sin(-eyaw0)
 
     ego_arr = np.asarray(ego_points)
     if len(ego_arr) > 3:
@@ -584,11 +587,22 @@ def render_scene_bev(
             body_geometry.extend(actor_shape)
         kin = _kinematics(obs_frames, [frame_times[i] for i in obs_frames], pts, yaws, ref_frame) if any(f <= ref_frame for f in obs_frames) else None
         rel_yaw, bearing = None, None
+        rel_lon_start, rel_lat_start = None, None
+        rel_lon_viol, rel_lat_viol = None, None
+        if 0 in obs_frames:
+            s_idx = obs_frames.index(0)
+            gx0, gy0 = pts[s_idx][0] - ex0, pts[s_idx][1] - ey0
+            rel_lon_start = round(float(gx0 * cos_y0 - gy0 * sin_y0), 2)
+            rel_lat_start = round(float(gx0 * sin_y0 + gy0 * cos_y0), 2)
         if ref_frame in obs_frames:
             v_idx = obs_frames.index(ref_frame)
             rel_yaw = round(math.degrees((yaws[v_idx] - eyaw + math.pi) % (2 * math.pi) - math.pi), 1)
             gx, gy = pts[v_idx][0] - ex, pts[v_idx][1] - ey
-            bearing = _bearing_text(gx * cos_y - gy * sin_y, gx * sin_y + gy * cos_y)
+            lon_v = float(gx * cos_y - gy * sin_y)
+            lat_v = float(gx * sin_y + gy * cos_y)
+            rel_lon_viol = round(lon_v, 2)
+            rel_lat_viol = round(lat_v, 2)
+            bearing = _bearing_text(lon_v, lat_v)
         first_item = rows[obs_frames[0]]
         pts_arr = np.asarray(pts)
         axis.plot(pts_arr[:, 0], pts_arr[:, 1], color=OTHER_COLOR, linewidth=1.6, alpha=0.7, zorder=6)
@@ -603,6 +617,10 @@ def render_scene_bev(
             "violation_distance_m": None if viol_dist is None else round(float(viol_dist), 2),
             "bearing_at_violation": bearing,
             "relative_heading_at_violation_deg": rel_yaw,
+            "rel_lon_at_start_m": rel_lon_start,
+            "rel_lat_at_start_m": rel_lat_start,
+            "rel_lon_at_violation_m": rel_lon_viol,
+            "rel_lat_at_violation_m": rel_lat_viol,
             "kinematics": kin,
         })
         actor_trajs[vid] = traj

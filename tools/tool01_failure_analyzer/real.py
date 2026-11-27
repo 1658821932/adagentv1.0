@@ -118,6 +118,10 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
             "tail_yaw_deg": vk["tail_yaw_deg"],
             "relative_heading_at_violation_deg": target_v["relative_heading_at_violation_deg"],
             "violation_distance_m": target_v["violation_distance_m"],
+            "rel_lon_at_start_m": target_v.get("rel_lon_at_start_m"),
+            "rel_lat_at_start_m": target_v.get("rel_lat_at_start_m"),
+            "rel_lon_at_violation_m": target_v.get("rel_lon_at_violation_m"),
+            "rel_lat_at_violation_m": target_v.get("rel_lat_at_violation_m"),
         }
 
     evidence.write_manifest(run_dir, stage="images", resolved_token=facts["token"],

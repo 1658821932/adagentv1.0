@@ -85,12 +85,21 @@ def _build_dual_bev_prompt(data: Input, rendered: dict, ego_traj_source: str = "
         f"末段1秒{_yaw_text(ek1.get('tail_yaw_deg', 0.0))}"
     )
     if isinstance(ok1, dict):
+        _rel_parts = []
+        for _lbl, _lk, _rk in (("起步", "rel_lon_at_start_m", "rel_lat_at_start_m"), ("违规帧", "rel_lon_at_violation_m", "rel_lat_at_violation_m")):
+            _lo, _la = ok1.get(_lk), ok1.get(_rk)
+            if isinstance(_lo, (int, float)) and isinstance(_la, (int, float)):
+                _fb = f"前{abs(_lo):.1f}m" if _lo >= 0 else f"后{abs(_lo):.1f}m"
+                _lr = "居中" if abs(_la) < 0.35 else (f"偏左{abs(_la):.1f}m" if _la > 0 else f"偏右{abs(_la):.1f}m")
+                _rel_parts.append(f"{_lbl}{_fb}{_lr}")
+        _rel_note = ("，相对自车" + "→".join(_rel_parts)) if _rel_parts else ""
         oth1_txt = (
             f"长{ok1['size_m'][0]:.1f}m，{'静止' if ok1.get('is_stationary') else ''}"
             + ("" if ok1.get("is_stationary") else (
                 f"速度{ok1['speed_start_mps']:.1f}→{ok1['speed_violation_mps']:.1f}m/s，"
                 f"全程{_yaw_text(ok1['yaw_change_deg'])}，末段1秒{_yaw_text(ok1.get('tail_yaw_deg', 0.0))}"
             ))
+            + _rel_note
         )
     else:
         oth1_txt = "无目标车（单车/无车失败）"
