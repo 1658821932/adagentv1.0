@@ -128,7 +128,7 @@ def run_policy(input_data: dict) -> dict:
         )
         if policy_behavior is not None:
             result["policy_behavior_summary"] = policy_behavior
-        ego_sim_path = export_ego_sim_frames(result["result_dir"], task.output / "ego_sim_frames.json")
+        ego_sim_path = export_ego_sim_frames(result["result_dir"], Path(result["result_dir"]).parent / "ego_sim_frames.json")
         if ego_sim_path is not None:
             result["ego_sim_frames_path"] = ego_sim_path
     if input_data.get("with_dense_reward_manager", False):
