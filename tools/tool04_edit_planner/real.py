@@ -525,14 +525,14 @@ def _compute_ego_speed_alignment(data: Input, rendered: dict, planning_frames_pa
         except Exception:
             pass
     v_base = _ego_speed_at_15s(planning_frames_path, float((rendered.get("ego_kinematics") or {}).get("speed_start_mps") or 0.0))
-    gap = abs(v_base - v_src)
+    deficit = v_src - v_base  # positive when base scene is slower than source scene
     threshold = 3.0
-    needed = (not single_vehicle) and (gap > threshold)
+    needed = (not single_vehicle) and (deficit > threshold)
     return {
         "needed": needed,
         "base_speed_15s_mps": round(v_base, 2),
         "source_speed_15s_mps": round(v_src, 2),
-        "speed_gap_mps": round(gap, 2),
+        "speed_deficit_mps": round(deficit, 2),
         "threshold_mps": threshold,
         "target_speed_mps": round(max(1.5, v_src), 2) if needed else None,
     }
