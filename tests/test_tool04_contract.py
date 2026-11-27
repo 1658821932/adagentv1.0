@@ -62,7 +62,7 @@ class Tool04ContractTests(unittest.TestCase):
             res = call_tool("edit_planner", {
                 "scenario_result": t2, "candidate_id": "cand_1", "retrieval_result": t3
             }, mode="mock")
-            self.assertEqual(res["status"], "success")
+            self.assertEqual(res["status"], "success", msg=str(res))
             out = Output.model_validate(res["result"])
             self.assertEqual(out.suitability, "ready")
             self.assertEqual(out.attack_input["operation"], "add_vehicle")
@@ -127,13 +127,13 @@ class Tool04ContractTests(unittest.TestCase):
                     "scenario_result": t2, "candidate_id": "cand_1", "retrieval_result": t3,
                     "_llm_client": _StubClient(ready_reply),
                 })
-            self.assertEqual(res["status"], "success")
+            self.assertEqual(res["status"], "success", msg=str(res))
             out = Output.model_validate(res["result"])
             self.assertEqual(out.suitability, "ready")
             self.assertEqual(out.attack_input["operation"], "add_vehicle")
             self.assertIsNone(out.attack_input["vehicle"])
             self.assertEqual(out.attack_input["vehicle_catalog_class"], "any")
-            self.assertIsNone(out.attack_input["constraints"]["target_window_s"])
+            self.assertEqual(out.attack_input["constraints"]["target_window_s"], [3.0, 7.5])
 
             # A valid point, a receding lane, and a point between opposite flows.
             wrong = json.loads(json.dumps(ready_reply))
@@ -144,7 +144,7 @@ class Tool04ContractTests(unittest.TestCase):
                 tmp / "frames.json", starts, rendered, "oncoming",
             )
             self.assertEqual(ok, ["S3=[48.0, 3.5]"])
-            self.assertIn("远离自车", issues[0])
+            self.assertIn("非对向来车", issues[0])
             self.assertIn("两条反向车道", issues[1])
             self.assertEqual(
                 tool04_real._check_attack_plans_geometry(
@@ -170,7 +170,7 @@ class Tool04ContractTests(unittest.TestCase):
                         "scenario_result": t2, "candidate_id": "cand_1", "retrieval_result": t3,
                         "_llm_client": client,
                     })
-                self.assertEqual(res["status"], "success")
+                self.assertEqual(res["status"], "success", msg=str(res))
                 self.assertEqual(res["result"]["suitability"], expected)
                 self.assertEqual(client.chat.call_count, 3)
                 self.assertEqual(res["result"]["attack_input"] is not None, expected == "ready")
@@ -199,6 +199,78 @@ class Tool04ContractTests(unittest.TestCase):
             self.assertIsNone(out_bad.attack_input)
             self.assertIsNotNone(out_bad.retrieval_suggestion)
 
+
+    def test_single_vehicle_ego_only_allows_empty_attack_plans_and_ego_only_handoff(self):
+        from tools.tool04_edit_planner.schemas import Output
+        from tools.tool04_edit_planner import real as tool04_real
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            src_bev = tmp / "src_bev.png"
+            ret_bev = tmp / "ret_bev.png"
+            Image.new("RGB", (64, 64), (255, 255, 255)).save(src_bev)
+            Image.new("RGB", (64, 64), (240, 240, 240)).save(ret_bev)
+            t2 = {
+                "status": "success",
+                "tool": "scene_instance_generator",
+                "result": {
+                    "target_scene": "晴天弯道单车驶离车道",
+                    "failure_context": {
+                        "outcome": "road_departure",
+                        "failure_driver": "departure_ego_only",
+                        "map_context": "curve",
+                    },
+                    "kinematics": {
+                        "ego": {"speed_start_mps": 7.7, "speed_violation_mps": 8.9, "displacement_m": 32.0, "yaw_change_deg": -15.0, "tail_yaw_deg": -2.0, "is_stationary": False},
+                        "other": None,
+                    },
+                    "source_bev_image": str(src_bev),
+                    "candidates": [
+                        {
+                            "candidate_id": f"cand_{i}",
+                            "base_video_requirement": "晴天弯道",
+                            "retrieval_query": "晴天弯道",
+                            "asset_requirement": None,
+                            "attack_edit_strategy": None,
+                            "ego_input_edit_strategy": "提高弯道入弯车速",
+                        }
+                        for i in (1, 2, 3)
+                    ],
+                },
+            }
+            t3 = {"status": "success", "tool": "video_retriever",
+                  "result": {"scene_ref": _scene_ref(tmp), "candidate_id": "cand_1", "mode": "real"}}
+            rendered = {
+                "ok": True, "frame_count": 24, "eval_frames": 16, "eval_duration_s": 7.5,
+                "ego_kinematics": {"speed_start_mps": 7.7, "speed_violation_mps": 8.9, "displacement_m": 32.0, "yaw_change_deg": -15.0, "tail_yaw_deg": -2.0, "is_stationary": False},
+                "nearby_vehicles": [], "behind_only_count": 0,
+                "bev_image": str(ret_bev), "trajectories_path": str(tmp / "ret_traj.json"),
+                "ego_bev_xy": [[2.0 * i, 0.0] for i in range(16)], "placeable_lanes": [],
+            }
+            ego_reply = {
+                "suitability": "ready",
+                "checks": {"road": "pass", "lanes": "pass", "space": "pass"},
+                "reasons": ["弯道拓扑匹配且左侧开阔"],
+                "target_window_s": None,
+                "target_vehicle_id": None,
+                "adapted_plan": {
+                    "conflict_role": None,
+                    "attack_edit_strategy": None,
+                    "attack_plans": [],
+                    "ego_input_edit_strategy": "提高自车弯道初速",
+                },
+                "retrieval_suggestion": None,
+            }
+            with mock.patch.object(tool04_real, "_render_retrieved_bev", return_value=rendered), \
+                 mock.patch.object(tool04_real, "RECORDS_ROOT", tmp / "rec"):
+                res = tool04_real.run({
+                    "scenario_result": t2, "candidate_id": "cand_1", "retrieval_result": t3,
+                    "_llm_client": _StubClient(ego_reply),
+                })
+            self.assertEqual(res["status"], "success", msg=str(res))
+            out = Output.model_validate(res["result"])
+            self.assertEqual(out.suitability, "ready")
+            self.assertIsNone(out.adapted_plan.attack_plans)
+            self.assertEqual(out.attack_input["operation"], "ego_only")
 
 if __name__ == "__main__":
     unittest.main()

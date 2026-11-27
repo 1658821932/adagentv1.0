@@ -633,10 +633,12 @@ def render_scene_bev(
     low, high = geom.min(axis=0) - margin_m, geom.max(axis=0) + margin_m
 
     placeable_lanes = []
-    if highlight_placeable_lanes and cov_affine is not None:
-        origin_c00, mat_inv, valid_grid = cov_affine
-        g_rows, g_cols = valid_grid.shape
-        ego_hist_arr = np.asarray(ego_points[:3], dtype=float)
+    drew_lane_centerlines = False
+    use_cov_filter = bool(highlight_placeable_lanes and cov_affine is not None)
+    if "baseline_paths" in layers and layers["baseline_paths"] is not None:
+        if use_cov_filter:
+            origin_c00, mat_inv, valid_grid = cov_affine
+            g_rows, g_cols = valid_grid.shape
 
         def _iter_lines(geom_obj):
             if geom_obj is None or geom_obj.is_empty:
@@ -664,14 +666,16 @@ def render_scene_bev(
                     (pts[:, 0] >= low[0]) & (pts[:, 0] <= high[0])
                     & (pts[:, 1] >= low[1]) & (pts[:, 1] <= high[1])
                 )
-                d_ego = np.min(np.linalg.norm(pts[:, None, :] - ego_hist_arr[None, :, :], axis=2), axis=1)
-                uv = (pts - origin_c00[None, :]) @ mat_inv.T
-                ix = np.rint(uv[:, 0] * (g_cols - 1)).astype(int)
-                iy = np.rint(uv[:, 1] * (g_rows - 1)).astype(int)
-                in_grid = (ix >= 0) & (ix < g_cols) & (iy >= 0) & (iy < g_rows)
-                has_h = np.zeros(len(pts), dtype=bool)
-                has_h[in_grid] = valid_grid[iy[in_grid], ix[in_grid]]
-                ok_mask = in_view & has_h
+                if use_cov_filter:
+                    uv = (pts - origin_c00[None, :]) @ mat_inv.T
+                    ix = np.rint(uv[:, 0] * (g_cols - 1)).astype(int)
+                    iy = np.rint(uv[:, 1] * (g_rows - 1)).astype(int)
+                    in_grid = (ix >= 0) & (ix < g_cols) & (iy >= 0) & (iy < g_rows)
+                    has_h = np.zeros(len(pts), dtype=bool)
+                    has_h[in_grid] = valid_grid[iy[in_grid], ix[in_grid]]
+                    ok_mask = in_view & has_h
+                else:
+                    ok_mask = in_view
                 if not np.any(ok_mask):
                     continue
                 idx_start = None
@@ -692,8 +696,10 @@ def render_scene_bev(
                     seg_cum = np.concatenate([[0.0], np.cumsum(seg_steps)])
                     if seg_cum[-1] < 3.0:
                         continue
-                    axis.plot(seg[:, 0], seg[:, 1], color="#00acc1", linewidth=2.6, alpha=0.88, zorder=5)
-                    placeable_lanes.append(seg)
+                    axis.plot(seg[:, 0], seg[:, 1], color="#00acc1", linewidth=2.6 if use_cov_filter else 2.0, alpha=0.88 if use_cov_filter else 0.78, zorder=5)
+                    drew_lane_centerlines = True
+                    if use_cov_filter:
+                        placeable_lanes.append(seg)
                     next_arrow = 5.0 if seg_cum[-1] >= 6.0 else seg_cum[-1] * 0.5
                     while next_arrow < seg_cum[-1] - 0.8:
                         ai = int(np.searchsorted(seg_cum, next_arrow))
@@ -741,6 +747,8 @@ def render_scene_bev(
         handles.append(Patch(facecolor="#66bb6a", alpha=0.35, label="3DGS coverage"))
     if placeable_lanes:
         handles.append(Line2D([0], [0], color="#00acc1", linewidth=2.6, label="Placeable lane centerlines (->)"))
+    elif drew_lane_centerlines:
+        handles.append(Line2D([0], [0], color="#00acc1", linewidth=2.0, label="Lane centerlines (->)"))
     axis.legend(handles=handles, loc="upper left", fontsize=7.0, framealpha=0.9)
     axis.set_title(title or f"BEV OVERVIEW E0..E{end_frame} (0..{frame_times[end_frame]:.1f}s): {len(nearby)} vehicles")
     figure.tight_layout()

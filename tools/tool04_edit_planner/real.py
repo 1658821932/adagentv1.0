@@ -561,6 +561,10 @@ def _parse_vlm_decision(raw: str, single_vehicle: bool) -> dict:
             answer["target_window_s"] = [round(float(win[0]), 2), round(float(win[1]), 2)]
         else:
             answer["target_window_s"] = None
+            if isinstance(answer.get("adapted_plan"), dict):
+                answer["adapted_plan"]["conflict_role"] = None
+                answer["adapted_plan"]["attack_edit_strategy"] = None
+                answer["adapted_plan"]["attack_plans"] = None
     else:
         answer["adapted_plan"] = None
         answer["target_window_s"] = None

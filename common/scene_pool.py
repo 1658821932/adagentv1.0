@@ -129,6 +129,23 @@ def record_used_scene_token(
             lock_fd.close()
 
 
+def _extract_pdm_metrics(res: dict) -> dict:
+    sub = res.get("pdm_subscores") or res.get("metrics") or {}
+    if not isinstance(sub, dict):
+        return {}
+    if isinstance(sub.get("score"), (int, float)):
+        return sub
+    avg = sub.get("overall_average")
+    if isinstance(avg, dict) and isinstance(avg.get("score"), (int, float)):
+        return avg
+    scenes = sub.get("scenes")
+    if isinstance(scenes, dict):
+        for v in scenes.values():
+            if isinstance(v, dict) and isinstance(v.get("score"), (int, float)):
+                return v
+    return sub
+
+
 def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: float | None = None, min_violation_step: int = 6) -> str | None:
     threshold = get_pdm_failure_threshold(max_pdm_score)
     """Return the base scene_token ONLY if Tool 05 succeeded AND (if Tool 06 ran) closed-loop PDM < max_pdm_score."""
@@ -150,7 +167,7 @@ def extract_succeeded_base_scene_token(run_dir: str | Path, *, max_pdm_score: fl
             if out.get("status") != "success":
                 continue
             res = out.get("result") or {}
-            sub = res.get("pdm_subscores") or res.get("metrics") or {}
+            sub = _extract_pdm_metrics(res)
             score = sub.get("score")
             fvs = sub.get("first_violation_step")
             step_ok = (fvs is None) or (isinstance(fvs, (int, float)) and float(fvs) >= min_violation_step)
@@ -272,7 +289,7 @@ def classify_run_result(
         if out.get("status") != "success":
             continue
         res = out.get("result") or {}
-        sub = res.get("pdm_subscores") or res.get("metrics") or {}
+        sub = _extract_pdm_metrics(res)
         score = sub.get("score")
         if not isinstance(score, (int, float)):
             continue

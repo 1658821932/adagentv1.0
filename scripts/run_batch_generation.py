@@ -157,6 +157,11 @@ def _run_single_scene(
     env[PDM_THRESHOLD_ENV_VAR] = str(pdm_threshold)
     env["ADAGENT_TOOL05_TIMEOUT_S"] = str(tool05_timeout_s)
     env[EXCLUDE_ENV_VAR] = str(pool_file)
+    exp_dir = pool_file.parent
+    if not env.get("WORLDENGINE_POLICY_CHECKPOINT") and (exp_dir / "checkpoint.pth").exists():
+        env["WORLDENGINE_POLICY_CHECKPOINT"] = str((exp_dir / "checkpoint.pth").resolve())
+    if not env.get("ADAGENT_VAD_BASELINE_CACHE_DIR") and (exp_dir / "base_sim_cache").is_dir():
+        env["ADAGENT_VAD_BASELINE_CACHE_DIR"] = str((exp_dir / "base_sim_cache").resolve())
 
     prompt = _build_task_prompt(simulation, token, round_idx, prev_bucket, pdm_threshold)
     cmd = [python_bin, "-m", "agent.main", prompt]
@@ -227,11 +232,14 @@ def main() -> int:
     parser.add_argument("--experiment", required=True, help="Experiment ID under outputs/experiments/<exp_id>")
     parser.add_argument("--pdm-threshold", type=float, default=None, help="PDM failure threshold (default: env ADAGENT_PDM_FAILURE_THRESHOLD or 0.5)")
     parser.add_argument("--tool05-timeout", type=int, default=900, help="Hard timeout in seconds for Tool 05 (default: 900 = 15 min)")
-    parser.add_argument("--run-timeout", type=int, default=1500, help="Outer per-scene timeout in seconds (default: 1500 = 25 min)")
+    parser.add_argument("--run-timeout", type=int, default=2400, help="Outer per-scene timeout in seconds (default: 2400 = 40 min)")
     parser.add_argument("--round", choices=("1", "2", "all"), default="all", help="Which round(s) to execute")
     parser.add_argument("--python", default=str(PROJECT_ROOT / "environments/agent/.venv/bin/python"), help="Agent Python interpreter")
     parser.add_argument("--dry-run", action="store_true", help="Print planned Round 1 / Round 2 queues without executing")
     args = parser.parse_args()
+    _sim_p = Path(args.simulation).expanduser()
+    if _sim_p.exists():
+        args.simulation = str(_sim_p.resolve())
 
     pdm_threshold = get_pdm_failure_threshold(args.pdm_threshold)
     tokens = load_source_tokens(args.tokens_file, args.tokens)

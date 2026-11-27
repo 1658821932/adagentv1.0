@@ -230,10 +230,10 @@ class BoundedSearchOutcome(OutputModel):
     reason: NonEmptyStr
     stop_reason: NonEmptyStr
     failed_requirements: list[str]
-    failed_requirements_scope: Literal["observed_in_attempted_candidates"] = "observed_in_attempted_candidates"
+    failed_requirements_scope: Literal["observed_in_attempted_candidates", "ego_history"] = "observed_in_attempted_candidates"
     attempts: list[dict[str, Any]] = Field(min_length=1)
     evidence_paths: list[NonEmptyStr] = Field(min_length=1)
-    scope: Literal["current_tools_and_budget"] = "current_tools_and_budget"
+    scope: Literal["current_tools_and_budget", "single_vehicle_ego_only"] = "current_tools_and_budget"
     global_infeasibility_proven: Literal[False] = False
     detail: dict[str, Any] = Field(default_factory=dict)
 

@@ -169,8 +169,15 @@ class Output(ToolModel):
             if self.adapted_plan is None:
                 raise ValueError("ready requires adapted_plan")
             if single_vehicle:
-                if self.adapted_plan.attack_edit_strategy is not None or self.attack_input is not None:
-                    raise ValueError("single-vehicle ready plan must have null attack_edit_strategy and null attack_input")
+                if self.adapted_plan.attack_edit_strategy is not None:
+                    raise ValueError("single-vehicle ready plan must have null attack_edit_strategy")
+                if self.attack_input is not None:
+                    handoff = AttackInput.model_validate(self.attack_input)
+                    if handoff.operation != "ego_only":
+                        raise ValueError("single-vehicle ready attack_input must use operation='ego_only'")
+                    ref = handoff.scene_ref if isinstance(handoff.scene_ref, SceneReference) else SceneReference.model_validate(handoff.scene_ref)
+                    if (ref.scene_id, ref.scene_token) != (self.scene_id, self.scene_token):
+                        raise ValueError("attack_input.scene_ref differs from reviewed scene")
             else:
                 if self.attack_input is None:
                     raise ValueError("ready vehicle-driven plan requires validated attack_input for tool05")
