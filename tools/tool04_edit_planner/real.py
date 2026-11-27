@@ -70,6 +70,21 @@ def _data_url(path: Path) -> str:
     return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+def _lane_pose_text(lat_m, yaw_deg) -> str:
+    parts = []
+    if isinstance(lat_m, (int, float)):
+        parts.append("车道居中" if abs(lat_m) < 0.35 else (f"靠左{abs(lat_m):.1f}m" if lat_m > 0 else f"靠右{abs(lat_m):.1f}m"))
+    if isinstance(yaw_deg, (int, float)):
+        ay = abs(float(yaw_deg))
+        if ay < 2.0:
+            parts.append("顺车道平行")
+        elif ay < 5.0:
+            parts.append(f"车头微左歪{ay:.1f}°" if yaw_deg > 0 else f"车头微右歪{ay:.1f}°")
+        else:
+            parts.append(f"车头左歪{ay:.1f}°" if yaw_deg > 0 else f"车头右歪{ay:.1f}°")
+    return "/".join(parts)
+
+
 def _build_dual_bev_prompt(data: Input, rendered: dict, ego_traj_source: str = "policy_simulation") -> str:
     scenario = data.scenario_result
     cand = data.candidate
@@ -79,10 +94,13 @@ def _build_dual_bev_prompt(data: Input, rendered: dict, ego_traj_source: str = "
     ok1 = kin.get("other")
     ek2 = rendered["ego_kinematics"]
 
+    _e1s = _lane_pose_text(ek1.get("lane_lat_start_m"), ek1.get("lane_yaw_start_deg"))
+    _e1v = _lane_pose_text(ek1.get("lane_lat_violation_m"), ek1.get("lane_yaw_violation_deg"))
+    _e1_lane = f"，相对车道中心线：起步{_e1s}→违规帧{_e1v}" if (_e1s and _e1v) else ""
     ego1_txt = (
         f"速度{ek1['speed_start_mps']:.1f}→{ek1['speed_violation_mps']:.1f}m/s，"
         f"位移{ek1['displacement_m']:.1f}m，全程{_yaw_text(ek1['yaw_change_deg'])}，"
-        f"末段1秒{_yaw_text(ek1.get('tail_yaw_deg', 0.0))}"
+        f"末段1秒{_yaw_text(ek1.get('tail_yaw_deg', 0.0))}{_e1_lane}"
     )
     if isinstance(ok1, dict):
         _rel_parts = []
@@ -92,14 +110,19 @@ def _build_dual_bev_prompt(data: Input, rendered: dict, ego_traj_source: str = "
                 _fb = f"前{abs(_lo):.1f}m" if _lo >= 0 else f"后{abs(_lo):.1f}m"
                 _lr = "居中" if abs(_la) < 0.35 else (f"偏左{abs(_la):.1f}m" if _la > 0 else f"偏右{abs(_la):.1f}m")
                 _rel_parts.append(f"{_lbl}{_fb}{_lr}")
-        _rel_note = ("，相对自车" + "→".join(_rel_parts)) if _rel_parts else ""
+        _o1s = _lane_pose_text(ok1.get("lane_lat_start_m"), ok1.get("lane_yaw_start_deg"))
+        _o1v = _lane_pose_text(ok1.get("lane_lat_violation_m"), ok1.get("lane_yaw_violation_deg"))
+        _o1_lane = (f"，相对车道中心线：{_o1s}" if _o1s == _o1v else f"，相对车道中心线：起步{_o1s}→违规帧{_o1v}") if (_o1s and _o1v) else ""
+        _ry = ok1.get("relative_heading_at_violation_deg")
+        _ry_txt = f"、相对航向{float(_ry):+.1f}°" if isinstance(_ry, (int, float)) else ""
+        _rel_note = ("，相对自车：" + "→".join(_rel_parts) + _ry_txt) if _rel_parts else (f"，相对自车：相对航向{float(_ry):+.1f}°" if isinstance(_ry, (int, float)) else "")
         oth1_txt = (
             f"长{ok1['size_m'][0]:.1f}m，{'静止' if ok1.get('is_stationary') else ''}"
             + ("" if ok1.get("is_stationary") else (
                 f"速度{ok1['speed_start_mps']:.1f}→{ok1['speed_violation_mps']:.1f}m/s，"
                 f"全程{_yaw_text(ok1['yaw_change_deg'])}，末段1秒{_yaw_text(ok1.get('tail_yaw_deg', 0.0))}"
             ))
-            + _rel_note
+            + _o1_lane + _rel_note
         )
     else:
         oth1_txt = "无目标车（单车/无车失败）"

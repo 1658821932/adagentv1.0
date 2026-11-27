@@ -189,10 +189,16 @@ def build_bev_prompt(facts, selected_vehicles):
         ov_lane = _lane_pose_text(v.get("lane_lat_violation_m"), v.get("lane_yaw_violation_deg"))
         lane_note = ""
         if os_lane and ov_lane:
-            lane_note = f"，目标车相对车道中心线：{os_lane}" if os_lane == ov_lane else f"，目标车相对车道中心线：起步{os_lane}→违规帧{ov_lane}"
+            lane_note = f"，相对车道中心线：{os_lane}" if os_lane == ov_lane else f"，相对车道中心线：起步{os_lane}→违规帧{ov_lane}"
         elif ov_lane:
-            lane_note = f"，目标车相对车道中心线：{ov_lane}"
-        lines.append(f"  {idx}. {pos} {vd:.1f}m{contact}：{rel_txt}，{motion}，{vtype}{lane_note}")
+            lane_note = f"，相对车道中心线：{ov_lane}"
+        s_rel = _rel_pos_text(v.get("rel_lon_at_start_m"), v.get("rel_lat_at_start_m"))
+        v_rel = _rel_pos_text(v.get("rel_lon_at_violation_m"), v.get("rel_lat_at_violation_m"))
+        ry = v.get("relative_heading_at_violation_deg")
+        ry_txt = f"相对航向{float(ry):+.1f}°" if isinstance(ry, (int, float)) else ""
+        rel_parts = [p for p in (f"起步{s_rel}→违规帧{v_rel}" if (s_rel and v_rel) else (f"违规帧{v_rel}" if v_rel else ""), ry_txt) if p]
+        ego_rel_note = ("，相对自车：" + "、".join(rel_parts)) if rel_parts else ""
+        lines.append(f"  {idx}. {pos} {vd:.1f}m{contact}：{rel_txt}，{motion}，{vtype}{lane_note}{ego_rel_note}")
     nearby_summary = "\n".join(lines) if lines else "  无（10m 内无其他车辆）"
     return BEV_PROMPT_TEMPLATE.format(
         outcome=facts["outcome"],
