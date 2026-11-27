@@ -12,7 +12,7 @@ FIELDS = {
     "edit_planner": ("suitability","reasons","scene_id","scene_token","candidate_id","target_scene",
                      "failure_context","checks","target_window_s","adapted_plan","retrieval_suggestion","retrieved_bev_image","attack_input"),
     "attack_vehicle_editor": ("status","stage","mode","run_dir","scene_id","scene_token","operation","plan_choice","shared_history","target_track","selected_candidate_id","frozen_scene_path","frames_path","trajectory_path","provenance_path","submission_path","simulation_input","native_export","rendered_videos"),
-    "policy_runner": ("result_dir","policy_result","collision_report","evaluation_scope","pdm_subscores","policy_behavior_summary","rollout_dir","reward_dir","candidate_rewards_present","rlft_training_data","rlft_data_report","pdm_challenge","startup_timing_report"),
+    "policy_runner": ("result_dir","policy_result","collision_report","evaluation_scope","pdm_subscores","policy_behavior_summary","ego_sim_frames_path","rollout_dir","reward_dir","candidate_rewards_present","rlft_training_data","rlft_data_report","pdm_challenge","startup_timing_report"),
     "failure_case_filter": ("is_failure_case","pdm_scores_file","scene_count","failure_cases","scene_results"),
     "policy_trainer": ("checkpoint","training_mode","log_path","training_audit","data_preparation","work_dir","epochs","final_loss","training_config","export_dir"),
 }
@@ -61,7 +61,7 @@ def summarize(tool, payload):
     elif tool=="edit_planner":
         evidence=payload.get("evidence")
         if isinstance(evidence,dict):
-            result["evidence"]=pick(evidence,("missing_resources","render_error","source_bev_image","retrieved_bev_image","eval_frames","ahead_or_side_vehicle_count","behind_only_vehicle_count"))
+            result["evidence"]=pick(evidence,("missing_resources","render_error","source_bev_image","retrieved_bev_image","eval_frames","ahead_or_side_vehicle_count","behind_only_vehicle_count","ego_speed_alignment"))
     elif tool == "attack_vehicle_editor":
         if "checks" in payload:
             result["checks"]=check_view(payload["checks"])

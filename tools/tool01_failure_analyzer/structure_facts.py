@@ -346,6 +346,60 @@ def scene_time(frames):
     return datetime.fromtimestamp(frames[0]["timestamp"] / 1e6, tz=timezone.utc).isoformat(timespec="seconds")
 
 
+
+
+def _lane_relative_pose(x: float, y: float, yaw: float, baseline_geoms) -> tuple[float | None, float | None]:
+    """Compute signed lateral offset (m, +left/-right) and heading offset (deg, +left/-right) relative to nearest lane centerline."""
+    if baseline_geoms is None:
+        return None, None
+    from shapely.geometry import Point
+    pt = Point(x, y)
+    best_same = None  # (dist, lat_m, dyaw_deg)
+    best_any = None
+    for raw_geom in baseline_geoms:
+        if raw_geom is None or raw_geom.is_empty:
+            continue
+        lines = [raw_geom] if raw_geom.geom_type == "LineString" else (list(raw_geom.geoms) if raw_geom.geom_type == "MultiLineString" else [])
+        for line in lines:
+            bx0, by0, bx1, by1 = line.bounds
+            if x < bx0 - 8.0 or x > bx1 + 8.0 or y < by0 - 8.0 or y > by1 + 8.0:
+                continue
+            length = float(line.length)
+            if length < 1.0:
+                continue
+            s = float(line.project(pt))
+            p_proj = line.interpolate(s)
+            dx, dy = x - float(p_proj.x), y - float(p_proj.y)
+            dist = math.hypot(dx, dy)
+            if dist > 6.0:
+                continue
+            s0 = max(0.0, s - 0.5)
+            s1 = min(length, s + 0.5)
+            if s1 - s0 < 1e-3:
+                continue
+            p0, p1 = line.interpolate(s0), line.interpolate(s1)
+            tx, ty = float(p1.x) - float(p0.x), float(p1.y) - float(p0.y)
+            tn = math.hypot(tx, ty)
+            if tn < 1e-6:
+                continue
+            tx /= tn; ty /= tn
+            lane_yaw = math.atan2(ty, tx)
+            # Signed lateral offset: cross(tangent, delta) -> +left, -right
+            lat_m = tx * dy - ty * dx
+            dyaw = (yaw - lane_yaw + math.pi) % (2.0 * math.pi) - math.pi
+            dyaw_deg = math.degrees(dyaw)
+            cand = (dist, round(float(lat_m), 2), round(float(dyaw_deg), 1))
+            if abs(dyaw_deg) <= 90.0:
+                if best_same is None or dist < best_same[0]:
+                    best_same = cand
+            if best_any is None or dist < best_any[0]:
+                best_any = cand
+    chosen = best_same or best_any
+    if chosen is None:
+        return None, None
+    return chosen[1], chosen[2]
+
+
 def _kinematics(frame_indices, times, points, yaws, violation):
     keep = [i for i, f in enumerate(frame_indices) if f <= violation]
     if not keep:
@@ -555,6 +609,13 @@ def render_scene_bev(
     ref_pos = indices.index(ref_frame)
     ex, ey = ego_points[ref_pos]
     eyaw = ego_yaws[ref_pos]
+    _bl_geoms = list(layers["baseline_paths"].geometry) if ("baseline_paths" in layers and layers["baseline_paths"] is not None) else None
+    _el0, _ey0 = _lane_relative_pose(ego_points[0][0], ego_points[0][1], ego_yaws[0], _bl_geoms)
+    _elv, _eyv = _lane_relative_pose(ex, ey, eyaw, _bl_geoms)
+    ego_kin["lane_lat_start_m"] = _el0
+    ego_kin["lane_yaw_start_deg"] = _ey0
+    ego_kin["lane_lat_violation_m"] = _elv
+    ego_kin["lane_yaw_violation_deg"] = _eyv
     cos_y, sin_y = math.cos(-eyaw), math.sin(-eyaw)
     ex0, ey0 = ego_points[0]
     eyaw0 = ego_yaws[0]
@@ -589,11 +650,14 @@ def render_scene_bev(
         rel_yaw, bearing = None, None
         rel_lon_start, rel_lat_start = None, None
         rel_lon_viol, rel_lat_viol = None, None
+        lane_lat_s, lane_yaw_s = None, None
+        lane_lat_v, lane_yaw_v = None, None
         if 0 in obs_frames:
             s_idx = obs_frames.index(0)
             gx0, gy0 = pts[s_idx][0] - ex0, pts[s_idx][1] - ey0
             rel_lon_start = round(float(gx0 * cos_y0 - gy0 * sin_y0), 2)
             rel_lat_start = round(float(gx0 * sin_y0 + gy0 * cos_y0), 2)
+            lane_lat_s, lane_yaw_s = _lane_relative_pose(pts[s_idx][0], pts[s_idx][1], yaws[s_idx], _bl_geoms)
         if ref_frame in obs_frames:
             v_idx = obs_frames.index(ref_frame)
             rel_yaw = round(math.degrees((yaws[v_idx] - eyaw + math.pi) % (2 * math.pi) - math.pi), 1)
@@ -603,6 +667,7 @@ def render_scene_bev(
             rel_lon_viol = round(lon_v, 2)
             rel_lat_viol = round(lat_v, 2)
             bearing = _bearing_text(lon_v, lat_v)
+            lane_lat_v, lane_yaw_v = _lane_relative_pose(pts[v_idx][0], pts[v_idx][1], yaws[v_idx], _bl_geoms)
         first_item = rows[obs_frames[0]]
         pts_arr = np.asarray(pts)
         axis.plot(pts_arr[:, 0], pts_arr[:, 1], color=OTHER_COLOR, linewidth=1.6, alpha=0.7, zorder=6)
@@ -621,6 +686,10 @@ def render_scene_bev(
             "rel_lat_at_start_m": rel_lat_start,
             "rel_lon_at_violation_m": rel_lon_viol,
             "rel_lat_at_violation_m": rel_lat_viol,
+            "lane_lat_start_m": lane_lat_s,
+            "lane_yaw_start_deg": lane_yaw_s,
+            "lane_lat_violation_m": lane_lat_v,
+            "lane_yaw_violation_deg": lane_yaw_v,
             "kinematics": kin,
         })
         actor_trajs[vid] = traj

@@ -96,6 +96,26 @@ def _yaw_text(deg):
     return f"左转{val:.1f}°" if deg > 0 else f"右转{val:.1f}°"
 
 
+
+
+def _lane_pose_text(lat_m, yaw_deg):
+    parts = []
+    if lat_m is not None:
+        if abs(lat_m) < 0.35:
+            parts.append("车道居中")
+        else:
+            parts.append(f"靠左{abs(lat_m):.1f}m" if lat_m > 0 else f"靠右{abs(lat_m):.1f}m")
+    if yaw_deg is not None:
+        ay = abs(float(yaw_deg))
+        if ay < 2.0:
+            parts.append("顺车道平行")
+        elif ay < 5.0:
+            parts.append(f"车头微左歪{ay:.1f}°" if yaw_deg > 0 else f"车头微右歪{ay:.1f}°")
+        else:
+            parts.append(f"车头左歪{ay:.1f}°" if yaw_deg > 0 else f"车头右歪{ay:.1f}°")
+    return "/".join(parts)
+
+
 def _rel_pos_text(lon_m, lat_m):
     if lon_m is None or lat_m is None:
         return ""
@@ -138,11 +158,15 @@ def build_bev_prompt(facts, selected_vehicles):
     rows = facts.get("frame_images") or []
     t_s = float(rows[viol]["time_s"]) if 0 <= viol < len(rows) else round(viol * 0.5, 1)
     ego_k = facts["ego_kinematics"]
+    _es_lane = _lane_pose_text(ego_k.get("lane_lat_start_m"), ego_k.get("lane_yaw_start_deg"))
+    _ev_lane = _lane_pose_text(ego_k.get("lane_lat_violation_m"), ego_k.get("lane_yaw_violation_deg"))
+    _ego_lane_note = f"，相对车道中心线：起步{_es_lane}→违规帧{_ev_lane}" if (_es_lane and _ev_lane) else ""
     ego_summary = (
         f"速度 {ego_k['speed_start_mps']:.1f}→{ego_k['speed_violation_mps']:.1f} m/s，"
         f"位移 {ego_k['displacement_m']:.1f} m，"
         f"全程{_yaw_text(ego_k['yaw_change_deg'])}，"
         f"末段1秒{_yaw_text(ego_k['tail_yaw_deg'])}"
+        f"{_ego_lane_note}"
     )
     lines = []
     for idx, v in enumerate(selected_vehicles, start=1):
@@ -161,14 +185,14 @@ def build_bev_prompt(facts, selected_vehicles):
             )
         contact = "（接触）" if vd <= 0.05 else ""
         rel_txt = _rel_heading_text(v.get("relative_heading_at_violation_deg"))
-        s_txt = _rel_pos_text(v.get("rel_lon_at_start_m"), v.get("rel_lat_at_start_m"))
-        v_txt = _rel_pos_text(v.get("rel_lon_at_violation_m"), v.get("rel_lat_at_violation_m"))
-        offset_note = ""
-        if s_txt and v_txt:
-            offset_note = f"，自车系相对位置：起步{s_txt}→违规帧{v_txt}"
-        elif v_txt:
-            offset_note = f"，自车系相对位置：违规帧{v_txt}"
-        lines.append(f"  {idx}. {pos} {vd:.1f}m{contact}：{rel_txt}，{motion}，{vtype}{offset_note}")
+        os_lane = _lane_pose_text(v.get("lane_lat_start_m"), v.get("lane_yaw_start_deg"))
+        ov_lane = _lane_pose_text(v.get("lane_lat_violation_m"), v.get("lane_yaw_violation_deg"))
+        lane_note = ""
+        if os_lane and ov_lane:
+            lane_note = f"，目标车相对车道中心线：{os_lane}" if os_lane == ov_lane else f"，目标车相对车道中心线：起步{os_lane}→违规帧{ov_lane}"
+        elif ov_lane:
+            lane_note = f"，目标车相对车道中心线：{ov_lane}"
+        lines.append(f"  {idx}. {pos} {vd:.1f}m{contact}：{rel_txt}，{motion}，{vtype}{lane_note}")
     nearby_summary = "\n".join(lines) if lines else "  无（10m 内无其他车辆）"
     return BEV_PROMPT_TEMPLATE.format(
         outcome=facts["outcome"],

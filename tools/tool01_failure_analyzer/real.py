@@ -122,6 +122,10 @@ def analyze(input_data: dict[str, Any], run_dir) -> dict[str, Any]:
             "rel_lat_at_start_m": target_v.get("rel_lat_at_start_m"),
             "rel_lon_at_violation_m": target_v.get("rel_lon_at_violation_m"),
             "rel_lat_at_violation_m": target_v.get("rel_lat_at_violation_m"),
+            "lane_lat_start_m": target_v.get("lane_lat_start_m"),
+            "lane_yaw_start_deg": target_v.get("lane_yaw_start_deg"),
+            "lane_lat_violation_m": target_v.get("lane_lat_violation_m"),
+            "lane_yaw_violation_deg": target_v.get("lane_yaw_violation_deg"),
         }
 
     evidence.write_manifest(run_dir, stage="images", resolved_token=facts["token"],
