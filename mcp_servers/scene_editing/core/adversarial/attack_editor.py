@@ -60,7 +60,7 @@ class AttackEditor:
         if _repo_root not in _sys.path:
             _sys.path.insert(0, _repo_root)
         from common.baseline_sim import reference_ego_path_from_scene
-        self.times, self.ego, self.ego_yaw, self.ego_reference_meta = reference_ego_path_from_scene(self.scene, self.frames)
+        self.times, self.ego, self.ego_yaw, self.ego_reference_meta = reference_ego_path_from_scene(self.scene, self.frames, baseline_frames_path=self.constraints.get('ego_reference_frames_path'))
         # Decode other observations with any present track; new-object construction
         # also works in scenes with no original tracks.
         self.actors = observed_objects_from_frames(self.frames)

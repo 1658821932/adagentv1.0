@@ -72,6 +72,8 @@ def attack_output(arguments, output_dir):
     constraints['generated_objectives_are_preferences'] = True
     constraints['prepare_ego_history']=arguments.get('prepare_ego_history',True)
     constraints['ego_history_target_speed_mps']=arguments.get('ego_history_target_speed_mps')
+    if arguments.get('ego_reference_frames_path') is not None:
+        constraints['ego_reference_frames_path'] = arguments['ego_reference_frames_path']
     if arguments.get('ego_history_route') is not None:
         constraints['ego_history_route'] = arguments['ego_history_route']
     required_operation=None if arguments['operation']=='auto' else arguments['operation']

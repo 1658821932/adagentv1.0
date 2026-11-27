@@ -45,16 +45,22 @@ def generate(frames, targets, acceptance):
     times,xy,yaw=ego_path_from_frames(frames)
     if times[-1]<TAKEOVER_S:raise ValueError('Source does not cover the 1.5s takeover')
     if not 1<=len(targets)<=4:raise ValueError('Provide 1–4 ego speed targets, ending at 1.5s')
-    knots=[0.];speeds=[start_state(times,xy,yaw,0.)['signed_speed_mps']]
+    v0_orig=float(start_state(times,xy,yaw,0.)['signed_speed_mps'])
+    knots=[0.];speeds=[v0_orig]
+    initial_speed_adjusted=False
     if speeds[0]<0:raise ValueError('This history tool supports forward motion only')
-    for point in targets:
+    for idx_pt,point in enumerate(targets):
         if set(point)!={'time_s','speed_mps'}:raise ValueError('Ego targets use time_s and speed_mps')
         t,v=point['time_s'],point['speed_mps']
         if type(t) not in (int,float) or type(v) not in (int,float) or not np.isfinite([t,v]).all():raise ValueError('Ego targets must be finite')
         if not knots[-1]<t<=TAKEOVER_S or not 0<=v<=acceptance['max_speed_mps']:raise ValueError('Ego speed target is outside the history or speed limit')
         required=1.5*abs(v-speeds[-1])/(t-knots[-1])
         if required>acceptance['max_acceleration_mps2']+1e-8:
-            raise ValueError(f'Ego interval {knots[-1]:.2f}–{t:.2f}s needs peak acceleration {required:.2f}m/s², limit {acceptance["max_acceleration_mps2"]:.2f}; reduce speed change or allow more time')
+            if idx_pt==0 and len(targets)==1:
+                speeds[0]=float(v)
+                initial_speed_adjusted=True
+            else:
+                raise ValueError(f'Ego interval {knots[-1]:.2f}–{t:.2f}s needs peak acceleration {required:.2f}m/s², limit {acceptance["max_acceleration_mps2"]:.2f}; reduce speed change or allow more time')
         knots.append(float(t));speeds.append(float(v))
     if abs(knots[-1]-TAKEOVER_S)>1e-9:raise ValueError('Last ego speed target must be at 1.5s')
     state=start_state(times,xy,yaw,0.)
@@ -109,6 +115,7 @@ def generate(frames, targets, acceptance):
     return native_xy,native_yaw,dict(targets=deepcopy(targets),takeover_s=TAKEOVER_S,
         takeover_xy_m=[float(np.interp(TAKEOVER_S,query,positions[:,i])) for i in range(2)],
         requested_takeover_speed_mps=speeds[len(targets)],
+        start_speed_mps=speeds[0],initial_speed_adjusted=initial_speed_adjusted,
         delivered_takeover_speed_mps=float(np.linalg.norm((centers[index]-centers[index-1])/native_step)),
         continuous_reference_velocity_xy_mps=np.column_stack([np.interp(times,query,velocities[:,i]) for i in range(2)]).tolist(),
         reference_continuation='Smooth source-route continuation only; not an executed policy future',

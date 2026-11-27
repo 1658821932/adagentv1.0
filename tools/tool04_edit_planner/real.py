@@ -470,6 +470,51 @@ def _needs_ego_history_edit(strategy: str | None) -> bool:
     return not any(m in txt for m in no_edit_markers)
 
 
+
+
+def _ego_speed_at_15s(frames_path: Path, fallback_mps: float) -> float:
+    try:
+        frames = json.loads(frames_path.read_text(encoding="utf-8"))
+        if isinstance(frames, list) and len(frames) >= 4:
+            p2 = frames[2]["ego2global"]
+            p3 = frames[3]["ego2global"]
+            dx = float(p3[0][3]) - float(p2[0][3])
+            dy = float(p3[1][3]) - float(p2[1][3])
+            dt = max(0.1, (float(frames[3]["timestamp"]) - float(frames[2]["timestamp"])) * 1e-6)
+            return math.hypot(dx, dy) / dt
+    except Exception:
+        pass
+    return float(fallback_mps)
+
+
+def _compute_ego_speed_alignment(data: Input, rendered: dict, planning_frames_path: Path, single_vehicle: bool) -> dict:
+    src_ek = (data.scenario_result.kinematics or {}).get("ego") or {}
+    v_src = float(src_ek.get("speed_start_mps") or 0.0)
+    traj_ref = (data.scenario_result.kinematics or {}).get("trajectory_ref")
+    if traj_ref and Path(str(traj_ref)).is_file():
+        try:
+            tr = json.loads(Path(str(traj_ref)).read_text(encoding="utf-8"))
+            ego_pts = tr.get("EGO") or []
+            if len(ego_pts) >= 4:
+                p2, p3 = ego_pts[2], ego_pts[3]
+                dt = max(0.1, float(p3["t_s"]) - float(p2["t_s"]))
+                v_src = math.hypot(float(p3["x"]) - float(p2["x"]), float(p3["y"]) - float(p2["y"])) / dt
+        except Exception:
+            pass
+    v_base = _ego_speed_at_15s(planning_frames_path, float((rendered.get("ego_kinematics") or {}).get("speed_start_mps") or 0.0))
+    gap = abs(v_base - v_src)
+    threshold = 3.0
+    needed = (not single_vehicle) and (gap > threshold)
+    return {
+        "needed": needed,
+        "base_speed_15s_mps": round(v_base, 2),
+        "source_speed_15s_mps": round(v_src, 2),
+        "speed_gap_mps": round(gap, 2),
+        "threshold_mps": threshold,
+        "target_speed_mps": round(max(1.5, v_src), 2) if needed else None,
+    }
+
+
 def _build_attack_input(data: Input, rendered: dict, decision: dict) -> dict | None:
     fc = data.scenario_result.failure_context
     if fc.failure_driver in ("departure_ego_only", "collision_non_vehicle"):
@@ -721,6 +766,7 @@ def _evaluate_one(data: Input, run_dir: Path, llm_client=None) -> tuple[dict, st
             "eval_frames": rendered["eval_frames"],
             "ahead_or_side_vehicle_count": len(rendered.get("nearby_vehicles") or []),
             "behind_only_vehicle_count": int(rendered.get("behind_only_count") or 0),
+            "ego_speed_alignment": _compute_ego_speed_alignment(data, rendered, planning_frames_path, single_vehicle),
         },
     }
     return payload, getattr(client, "model", "unknown")

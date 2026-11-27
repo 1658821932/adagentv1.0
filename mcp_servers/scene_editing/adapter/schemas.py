@@ -67,6 +67,7 @@ class AttackInput(InputModel):
         default=None, description="Use native-size catalog assets for added vehicles. Select any when the class is unspecified.")
     prepare_ego_history: bool = Field(default=True,description='Stage A automatically prepares and freezes feasible forward acceleration during 0–1.5s before the attack Agent selects/edits a vehicle. No additional Agent/API call. Explicit false preserves the source history.')
     ego_history_target_speed_mps: Annotated[float, Field(ge=0)] | None = Field(default=None,description='Optional stage-A target speed at 1.5s. Omit for a bounded programmatic acceleration preference. Explicit targets are checked, never silently weakened.')
+    ego_reference_frames_path: NonEmptyStr | None = Field(default=None, description='Optional closed-loop ego_sim_frames.json path from a prior Tool 06 run on the speed-edited empty scene; overrides recorded/default reference ego trajectory in Stage B.')
     ego_history_route: EgoHistoryRoute | None = Field(default=None, description='Optional short pose edit for stage A. Provide a reachable endpoint at 1.5s, with optional heading, speed, one intermediate point and connector guidance.')
     constraints: AttackConstraints = Field(default_factory=AttackConstraints)
     timeout: PositiveInt = Field(default=3600, description='Whole tool execution timeout, including selection/export. This is not the trajectory-stage budget.')

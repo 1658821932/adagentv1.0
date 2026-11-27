@@ -445,3 +445,61 @@ def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
+
+def export_ego_sim_frames(result_dir: str | Path, out_path: str | Path) -> str | None:
+    """Export closed-loop ego poses from WE meta_datas/*.pkl as a frames.json list for downstream Tool 05."""
+    rdir = Path(result_dir)
+    meta_dir = rdir / "WE_output/openscene_format/meta_datas"
+    if not meta_dir.is_dir():
+        return None
+    pkls = [p for p in sorted(meta_dir.glob("*.pkl")) if p.name != "combined.pkl"]
+    if not pkls:
+        cand = meta_dir / "combined.pkl"
+        if cand.is_file():
+            pkls = [cand]
+        else:
+            return None
+    out_p = Path(out_path)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    repo_root = Path(__file__).resolve().parents[3]
+    py_cand = repo_root / "environments/simengine/bin/python"
+    py = str(py_cand) if py_cand.is_file() else sys.executable
+    script = """
+import json, pickle, sys
+from pathlib import Path
+import numpy as np
+sys.modules.setdefault("numpy._core", np.core)
+sys.modules.setdefault("numpy._core.multiarray", np.core.multiarray)
+sys.modules.setdefault("numpy._core.numeric", np.core.numeric)
+
+pkl_path, out_path = Path(sys.argv[1]), Path(sys.argv[2])
+with pkl_path.open("rb") as f:
+    raw = pickle.load(f)
+frames_raw = raw if isinstance(raw, list) else (next(iter(raw.values())) if isinstance(raw, dict) and raw else [])
+if not isinstance(frames_raw, list) or not frames_raw:
+    sys.exit(2)
+frames_raw = sorted(frames_raw, key=lambda x: int(x.get("frame_idx", 0)))
+out = []
+for idx, fr in enumerate(frames_raw):
+    ego2g = fr.get("ego2global")
+    if ego2g is None:
+        continue
+    mat = np.asarray(ego2g, dtype=float)
+    if mat.shape != (4, 4):
+        continue
+    ts = fr.get("timestamp")
+    if ts is None:
+        ts = int(idx * 500000)
+    out.append({"frame_idx": int(fr.get("frame_idx", idx)), "timestamp": float(ts), "ego2global": mat.tolist()})
+if len(out) < 4:
+    sys.exit(3)
+out_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
+"""
+    try:
+        proc = subprocess.run([py, "-c", script, str(pkls[0]), str(out_p)], capture_output=True, text=True, timeout=30)
+        if proc.returncode == 0 and out_p.is_file():
+            return str(out_p)
+    except Exception:
+        pass
+    return None

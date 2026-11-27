@@ -11,7 +11,7 @@ from pathlib import Path
 from .config import PROJECT_ROOT, AGENT_PYTHON, ALGENGINE_PYTHON, WorldEngineConfig, resolve_policy_inputs, runtime_env
 from common.frame_budget import resolve_frame_count, scene_frame_count
 from .evaluation_horizon import DEFAULT_NATIVE_HISTORY, DEFAULT_NATIVE_FRAMES
-from .policy_behavior import read_pdm_subscores, summarize_policy_behavior
+from .policy_behavior import export_ego_sim_frames, read_pdm_subscores, summarize_policy_behavior
 
 REWARD_LOOKAHEAD_FRAMES = 8
 
@@ -128,6 +128,9 @@ def run_policy(input_data: dict) -> dict:
         )
         if policy_behavior is not None:
             result["policy_behavior_summary"] = policy_behavior
+        ego_sim_path = export_ego_sim_frames(result["result_dir"], task.output / "ego_sim_frames.json")
+        if ego_sim_path is not None:
+            result["ego_sim_frames_path"] = ego_sim_path
     if input_data.get("with_dense_reward_manager", False):
         # The native planner owns this CSV; export its actual selections, never synthesize them.
         import shutil
