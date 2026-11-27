@@ -1,190 +1,55 @@
-# adagent
+# AdAgent
 
-基于 LLM 的自动驾驶场景需求生成、检索、验证与后训练框架。主 Agent 根据用户任务和工具返回结果选择下一步，工具通过统一输入输出契约调用后端。
+面向端到端自动驾驶的闭环递归自进化（RSI）智能体框架：基于 WorldEngine 3DGS 闭环仿真，自动完成**失败诊断 → 场景检索与规划 → 3DGS 对抗/高难场景合成 → 闭环评测与奖励采集 → 带 Reverse KL 锚定的 RLFT 后训练**。
 
-## 当前状态
+---
 
-当前启用 8 个工具，按 01–08 编号，涵盖失败分析、需求生成、检索、快速粗规划、场景编辑（含攻击车与 `ego_only` 模式）、策略评测、失败筛选和后训练（含 Reverse KL 锚）。
-独立原生回放后端保留，但没有注册为主 Agent 工具。编辑结果的 `simulation_input` / `ilft_training_data` 若为 null，须读取导出报告，不能用原始场景代替编辑结果。
+## 核心工具（Tool 01 – Tool 08）
 
-## 运行环境
+主 Agent 按任务目标编排以下 8 个工具，各工具通过统一 Schema 契约与 `result_ref` 衔接：
 
-从项目根目录创建 Agent 环境（Python 3.10+，需安装对应版本的 venv 支持）：
+| 编号 | 工具名 | 核心职责 |
+| :--- | :--- | :--- |
+| **01** | `failure_analyzer` | 分析 WorldEngine 闭环失败场景：基于高清 BEV 轨迹与物理测量定位最小道路形态与致因，并取原数据集违规前一帧 8 相机图补充天气与环境。 |
+| **02** | `scene_instance_generator` | 将失败分析转化为统一目标场景描述与 3 套差异化实现候选（优先新增车辆），生成精简底场景检索词。 |
+| **03** | `video_retriever` | 基于多模态向量检索与重排序，从本地 3DGS 数据集检索并绑定完整的多相机场景与标注资产；支持跨场景已用底场景硬去重池（`exclude_scene_tokens`）。 |
+| **04** | `edit_planner` | 双 BEV 对照规划器：对比原失败 BEV 与底场景当前策略闭环仿真 BEV（含 3DGS 路面高程与可放置车道），判定可编辑性并输出确定性编辑方案（支持双车与 `ego_only`）。 |
+| **05** | `attack_vehicle_editor` | 3DGS 场景编辑器：支持 `add_vehicle`、`edit_existing`、`ego_only` 三种模式；结合路面高程、运动学与地图约束求解攻击车轨迹与可选自车前 1.5s 历史调速，导出冻结场景包。 |
+| **06** | `policy_runner` | WorldEngine 原生闭环策略评测与 RL 数据采集工具（默认 1.5–7.5s / 16 帧窗口）：计算官方 PDM 指标与 8192 候选稠密奖励，支持单场景与多场景常驻批量模式（`batch_scenario_pkls`）。 |
+| **07** | `failure_case_filter` | 读取 `policy_runner` 产出的官方 PDM 评分 CSV，按规则筛选失败案例。 |
+| **08** | `policy_trainer` | 驾驶策略后训练工具：支持 ILFT 与带 Reverse KL 参考锚定的 RLFT，输出新权重与训练审计报告。 |
+
+---
+
+## 快速开始
+
+### 1. 基础环境与密钥
 
 ```bash
 python3 -m venv environments/agent/.venv
 environments/agent/.venv/bin/python -m pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env   # 填入各模型 API Key 与 DashScope/OSS 凭证
 ```
 
-`.env` 只填写密钥；`configs/api.json` 管理模型、端点、超时和思考强度。主 Agent 使用 `active_profile` 指定的 API；各工具默认跟随，也可通过 `tool_profiles` 和 `tool_efforts` 分别指定模型和思考强度。阿里接口另用于视频检索嵌入与重排序，检索重排序还需要配置 OSS 凭证。
-
-可在 `.env` 同时保存多把 key，再用命令统一选择模型与 API。完整步骤、配置示例和兼容性说明见 [API 配置与统一切换](docs/API_CONFIGURATION.md)。
+模型与思考强度在 `configs/api.json` 统一配置，可用命令查看：
 
 ```bash
-python scripts/api_profile.py list
-python scripts/api_profile.py show
+environments/agent/.venv/bin/python scripts/api_profile.py show
 ```
 
-```bash
-environments/agent/.venv/bin/python -m agent.main \
-  "根据给定失败类型构思三个底场景方案，并检索一个已绑定标注与高斯资产的场景"
-```
-
-`configs/agent.json` 控制最大步数及各工具 mock/real 模式。Agent 编排需要模型接口；mock 工具不生成真实产物。
-各 real 后端需独立准备环境、数据、权重和索引，安装主环境不包含 GPU 服务依赖。
-
-## 工具与后端
-
-| 编号 | 工具 | 职责 |
-|---|---|---|
-| 01 | failure_analyzer | 分析已有失败场景与证据 |
-| 02 | scene_instance_generator | 生成目标场景、全局自车目标与三个候选 |
-| 03 | video_retriever | 检索并强制绑定多相机场景、标注和资产 |
-| 04 | edit_planner | 快速判断可编辑性，给出针对底场景的粗计划 |
-| 05 | attack_vehicle_editor | 规划、搜索、编辑并冻结对抗场景（支持 `add_vehicle` 与 `ego_only`） |
-| 06 | policy_runner | 驾驶策略原生闭环仿真与正式评分，并导出 RLFT 候选奖励标注 |
-| 07 | failure_case_filter | 读取官方评分并筛选失败案例 |
-| 08 | policy_trainer | 执行 ILFT/RLFT（支持 Reverse KL 锚与自定义阈值）并输出模型与更新审计 |
-
-主 Agent 按任务选择调用顺序。05 输出通过几何与任务检查的冻结编辑场景（支持 `add_vehicle` 插入攻击车和 `ego_only` 纯自车速度/场景准备），默认开启 `vadv2_self_test`。显式传入 `vadv2_self_test=false` 可仅做几何和任务检查。
-06（`policy_runner`）是独立策略闭环评测与奖励标注导出工具，默认使用 4 帧历史、16 帧场景预算，在 2 Hz 场景中覆盖 1.5–7.5 秒；显式调整帧预算时评分范围随之变化，须读取返回的 `evaluation_scope`。08（`policy_trainer`）支持 ILFT 与 RLFT（内置 `TrajScoringHeadRL` Reverse KL 锚定）。
-场景帧数须与历史/未来帧预算一致；原生编辑场景由适配层启用与回放共用的坐标修正，并将实际帧数传入 AlgEngine 监视器。
-
-四个后端组件保存在 `mcp_servers/`，均采用 `core/`、`adapter/`、`runtime/` 分层：
-
-- `sentry_video_search`：检索、入库与重排序，详见[多相机场景绑定](mcp_servers/sentry_video_search/README.md)。
-- `worldengine_failure_analysis`：失败取证、图像及数值分析。
-- `scene_editing`：场景编辑后端（`add_vehicle` 与 `ego_only`），详见 [scene_editing README](mcp_servers/scene_editing/README.md)。
-- `worldengine`：仿真、官方评分读取及训练。
-
-这些组件通过 Python 或 JSON 子进程调用；目录名称不表示每个组件都提供 MCP 协议服务。
-
-## 多相机场景绑定
-
-tool03 real 要求索引源视频带有效 `.scene.json`。结果包含 `scene_ref`：场景身份、相机清单、同步图像元数据、标注与高斯资产路径。未绑定直接报错；未下载文件明确标记缺失。
-tool04 根据实际场景做可编辑性检查及粗规划，tool05/06 再执行详细轨迹搜索和编辑。
-
-## 前端控制台
-
-前端为原生 HTML/JS + Node 服务（`frontend/server.mjs`，无需构建步骤），默认监听 `127.0.0.1:5173`（支持 `HOST`、`PORT`、`ADAGENT_PROJECT_ROOT` 环境变量）：
+### 2. 运行方式
 
 ```bash
-# 在项目根目录启动
+# 命令行调用主 Agent
+environments/agent/.venv/bin/python -m agent.main "<任务描述>"
+
+# 启动 Web 前端控制台（默认 127.0.0.1:5173）
 node frontend/server.mjs
-
-# 自定义端口或后台启动
-nohup env HOST=127.0.0.1 PORT=5173 node frontend/server.mjs > frontend/frontend.log 2>&1 &
 ```
 
-若部署在远端 GPU 服务器，可在本地建立 SSH 端口转发后在浏览器打开 `http://127.0.0.1:5173`：
+---
 
-```bash
-ssh -N -L 5173:127.0.0.1:5173 -p <SSH_PORT> <USER>@<HOST>
-```
+## 更多文档与许可
 
-- 点击页面右上角 **「示例」** 可直接查看内置的 8 工具完整演示时间线（`frontend/demo/run.json`），不消耗模型额度。
-- 点击右上角 **「配置」** 可在线切换主 Agent / 各工具的模型、思考强度与 `real / mock` 模式。
-
-### 测试样例
-
-**1. 前端与契约测试**
-
-```bash
-# 运行全部前端单元与 HTTP 集成测试（97 项）
-node --test frontend/*.test.mjs
-
-# 单独校验 Tool 01 证据与 Tool 02/03 后端契约
-node --test frontend/tool01-evidence.test.mjs frontend/tool01-evidence-http.test.mjs frontend/tool23-http.test.mjs
-```
-
-**2. 对话框 / CLI 测试样例**
-
-在前端输入框或 `environments/agent/.venv/bin/python -m agent.main "<指令>"` 中可直接输入以下测试任务：
-
-- **单步失败分析（轻量）**：
-  ```text
-  分析仿真记录 <experiment>/<batch> 中的失败场景 <scene_token>，给出失败诱因、BEV 证据和运动学摘要。
-  ```
-- **造数链路（工具 01 → 05，不含后训练）**：
-  ```text
-  分析 <experiment>/<batch> 中的失败场景 <scene_token>，生成三套候选场景需求、检索匹配底场景并完成编辑规划与场景编辑。
-  ```
-- **完整 8 工具闭环（工具 01 → 08）**：
-  ```text
-  针对 <experiment>/<batch> 的失败场景 <scene_token>，完成失败分析、场景构造、视频检索、编辑规划、场景编辑、闭环评测、失败筛选，并执行一轮 RLFT 后训练。
-  ```
-
-## 验证与测试
-
-```bash
-python3 -m venv environments/test/.venv
-environments/test/.venv/bin/python -m pip install -r requirements-test.txt
-environments/test/.venv/bin/python -m pytest -q
-environments/agent/.venv/bin/python -m tools.scripts.smoke_llm_tools --mode mock
-```
-
-测试依赖见 `requirements-test.txt`。接口测试不能代替真实场景质量、闭环表现或后训练收益验证。
-Agent 记录保存在 `logs/`；服务产物保存在 `mcp_servers/<service>/runtime/<run_id>/`。
-可读结果与实验产物可按案例整理到 `outputs/<case>/`；`outputs/` 已被 Git 忽略。
-环境、密钥、数据、权重、索引与运行产物不随源码提交。现有后台数据准备任务依赖的环境暂时保留。
-
-## 文档
-
-- [API 配置与统一切换](docs/API_CONFIGURATION.md)
-- [模型调用与思考强度配置](docs/MODEL_CALL_CONFIGURATION.md)
-- [提示词分层与规范](docs/PROMPTS.md)
-- [全流程日志、上下文与计时](docs/RUN_LOGGING.md)
-- [后端组件说明](mcp_servers/README.md)
-
-## 许可
-
-自有代码使用 [Apache 2.0](LICENSE)，声明见 [NOTICE](NOTICE)。内置第三方代码保留各自许可证与声明，见对应 core 目录。
-
-### 配置位置
-
-- `configs/api.json`：统一模型配置入口；`active_profile` 选择主 Agent 及跟随它的工具所用的连接配置，`tool_profiles` / `tool_efforts` 可逐工具覆盖。每组包含地址、模型、密钥变量名称、请求 timeout 和 max_tokens；另含独立的检索 embedding/rerank 参数。
-- 根目录 `.env`：仅存 API/OSS 密钥，不放模型或运行参数。
-- `configs/agent.json`：Agent 步数、工具模式、纠错次数、日志目录。
-- `tools/tool*/config.json`：提示词版本、输出格式纠错次数，不覆盖模型参数。
-- `tools/tool04_edit_planner/observation.json`：抽帧、拼图和补充视角预算。
-- `mcp_servers/*/adapter/settings.json`：各服务解释器、路径与运行参数。
-- 工具/仿真/渲染的执行时限属于任务预算，与 api.json 的单次模型请求超时分开管理。
-
-编辑后端的 `mcp_servers/scene_editing/core/adversarial/backend_settings.json` 分别保存编辑预算、可选 VADv2 自测、旧 PDM 后端和渲染参数。各路径相对于项目根目录解析，绝对路径仍可用于本机部署；解释器软链接不会被解析为系统 Python。公共默认配置要求另行准备相应环境、模型、地图和系统库。`render.gsplat_extension` 可指定预编译扩展，留空时使用渲染环境自身的扩展加载方式。修改本机部署路径和开关后，应保留为本地设置，不随公共代码改动一起提交。
-
-主 Agent、tool02/04、失败分析及内置编辑/检索的推理请求均读取当前公共 API 配置。代码中的 `get_profile("kimi")` 保留为公共推理配置别名，解析到 `active_profile`；支持逐工具选择的入口还会读取对应覆盖项。推理 API 与检索 embedding/rerank API 独立选择，Qwen 也可作为推理模型。
-
-### 公共工具任务执行
-
-所有经主 Agent 执行的工具统一登记在 `logs/jobs/<job_id>/`，该目录不进入 Git。
-任务在独立 worker 进程执行；默认 720 秒是单次等待时限，不是后台任务的终止时限。
-等待结束返回 `status=running` 和 `job.job_id`，主 Agent 自动继续查询原任务，
-不消耗新的 LLM 决策步骤。工具自己的仿真/训练进程超时仍然有效。
-
-同一 Agent run、工具、模式和相同输入只启动一份；成功结果直接复用。
-失败任务不会自动重新执行，明确重试时在原工具参数旁增加
-`"_execution":{"retry":true}`。也可用 `"_execution":{"job_id":"..."}`
-查询原任务；此字段由公共执行层剥离，不传给工具。
-输入中的绝对路径资源元信息改变后，不复用旧的完成结果；这不是完整内容哈希缓存。
-不同 run 不共享完成结果，刻意重跑实验仍会执行。
-
-Python 调试可用 `ToolExecutor.query(job_id)` 查询，或设置相同 `scope` 恢复该 run。
-任务目录包含 manifest、原始请求、worker.log 和最终 result.json。
-worker 意外退出但已登记子进程组还在时标记 orphaned，阻止再次启动；
-需要先检查并处理残留进程，不会自动杀死其他实验。直接调用底层 adapter 不经过此任务层。
-
-### 主 Agent 调用协议
-
-主 Agent 使用当前所选模型的原生 Function Calling + 流式接收，每轮一个调用。
-不保留旧的文本 JSON 决策协议。完整接收并校验参数后才交给公共任务层执行；
-finish/stop 作为控制函数，工具编号不变。每轮耗时、首 chunk 延迟、
-chunk 数量和 token 用量记录在 Agent 的 agent.jsonl 中。
-
-主 Agent、tool02/04 共用客户端及内置编辑 Agent 均显式设置 SDK max_retries=0；SDK 不自动重发请求。输出纠错、业务内显式恢复及任务重试是独立机制。
-
-### 上下文精简
-
-`agent/context.py` 为所有工具生成主 Agent 决策摘要，保留目标、来源版本、
-检查/失败反馈和下游必需路径；完整工具结果继续通过 result_ref 传递。
-不增加额外 LLM 调用。原始状态、工具结果和日志不被裁剪。
+- [API 配置与统一切换](docs/API_CONFIGURATION.md) · [模型调用与思考强度](docs/MODEL_CALL_CONFIGURATION.md) · [提示词规范](docs/PROMPTS.md) · [后端组件说明](mcp_servers/README.md)
+- 自有代码采用 [Apache 2.0](LICENSE) 许可（声明见 [NOTICE](NOTICE)），内置第三方组件遵循其各自许可证。
