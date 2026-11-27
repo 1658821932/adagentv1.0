@@ -49,7 +49,6 @@ node frontend/server.mjs
 
 ---
 
-## 更多文档与许可
+## 许可
 
-- [API 配置与统一切换](docs/API_CONFIGURATION.md) · [模型调用与思考强度](docs/MODEL_CALL_CONFIGURATION.md) · [提示词规范](docs/PROMPTS.md) · [后端组件说明](mcp_servers/README.md)
-- 自有代码采用 [Apache 2.0](LICENSE) 许可（声明见 [NOTICE](NOTICE)），内置第三方组件遵循其各自许可证。
+自有代码采用 [Apache 2.0](LICENSE) 许可（声明见 [NOTICE](NOTICE)），内置第三方组件遵循其各自许可证。
