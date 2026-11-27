@@ -617,7 +617,7 @@ def _process_batch_scenes(
             os.environ["ADAGENT_ACTIVE_RUN"] = prev_run
         if not keep_temp:
             if result_dir:
-                _cleanup_we_run(result_dir)
+                _cleanup_worldengine_run(result_dir)
             if tmp_run_dir.is_dir():
                 shutil.rmtree(tmp_run_dir, ignore_errors=True)
 
