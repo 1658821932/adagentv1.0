@@ -1,6 +1,6 @@
 # AdAgent
 
-面向端到端自动驾驶的闭环递归自进化（RSI）智能体框架：基于 WorldEngine 3DGS 闭环仿真，自动完成**失败诊断 → 场景检索与规划 → 3DGS 对抗/高难场景合成 → 闭环评测与奖励采集 → 带 Reverse KL 锚定的 RLFT 后训练**。
+面向端到端自动驾驶的闭环递归自进化（RSI）智能体框架：基于 WorldEngine 3DGS 闭环仿真，自动完成**失败诊断 → 场景检索与规划 → 3DGS 高难场景合成 → 闭环评测与奖励采集 → 带 Reverse KL 锚定的 RLFT 后训练**。
 
 ---
 
@@ -10,13 +10,13 @@
 
 | 编号 | 工具名 | 核心职责 |
 | :--- | :--- | :--- |
-| **01** | `failure_analyzer` | 分析 WorldEngine 闭环失败场景：基于高清 BEV 轨迹与物理测量定位最小道路形态与致因，并取原数据集违规前一帧 8 相机图补充天气与环境。 |
+| **01** | `failure_analyzer` | 分析 WorldEngine 闭环失败场景：基于带车道中心线的高清 BEV 与物理测量提取最小道路形态、相对车道位姿与自车系相对坐标，并结合违规前 8 相机图补充天气与环境。 |
 | **02** | `scene_instance_generator` | 将失败分析转化为统一目标场景描述与 3 套差异化实现候选（优先新增车辆），生成精简底场景检索词。 |
 | **03** | `video_retriever` | 基于多模态向量检索与重排序，从本地 3DGS 数据集检索并绑定完整的多相机场景与标注资产；支持跨场景已用底场景硬去重池（`exclude_scene_tokens`）。 |
-| **04** | `edit_planner` | 双 BEV 对照规划器：对比原失败 BEV 与底场景当前策略闭环仿真 BEV（含 3DGS 路面高程与可放置车道），判定可编辑性并输出确定性编辑方案（支持双车与 `ego_only`）。 |
-| **05** | `attack_vehicle_editor` | 3DGS 场景编辑器：支持 `add_vehicle`、`edit_existing`、`ego_only` 三种模式；结合路面高程、运动学与地图约束求解攻击车轨迹与可选自车前 1.5s 历史调速，导出冻结场景包。 |
-| **06** | `policy_runner` | WorldEngine 原生闭环策略评测与 RL 数据采集工具（默认 1.5–7.5s / 16 帧窗口）：计算官方 PDM 指标与 8192 候选稠密奖励，支持单场景与多场景常驻批量模式（`batch_scenario_pkls`）。 |
-| **07** | `failure_case_filter` | 读取 `policy_runner` 产出的官方 PDM 评分 CSV，按规则筛选失败案例。 |
+| **04** | `edit_planner` | 双 BEV 对照规划器：对比原失败 BEV 与底场景原始 BEV（含车道中心线、3DGS 路面高程与可放置车道），判定可编辑性与速度差（按需触发自适应速度对齐），输出确定性编辑方案（支持双车与 `ego_only`）。 |
+| **05** | `attack_vehicle_editor` | 3DGS 场景编辑器：支持 `add_vehicle`、`edit_existing`、`ego_only` 三种模式；结合路面高程、运动学与地图约束求解攻击车轨迹，支持自适应速度对齐（自车前 1.5s 历史调速并接收 `ego_reference_frames_path` 真实闭环轨迹参考），导出冻结场景包。 |
+| **06** | `policy_runner` | WorldEngine 原生闭环策略评测与 RL 数据采集工具（默认 1.5–7.5s / 16 帧窗口）：计算官方 PDM 指标与 8192 候选词表稠密奖励，自动导出 16 帧自车真实闭环轨迹（`ego_sim_frames.json`），支持单场景与常驻批量模式（`batch_scenario_pkls`）。 |
+| **07** | `failure_case_filter` | 读取 `policy_runner` 产出的官方 PDM 评分结果，按低分失效、非早死与词表可解性等规则筛选有效失败样本，用于闭环验收与下一轮失败场景池挖掘。 |
 | **08** | `policy_trainer` | 驾驶策略后训练工具：支持 ILFT 与带 Reverse KL 参考锚定的 RLFT，输出新权重与训练审计报告。 |
 
 ---
